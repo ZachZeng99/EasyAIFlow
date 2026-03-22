@@ -7,7 +7,7 @@ const groups = {
     color: '#f59e0b',
     status: 'active' as const,
     focus: '桌面聊天壳、布局稳定性和响应速度。',
-    workspace: 'D:\\AIAgent\\ClaudeFlow',
+    workspace: 'D:\\AIAgent\\EasyAIFlow',
   },
   relay: {
     id: 'claude-bridge',
@@ -15,7 +15,7 @@ const groups = {
     color: '#22c55e',
     status: 'active' as const,
     focus: 'Claude Code 进程管理、输出回流和状态同步。',
-    workspace: 'D:\\AIAgent\\ClaudeFlow\\electron',
+    workspace: 'D:\\AIAgent\\EasyAIFlow\\electron',
   },
   memory: {
     id: 'session-memory',
@@ -23,7 +23,7 @@ const groups = {
     color: '#60a5fa',
     status: 'idle' as const,
     focus: '历史记录、检索和跨会话引用。',
-    workspace: 'D:\\AIAgent\\ClaudeFlow\\src\\data',
+    workspace: 'D:\\AIAgent\\EasyAIFlow\\src\\data',
   },
 };
 
@@ -31,7 +31,7 @@ export const projectTree: ProjectRecord[] = [
   {
     id: 'easyaiflow',
     name: 'EasyAIFlow',
-    rootPath: 'D:\\AIAgent\\ClaudeFlow',
+    rootPath: 'D:\\AIAgent\\EasyAIFlow',
     dreams: [
       {
         id: 'desktop-dream',
@@ -43,7 +43,7 @@ export const projectTree: ProjectRecord[] = [
             preview: '改成 exe 方向，三栏工作区和图片粘贴输入。',
             timeLabel: '15 mins ago',
             model: 'opus[1m]',
-            workspace: 'D:\\AIAgent\\ClaudeFlow',
+            workspace: 'D:\\AIAgent\\EasyAIFlow',
             projectId: 'easyaiflow',
             projectName: 'EasyAIFlow',
             dreamId: 'desktop-dream',
@@ -76,7 +76,7 @@ export const projectTree: ProjectRecord[] = [
             preview: '左侧项目 -> dream -> session 层级视图。',
             timeLabel: '42 mins ago',
             model: 'opus[1m]',
-            workspace: 'D:\\AIAgent\\ClaudeFlow',
+            workspace: 'D:\\AIAgent\\EasyAIFlow',
             projectId: 'easyaiflow',
             projectName: 'EasyAIFlow',
             dreamId: 'desktop-dream',
@@ -114,7 +114,7 @@ export const projectTree: ProjectRecord[] = [
             preview: '把不同工作组的上下文映射到一个会话视图。',
             timeLabel: '1 hr ago',
             model: 'opus[1m]',
-            workspace: 'D:\\AIAgent\\ClaudeFlow',
+            workspace: 'D:\\AIAgent\\EasyAIFlow',
             projectId: 'easyaiflow',
             projectName: 'EasyAIFlow',
             dreamId: 'bridge-dream',
