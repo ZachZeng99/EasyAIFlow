@@ -2,6 +2,10 @@
 
 EasyAIFlow 是一个面向本地 AI 编码工作流的桌面客户端，当前阶段专注于 Claude 集成，后续会逐步扩展到更多模型与提供方。项目采用 Electron + React 单体架构，目标是提供一个可直接打包为 Windows `exe` 的聊天式工作台。
 
+## 界面预览
+
+![EasyAIFlow Screenshot](./screenshot.png)
+
 ## 当前能力
 
 - Claude CLI / Claude Code 桌面桥接

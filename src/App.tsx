@@ -456,6 +456,19 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (allSessions.length === 0) {
+      if (selectedSessionId) {
+        setSelectedSessionId('');
+      }
+      return;
+    }
+
+    if (!selectedSessionId || !allSessions.some((session) => session.id === selectedSessionId)) {
+      setSelectedSessionId(allSessions[0].id);
+    }
+  }, [allSessions, selectedSessionId]);
+
+  useEffect(() => {
     const loadMeta = async () => {
       try {
         const bridge = getBridge();
@@ -617,10 +630,6 @@ export default function App() {
     };
   }, [isResizingPane]);
 
-  if (!selectedSession || !selectedProject || !selectedStreamwork) {
-    return null;
-  }
-
   const clearAttachments = () => {
     setAttachments((current) => {
       current.forEach((attachment) => URL.revokeObjectURL(attachment.url));
@@ -636,7 +645,14 @@ export default function App() {
     setProjects(result.projects);
   };
 
-  const handleUpdateContextReferences = (references: ContextReference[], sessionId = selectedSession.id) => {
+  const handleUpdateContextReferences = (
+    references: ContextReference[],
+    sessionId = selectedSession?.id ?? '',
+  ) => {
+    if (!sessionId) {
+      return;
+    }
+
     setProjects((current) =>
       updateSessionInProjects(current, sessionId, (session) => ({
         ...session,
@@ -716,6 +732,10 @@ export default function App() {
   };
 
   const handleSend = async () => {
+    if (!selectedSession) {
+      return;
+    }
+
     const prompt = draft.trim();
     if ((!prompt && attachments.length === 0) || isSending) {
       return;
@@ -805,6 +825,10 @@ export default function App() {
   };
 
   const handleSendBtwMessage = async (overridePrompt?: string) => {
+    if (!selectedSession) {
+      return;
+    }
+
     const prompt = (overridePrompt ?? btwState.draft).trim();
     if (!prompt || btwState.isSending) {
       return;
@@ -872,6 +896,10 @@ export default function App() {
   };
 
   const handleCloseBtw = async () => {
+    if (!selectedSession) {
+      return;
+    }
+
     const claudeSessionId = btwState.claudeSessionId;
     const cwd = selectedSession.workspace;
     setBtwState({
@@ -965,9 +993,14 @@ export default function App() {
   };
 
   const handleRequestDiff = useCallback(
-    async (filePath: string): Promise<DiffPayload> =>
-      getBridge().getFileDiff({ cwd: selectedSession.workspace, filePath }),
-    [selectedSession.workspace],
+    async (filePath: string): Promise<DiffPayload> => {
+      if (!selectedSession) {
+        throw new Error('No active session.');
+      }
+
+      return getBridge().getFileDiff({ cwd: selectedSession.workspace, filePath });
+    },
+    [selectedSession?.workspace],
   );
 
   const handleCloseProject = async (projectId: string) => {
@@ -1111,6 +1144,8 @@ export default function App() {
         ]
       : [];
 
+  const hasActiveSession = Boolean(selectedSession && selectedProject && selectedStreamwork);
+
   return (
     <div
       className={`desktop-shell${isResizingPane ? ' resizing' : ''}`}
@@ -1118,7 +1153,7 @@ export default function App() {
     >
       <ChatHistory
         projects={projects}
-        selectedSessionId={selectedSession.id}
+        selectedSessionId={selectedSession?.id ?? selectedSessionId}
         sessionIndicators={sessionIndicators}
         onOpenProject={() => {
           void handleOpenProject();
@@ -1155,76 +1190,92 @@ export default function App() {
         onMouseDown={() => setIsResizingPane(true)}
       />
 
-      <main className="conversation-layout">
-        {uiError ? <div className="ui-error-banner">{uiError}</div> : null}
-        <ChatThread session={selectedSession} messages={selectedSession.messages ?? []} />
-        <BtwPanel
-          isOpen={btwState.isOpen}
-          draft={btwState.draft}
-          messages={btwState.messages}
-          isSending={btwState.isSending}
-          tokenUsage={btwState.tokenUsage}
-          inheritedContext={btwState.inheritedContext}
-          onDraftChange={(value) =>
-            setBtwState((current) => ({
-              ...current,
-              draft: value,
-            }))
-          }
-          onSend={() => {
-            void handleSendBtwMessage();
-          }}
-          onClose={() => {
-            void handleCloseBtw();
-          }}
-        />
-        <ChatComposer
-          draft={draft}
-          tokenUsage={selectedSession.tokenUsage}
-          sessionModel={selectedSession.model}
-          contextReferences={displayContextReferences}
-          slashCommands={slashCommands}
-          attachments={attachments}
-          isSending={isSending}
-          model={model}
-          effort={effort}
-          onDraftChange={handleDraftChange}
-          onModelChange={setModel}
-          onEffortChange={setEffort}
-          onUpdateContextReferenceMode={(referenceId, mode) => {
-            handleUpdateContextReferences(
-              displayContextReferences.map((reference) =>
-                reference.id === referenceId
-                  ? {
-                      ...reference,
-                      mode,
-                    }
-                  : reference,
-              ),
-            );
-          }}
-          onRemoveContextReference={(referenceId) => {
-            handleUpdateContextReferences(
-              displayContextReferences.filter((reference) => reference.id !== referenceId),
-            );
-          }}
-          onInsertDroppedPaths={handleInsertDroppedPaths}
-          onAttachFiles={(files) => {
-            void handleAttachFiles(files);
-          }}
-          onRemoveAttachment={handleRemoveAttachment}
-          onSend={() => {
-            void handleSend();
-          }}
-        />
-      </main>
+      {hasActiveSession ? (
+        <>
+          <main className="conversation-layout">
+            {uiError ? <div className="ui-error-banner">{uiError}</div> : null}
+            <ChatThread session={selectedSession} messages={selectedSession.messages ?? []} />
+            <BtwPanel
+              isOpen={btwState.isOpen}
+              draft={btwState.draft}
+              messages={btwState.messages}
+              isSending={btwState.isSending}
+              tokenUsage={btwState.tokenUsage}
+              inheritedContext={btwState.inheritedContext}
+              onDraftChange={(value) =>
+                setBtwState((current) => ({
+                  ...current,
+                  draft: value,
+                }))
+              }
+              onSend={() => {
+                void handleSendBtwMessage();
+              }}
+              onClose={() => {
+                void handleCloseBtw();
+              }}
+            />
+            <ChatComposer
+              draft={draft}
+              tokenUsage={selectedSession.tokenUsage}
+              sessionModel={selectedSession.model}
+              contextReferences={displayContextReferences}
+              slashCommands={slashCommands}
+              attachments={attachments}
+              isSending={isSending}
+              model={model}
+              effort={effort}
+              onDraftChange={handleDraftChange}
+              onModelChange={setModel}
+              onEffortChange={setEffort}
+              onUpdateContextReferenceMode={(referenceId, mode) => {
+                handleUpdateContextReferences(
+                  displayContextReferences.map((reference) =>
+                    reference.id === referenceId
+                      ? {
+                          ...reference,
+                          mode,
+                        }
+                      : reference,
+                  ),
+                );
+              }}
+              onRemoveContextReference={(referenceId) => {
+                handleUpdateContextReferences(
+                  displayContextReferences.filter((reference) => reference.id !== referenceId),
+                );
+              }}
+              onInsertDroppedPaths={handleInsertDroppedPaths}
+              onAttachFiles={(files) => {
+                void handleAttachFiles(files);
+              }}
+              onRemoveAttachment={handleRemoveAttachment}
+              onSend={() => {
+                void handleSend();
+              }}
+            />
+          </main>
 
-      <ContextPanel
-        session={selectedSession}
-        appVersion={appVersion}
-        gitSnapshot={gitSnapshot}
-        onRequestDiff={handleRequestDiff}
-      />
+          <ContextPanel
+            session={selectedSession}
+            appVersion={appVersion}
+            gitSnapshot={gitSnapshot}
+            onRequestDiff={handleRequestDiff}
+          />
+        </>
+      ) : (
+        <>
+          <main className="conversation-layout empty-state-panel">
+            {uiError ? <div className="ui-error-banner">{uiError}</div> : null}
+            <section className="empty-state-card">
+              <p className="empty-state-kicker">Workspace</p>
+              <h1>No open project</h1>
+              <p>Open a project folder from the left panel to restore the workspace.</p>
+            </section>
+          </main>
+          <aside className="empty-side-panel" />
+        </>
+      )}
 
       <ManageDialog
         open={Boolean(dialogState)}

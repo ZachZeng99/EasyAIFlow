@@ -131,6 +131,15 @@ const projectPathToClaudeDirName = (rootPath: string) => {
   return rest ? `${drive}--${rest}` : `${drive}--`;
 };
 
+const nativeClaudeSessionFilePath = (rootPath: string, claudeSessionId: string) => {
+  const dirName = projectPathToClaudeDirName(rootPath);
+  if (!dirName) {
+    return null;
+  }
+
+  return path.join(nativeClaudeProjectsRoot(), dirName, `${claudeSessionId}.jsonl`);
+};
+
 const extractTextFromContent = (content: unknown): string => {
   if (typeof content === 'string') {
     return content;
@@ -218,6 +227,7 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
   let lastAssistantText = '';
   let lastTimestamp: string | number | undefined;
   let nativeSessionId = path.basename(filePath, '.jsonl');
+  let customTitle = '';
 
   for (const line of lines) {
     let parsed: Record<string, unknown>;
@@ -232,6 +242,9 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
     }
     if (typeof parsed.sessionId === 'string') {
       nativeSessionId = parsed.sessionId;
+    }
+    if (parsed.type === 'custom-title' && typeof parsed.customTitle === 'string' && parsed.customTitle.trim()) {
+      customTitle = parsed.customTitle.trim();
     }
     if (parsed.timestamp) {
       lastTimestamp = parsed.timestamp as string | number;
@@ -407,11 +420,52 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
     workspace,
     model,
     messages,
-    title: firstUserText ? firstUserText.slice(0, 42) : `Imported ${nativeSessionId.slice(0, 8)}`,
+    title: customTitle || (firstUserText ? firstUserText.slice(0, 42) : `Imported ${nativeSessionId.slice(0, 8)}`),
     preview: lastAssistantText || firstUserText || 'Imported Claude history.',
     timeLabel: toTimeLabel(lastTimestamp),
     updatedAt: toUpdatedAt(lastTimestamp),
   };
+};
+
+const renameNativeClaudeSession = async (rootPath: string, claudeSessionId: string, nextName: string) => {
+  const filePath = nativeClaudeSessionFilePath(rootPath, claudeSessionId);
+  if (!filePath) {
+    return;
+  }
+
+  let raw = '';
+  try {
+    raw = await readFile(filePath, 'utf8');
+  } catch {
+    return;
+  }
+
+  const nextLine = JSON.stringify({
+    type: 'custom-title',
+    customTitle: nextName,
+    sessionId: claudeSessionId,
+  });
+
+  let found = false;
+  const lines = raw
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        const parsed = JSON.parse(line) as Record<string, unknown>;
+        if (parsed.type === 'custom-title' && parsed.sessionId === claudeSessionId) {
+          found = true;
+          return nextLine;
+        }
+      } catch {
+        return line;
+      }
+
+      return line;
+    });
+
+  const output = found ? lines : [nextLine, ...lines];
+  await writeFile(filePath, `${output.join('\n')}\n`, 'utf8');
 };
 
 const importNativeClaudeSessions = async (project: ProjectRecord) => {
@@ -457,7 +511,7 @@ const importNativeClaudeSessions = async (project: ProjectRecord) => {
     const existing = existingByClaudeSessionId.get(parsed.nativeSessionId);
     const importedSession: SessionRecord = {
       id: existing?.id ?? randomUUID(),
-      title: parsed.title,
+      title: existing?.title ?? parsed.title,
       preview: parsed.preview,
       timeLabel: parsed.timeLabel,
       model: parsed.model,
@@ -469,6 +523,7 @@ const importNativeClaudeSessions = async (project: ProjectRecord) => {
       claudeSessionId: parsed.nativeSessionId,
       updatedAt: existing?.updatedAt ?? parsed.updatedAt,
       groups: existing?.groups ?? [],
+      contextReferences: normalizeContextReferences(existing?.contextReferences),
       tokenUsage: existing?.tokenUsage ?? {
         contextWindow: 0,
         used: 0,
@@ -551,6 +606,23 @@ const ensureTemporaryStreamwork = (project: ProjectRecord) => {
           sessions: [],
         },
   );
+};
+
+const ensureProjectHasSession = (project: ProjectRecord) => {
+  const existingSession = project.dreams.flatMap((dream) => dream.sessions)[0] as SessionRecord | undefined;
+  if (existingSession) {
+    return existingSession;
+  }
+
+  ensureTemporaryStreamwork(project);
+  const targetStreamwork = project.dreams.find((dream) => dream.isTemporary) ?? project.dreams[0];
+  if (!targetStreamwork) {
+    throw new Error('Project does not contain a valid streamwork.');
+  }
+
+  const session = createBaseSession(project, targetStreamwork, 'New Session 1', project.rootPath);
+  targetStreamwork.sessions.unshift(session);
+  return session;
 };
 
 const buildInitialProjects = () => {
@@ -962,11 +1034,15 @@ export const createProject = async (name: string, rootPath: string): Promise<Pro
 
   const existingProject = state.projects.find((project) => project.rootPath.toLowerCase() === rootPath.toLowerCase());
   if (existingProject) {
-    const existingSession =
-      (existingProject.dreams[0]?.sessions[0] as SessionRecord | undefined) ??
-      createBaseSession(existingProject, existingProject.dreams[0], 'New Session 1', existingProject.rootPath);
+    existingProject.name = name;
+    existingProject.isClosed = false;
+    ensureTemporaryStreamwork(existingProject);
+    await importNativeClaudeSessions(existingProject);
+    const existingSession = ensureProjectHasSession(existingProject);
+    await saveState(state);
+
     return {
-      projects: cloneProjects(state.projects),
+      projects: cloneProjects(state.projects.filter((project) => !project.isClosed)),
       project: JSON.parse(JSON.stringify(existingProject)) as ProjectRecord,
       session: JSON.parse(JSON.stringify(existingSession)) as SessionRecord,
     };
@@ -1084,6 +1160,7 @@ export const renameEntity = async (
   nextName: string,
 ): Promise<RenameEntityResult> => {
   const state = await loadState();
+  const nativeRenameTasks: Array<Promise<void>> = [];
 
   state.projects.forEach((project) => {
     if (kind === 'project' && project.id === id) {
@@ -1101,6 +1178,9 @@ export const renameEntity = async (
       dream.sessions.forEach((session) => {
         if (kind === 'session' && session.id === id) {
           session.title = nextName;
+          if (session.claudeSessionId) {
+            nativeRenameTasks.push(renameNativeClaudeSession(project.rootPath, session.claudeSessionId, nextName));
+          }
         }
         if (kind === 'project' && session.projectId === project.id) {
           session.projectName = project.name;
@@ -1129,6 +1209,7 @@ export const renameEntity = async (
     });
   });
 
+  await Promise.allSettled(nativeRenameTasks);
   await saveState(state);
   return {
     projects: cloneProjects(state.projects),
