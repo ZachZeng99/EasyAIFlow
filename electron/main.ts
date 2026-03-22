@@ -1,0 +1,1355 @@
+import { app, BrowserWindow, clipboard, dialog, ipcMain } from 'electron';
+import { execFile, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
+import {
+  appendMessagesToSession,
+  closeProject,
+  createProject,
+  createSession,
+  createSessionInStreamwork,
+  createStreamwork,
+  deleteSession,
+  deleteStreamwork,
+  ensureSessionRecord,
+  findSession,
+  getProjects,
+  renameEntity,
+  reorderStreamworks,
+  setSessionRuntime,
+  updateSessionContextReferences,
+  upsertSessionMessage,
+  updateAssistantMessage,
+} from './sessionStore.js';
+import type {
+  BtwResponse,
+  ClaudeStreamEvent,
+  ConversationMessage,
+  ContextReference,
+  DiffPayload,
+  MessageAttachment,
+  PendingAttachment,
+  SessionRecord,
+  SessionSummary,
+  TokenUsage,
+} from '../src/data/types.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const devServerUrl = 'http://127.0.0.1:4173';
+const execFileAsync = promisify(execFile);
+const activeRuns = new Map<string, ReturnType<typeof spawn>>();
+const slashCommandCache = new Map<string, { commands: string[]; expiresAt: number }>();
+const attachmentRoot = () => path.join(app.getPath('userData'), 'attachments');
+const claudeSettingsPath = () => path.join(process.env.USERPROFILE ?? app.getPath('home'), '.claude', 'settings.json');
+
+const getConfiguredClaudeModel = async () => {
+  try {
+    const raw = await readFile(claudeSettingsPath(), 'utf8');
+    const parsed = JSON.parse(raw) as { model?: unknown };
+    return typeof parsed.model === 'string' && parsed.model.trim() ? parsed.model.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const getSlashCommands = async (cwd: string, model?: string) => {
+  const cacheKey = `${cwd}::${model ?? ''}`;
+  const cached = slashCommandCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.commands;
+  }
+
+  return new Promise<string[]>((resolve) => {
+    const args = [
+      '-p',
+      'Reply with only OK',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--no-session-persistence',
+      '--permission-mode',
+      'bypassPermissions',
+    ];
+
+    if (model) {
+      args.push('--model', model);
+    }
+
+    const child = spawn('claude', args, {
+      cwd,
+      windowsHide: true,
+    });
+
+    let stdoutBuffer = '';
+    let settled = false;
+
+    const finish = (commands: string[]) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      const normalized = [...new Set(commands.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim()))];
+      slashCommandCache.set(cacheKey, {
+        commands: normalized,
+        expiresAt: Date.now() + 60_000,
+      });
+      if (!child.killed) {
+        child.kill();
+      }
+      resolve(normalized);
+    };
+
+    const timeout = setTimeout(() => finish([]), 8_000);
+
+    child.stdout.on('data', (chunk: Buffer | string) => {
+      stdoutBuffer += chunk.toString();
+      const lines = stdoutBuffer.split(/\r?\n/);
+      stdoutBuffer = lines.pop() ?? '';
+
+      for (const line of lines) {
+        if (!line.trim()) {
+          continue;
+        }
+
+        try {
+          const parsed = JSON.parse(line) as Record<string, unknown>;
+          if (parsed.type === 'system' && parsed.subtype === 'init' && Array.isArray(parsed.slash_commands)) {
+            clearTimeout(timeout);
+            finish(
+              parsed.slash_commands.filter((item): item is string => typeof item === 'string'),
+            );
+            return;
+          }
+        } catch {
+          continue;
+        }
+      }
+    });
+
+    child.on('error', () => {
+      clearTimeout(timeout);
+      finish([]);
+    });
+
+    child.on('close', () => {
+      clearTimeout(timeout);
+      finish([]);
+    });
+  });
+};
+
+const deleteNativeClaudeSession = async (cwd: string, claudeSessionId?: string) => {
+  if (!claudeSessionId) {
+    return;
+  }
+
+  const normalized = cwd.replace(/\//g, '\\').replace(/\\+$/, '');
+  const match = normalized.match(/^([A-Za-z]):\\?(.*)$/);
+  if (!match) {
+    return;
+  }
+
+  const drive = match[1];
+  const rest = match[2]
+    .split('\\')
+    .filter(Boolean)
+    .join('-');
+  const dirName = rest ? `${drive}--${rest}` : `${drive}--`;
+  const nativeDir = path.join(process.env.USERPROFILE ?? app.getPath('home'), '.claude', 'projects', dirName);
+
+  await Promise.allSettled([
+    import('node:fs/promises').then(({ rm }) => rm(path.join(nativeDir, `${claudeSessionId}.jsonl`), { force: true })),
+    import('node:fs/promises').then(({ rm }) => rm(path.join(nativeDir, claudeSessionId), { force: true, recursive: true })),
+  ]);
+};
+
+const runBtwPrompt = async (
+  prompt: string,
+  cwd: string,
+  options?: {
+    model?: string;
+    effort?: 'low' | 'medium' | 'high' | 'max';
+    claudeSessionId?: string;
+    baseClaudeSessionId?: string;
+  },
+): Promise<BtwResponse> =>
+  new Promise((resolve, reject) => {
+    const args = [
+      '-p',
+      prompt,
+      '--output-format',
+      'stream-json',
+      '--include-partial-messages',
+      '--permission-mode',
+      'bypassPermissions',
+      '--verbose',
+    ];
+
+    if (options?.model) {
+      args.push('--model', options.model);
+    }
+
+    if (options?.effort) {
+      args.push('--effort', options.effort);
+    }
+
+    let inheritedContext = false;
+
+    if (options?.claudeSessionId) {
+      args.push('--resume', options.claudeSessionId);
+      inheritedContext = true;
+    } else if (options?.baseClaudeSessionId) {
+      args.push('--resume', options.baseClaudeSessionId, '--fork-session');
+      inheritedContext = true;
+    } else {
+      args.push('-n', 'BTW');
+    }
+
+    const child = spawn('claude', args, {
+      cwd,
+      windowsHide: true,
+    });
+
+    let stdoutBuffer = '';
+    let stderrBuffer = '';
+    let content = '';
+    let claudeSessionId = options?.claudeSessionId;
+    let model = options?.model;
+    let tokenUsage: TokenUsage | undefined;
+
+    const processLine = (line: string) => {
+      if (!line.trim()) {
+        return;
+      }
+
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      if (typeof parsed.session_id === 'string') {
+        claudeSessionId = parsed.session_id;
+      }
+
+      if (parsed.type === 'assistant') {
+        const message = parsed.message as { model?: string; content?: Array<{ type?: string; text?: string }> };
+        if (typeof message?.model === 'string' && message.model.trim()) {
+          model = message.model.trim();
+        }
+        const text = message?.content
+          ?.filter((block) => block.type === 'text' && typeof block.text === 'string')
+          .map((block) => block.text)
+          .join('');
+        if (text) {
+          content = text;
+        }
+      }
+
+      if (parsed.type === 'result') {
+        tokenUsage = mapTokenUsage(parsed);
+        if (!content) {
+          content = String(parsed.result ?? '');
+        }
+      }
+    };
+
+    child.stdout.on('data', (chunk: Buffer | string) => {
+      stdoutBuffer += chunk.toString();
+      const lines = stdoutBuffer.split(/\r?\n/);
+      stdoutBuffer = lines.pop() ?? '';
+      lines.forEach(processLine);
+    });
+
+    child.stderr.on('data', (chunk: Buffer | string) => {
+      stderrBuffer += chunk.toString();
+    });
+
+    child.on('error', (error) => {
+      reject(error);
+    });
+
+    child.on('close', (code) => {
+      if (stdoutBuffer.trim()) {
+        processLine(stdoutBuffer.trim());
+      }
+
+      if (code !== 0) {
+        reject(new Error(stderrBuffer.trim() || `Claude exited with code ${code ?? 'unknown'}.`));
+        return;
+      }
+
+      resolve({
+        claudeSessionId,
+        model,
+        content,
+        tokenUsage,
+        inheritedContext,
+      });
+    });
+  });
+
+const stopSessions = (sessionIds: string[]) => {
+  sessionIds.forEach((sessionId) => {
+    const run = activeRuns.get(sessionId);
+    if (run && !run.killed) {
+      run.kill();
+    }
+    activeRuns.delete(sessionId);
+  });
+};
+
+const loadDevServer = async (window: BrowserWindow, retries = 20) => {
+  for (let attempt = 0; attempt < retries; attempt += 1) {
+    try {
+      await window.loadURL(devServerUrl);
+      return;
+    } catch (error) {
+      if (attempt === retries - 1) {
+        throw error;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    }
+  }
+};
+
+const broadcastClaudeEvent = (payload: ClaudeStreamEvent) => {
+  BrowserWindow.getAllWindows().forEach((window) => {
+    window.webContents.send('claude:event', payload);
+  });
+};
+
+const emitTraceMessage = async (
+  sessionId: string,
+  message: ConversationMessage,
+) => {
+  await upsertSessionMessage(sessionId, message);
+  broadcastClaudeEvent({
+    type: 'trace',
+    sessionId,
+    message,
+  });
+};
+
+const nowLabel = () =>
+  new Intl.DateTimeFormat('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    month: 'numeric',
+    day: 'numeric',
+  }).format(new Date());
+
+const buildMessageTitle = (content: string, fallback: string) => {
+  const firstLine = content.split(/\r?\n/)[0]?.trim();
+  if (!firstLine) {
+    return fallback;
+  }
+
+  return firstLine.slice(0, 42);
+};
+
+const truncateText = (value: string, maxLength: number) => {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return `${value.slice(0, maxLength).trimEnd()}\n...[truncated]`;
+};
+
+const compactText = (value: string, maxLength = 220) =>
+  truncateText(
+    value
+      .replace(/\r?\n+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim(),
+    maxLength,
+  );
+
+const compactMultilineText = (value: string, maxLength = 600) =>
+  truncateText(
+    value
+      .split(/\r?\n/)
+      .map((line) => line.trimEnd())
+      .filter((line, index, lines) => line || (index > 0 && index < lines.length - 1))
+      .join('\n')
+      .trim(),
+    maxLength,
+  );
+
+const getConversationMessages = (session: SessionRecord) =>
+  (session.messages ?? []).filter(
+    (message) =>
+      (message.role === 'user' || message.role === 'assistant') && Boolean(message.content.trim()),
+  );
+
+const buildSessionSummaryContext = (session: SessionRecord) => {
+  const messages = getConversationMessages(session);
+  const firstUser = messages.find((message) => message.role === 'user');
+  const latestUser = [...messages].reverse().find((message) => message.role === 'user');
+  const latestAssistant = [...messages].reverse().find((message) => message.role === 'assistant');
+  const userCount = messages.filter((message) => message.role === 'user').length;
+  const assistantCount = messages.filter((message) => message.role === 'assistant').length;
+  const recentExcerpts = messages
+    .slice(-4)
+    .map((message) => `${message.role === 'user' ? 'User' : 'Assistant'}: ${compactText(message.content, 140)}`);
+
+  return [
+    `Session: ${session.title}`,
+    `Session ID: ${session.id}`,
+    `Project: ${session.projectName}`,
+    `Streamwork: ${session.dreamName}`,
+    `Updated: ${session.timeLabel}`,
+    `Model: ${session.model}`,
+    `Messages: ${userCount} user / ${assistantCount} assistant`,
+    latestAssistant ? `Final assistant conclusion:\n${compactMultilineText(latestAssistant.content, 900)}` : '',
+    latestUser ? `Latest user intent: ${compactText(latestUser.content, 260)}` : '',
+    firstUser ? `Initial ask: ${compactText(firstUser.content)}` : '',
+    recentExcerpts.length > 0 ? `Recent excerpts:\n${recentExcerpts.map((item) => `- ${item}`).join('\n')}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+};
+
+const buildSessionTranscriptContext = (session: SessionRecord) => {
+  const transcript = getConversationMessages(session)
+    .map(
+      (message) =>
+        `[${message.role.toUpperCase()} | ${message.timestamp}${message.title ? ` | ${message.title}` : ''}]\n${message.content.trim()}`,
+    )
+    .join('\n\n');
+
+  return truncateText(
+    [
+      `Session: ${session.title}`,
+      `Session ID: ${session.id}`,
+      `Project: ${session.projectName}`,
+      `Streamwork: ${session.dreamName}`,
+      'Transcript:',
+      transcript || 'No user or assistant messages were recorded.',
+    ].join('\n'),
+    16000,
+  );
+};
+
+const buildContextReferencePrompt = async (sessionId: string, overrideReferences?: ContextReference[]) => {
+  const currentSession = await findSession(sessionId);
+  if (!currentSession) {
+    return '';
+  }
+
+  const references = (overrideReferences ?? currentSession.contextReferences ?? []).filter(Boolean);
+  if (references.length === 0) {
+    return '';
+  }
+
+  const projects = await getProjects();
+  const storedSessions = projects.flatMap((project) =>
+    project.dreams.flatMap((dream) => dream.sessions.map((session) => session as SessionRecord)),
+  );
+  const sessionById = new Map(storedSessions.map((session) => [session.id, session]));
+
+  const blocks = references
+    .map((reference) => {
+      const resolvedSessions =
+        reference.kind === 'session'
+          ? reference.sessionId && reference.sessionId !== currentSession.id
+            ? [sessionById.get(reference.sessionId)].filter((session): session is SessionRecord => Boolean(session))
+            : []
+          : storedSessions
+              .filter(
+                (session) =>
+                  session.dreamId === reference.streamworkId &&
+                  session.id !== currentSession.id,
+              )
+              .sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));
+
+      if (resolvedSessions.length === 0) {
+        return '';
+      }
+
+      const detail =
+        reference.mode === 'full'
+          ? resolvedSessions.map((session) => buildSessionTranscriptContext(session)).join('\n\n')
+          : resolvedSessions.map((session) => buildSessionSummaryContext(session)).join('\n\n');
+
+      const title =
+        reference.kind === 'session'
+          ? `Referenced session (${reference.mode})`
+          : `Referenced streamwork history (${reference.mode})`;
+
+      const label =
+        reference.kind === 'session'
+          ? reference.label || resolvedSessions[0]?.title || 'Session'
+          : reference.label || `${resolvedSessions[0]?.dreamName ?? 'Streamwork'} history`;
+
+      return truncateText(
+        [
+          `## ${title}`,
+          `Label: ${label}`,
+          `Entries: ${resolvedSessions.length}`,
+          detail,
+        ].join('\n'),
+        reference.mode === 'full' ? 36000 : 22000,
+      );
+    })
+    .filter(Boolean);
+
+  if (blocks.length === 0) {
+    return '';
+  }
+
+  return [
+    'Referenced conversation context is provided below.',
+    'Use it as supporting context when it is relevant to the current request.',
+    'Do not claim events or files beyond the injected context.',
+    blocks.join('\n\n'),
+  ].join('\n\n');
+};
+
+type ClaudeRunState = {
+  content: string;
+  claudeSessionId?: string;
+  model?: string;
+  tokenUsage?: TokenUsage;
+  receivedResult: boolean;
+  toolTraces: Map<string, ConversationMessage>;
+};
+
+const summarizeToolInput = (input: unknown) => {
+  if (typeof input === 'string') {
+    return input.trim();
+  }
+
+  if (input && typeof input === 'object') {
+    const record = input as Record<string, unknown>;
+    if (typeof record.command === 'string') {
+      return record.command;
+    }
+    if (typeof record.pattern === 'string') {
+      return `pattern: ${record.pattern}`;
+    }
+    if (typeof record.file_path === 'string') {
+      return record.file_path;
+    }
+
+    const serialized = JSON.stringify(input, null, 2);
+    return serialized === '{}' || serialized === '[]' ? '' : serialized;
+  }
+
+  return typeof input === 'undefined' || input === null ? '' : String(input);
+};
+
+const appendTraceContent = (current: string, next: string) => {
+  const normalizedCurrent = current.trim();
+  const normalizedNext = next.trim();
+  if (!normalizedNext) {
+    return normalizedCurrent;
+  }
+  if (!normalizedCurrent) {
+    return normalizedNext;
+  }
+  return `${normalizedCurrent}\n${normalizedNext}`;
+};
+
+const finalizeToolTraces = async (sessionId: string, state: ClaudeRunState) => {
+  for (const trace of state.toolTraces.values()) {
+    if (!trace.status || trace.status === 'running' || trace.status === 'streaming') {
+      trace.status = 'complete';
+      await emitTraceMessage(sessionId, trace);
+    }
+  }
+};
+
+const completeAssistantRun = async (
+  sessionId: string,
+  assistantMessageId: string,
+  state: ClaudeRunState,
+  fallbackContent = '',
+) => {
+  const content = state.content || fallbackContent;
+  await finalizeToolTraces(sessionId, state);
+
+  await updateAssistantMessage(sessionId, assistantMessageId, (message) => {
+    message.content = content;
+    message.status = 'complete';
+    message.title = buildMessageTitle(message.content, 'Claude response');
+  });
+
+  await setSessionRuntime(sessionId, {
+    claudeSessionId: state.claudeSessionId,
+    model: state.model,
+    preview: content,
+    timeLabel: 'Just now',
+    tokenUsage: state.tokenUsage,
+  });
+
+  broadcastClaudeEvent({
+    type: 'complete',
+    sessionId,
+    messageId: assistantMessageId,
+    content,
+    claudeSessionId: state.claudeSessionId,
+    tokenUsage: state.tokenUsage,
+  });
+};
+
+const parseGitBranchLine = (line: string) => {
+  const normalized = line.replace(/^##\s*/, '').trim();
+  const branchPart = normalized.split(' [')[0] ?? normalized;
+  const [branch, tracking] = branchPart.split('...');
+  const aheadMatch = normalized.match(/ahead (\d+)/);
+  const behindMatch = normalized.match(/behind (\d+)/);
+
+  return {
+    branch: branch?.trim() || 'unknown',
+    tracking: tracking?.trim(),
+    ahead: aheadMatch ? Number(aheadMatch[1]) : 0,
+    behind: behindMatch ? Number(behindMatch[1]) : 0,
+  };
+};
+
+const parseGitStatusCode = (rawCode: string) => {
+  const code = rawCode.trim();
+  if (code === '??') {
+    return '??';
+  }
+  if (code.includes('A')) {
+    return 'A';
+  }
+  if (code.includes('D')) {
+    return 'D';
+  }
+  if (code.includes('R')) {
+    return 'R';
+  }
+  return 'M';
+};
+
+const getGitSnapshot = async (cwd: string) => {
+  try {
+    const [{ stdout: statusStdout }, { stdout: rootStdout }] = await Promise.all([
+      execFileAsync('git', ['status', '--short', '--branch', '--untracked-files=all'], { cwd }),
+      execFileAsync('git', ['rev-parse', '--show-toplevel'], { cwd }),
+    ]);
+
+    const lines = statusStdout.split(/\r?\n/).filter(Boolean);
+    const branchMeta = parseGitBranchLine(lines[0] ?? '## unknown');
+    const files = lines.slice(1).map((line) => {
+      const statusCode = line.slice(0, 2);
+      const filePath = line.slice(3).trim();
+
+      return {
+        path: filePath,
+        status: parseGitStatusCode(statusCode),
+        additions: 0,
+        deletions: 0,
+      };
+    });
+
+    return {
+      ...branchMeta,
+      dirty: files.length > 0,
+      changedFiles: files,
+      rootPath: rootStdout.trim(),
+      source: 'git' as const,
+    };
+  } catch {
+    return null;
+  }
+};
+
+const readNumber = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : undefined);
+
+const mapTokenUsage = (payload: Record<string, unknown>): TokenUsage | undefined => {
+  const resultUsage = payload.usage as
+    | {
+        input_tokens?: number;
+        output_tokens?: number;
+        cache_read_input_tokens?: number;
+        cache_creation_input_tokens?: number;
+      }
+    | undefined;
+  const modelUsage = payload.modelUsage as Record<string, { contextWindow?: number }> | undefined;
+  const modelMeta = modelUsage ? Object.values(modelUsage)[0] : undefined;
+  const resultPayload =
+    payload.result && typeof payload.result === 'object' ? (payload.result as Record<string, unknown>) : undefined;
+  const contextWindowData =
+    (payload.context_window as Record<string, unknown> | undefined) ??
+    (resultPayload?.context_window as Record<string, unknown> | undefined);
+
+  const input = readNumber(contextWindowData?.total_input_tokens) ?? resultUsage?.input_tokens ?? 0;
+  const output = readNumber(contextWindowData?.total_output_tokens) ?? resultUsage?.output_tokens ?? 0;
+  const cached = (resultUsage?.cache_read_input_tokens ?? 0) + (resultUsage?.cache_creation_input_tokens ?? 0);
+  const used = input + output + cached;
+
+  const modelContextWindow = readNumber(modelMeta?.contextWindow);
+  const explicitContextWindow =
+    readNumber(contextWindowData?.max_tokens) ??
+    readNumber(contextWindowData?.max_input_tokens) ??
+    readNumber(contextWindowData?.window_size) ??
+    readNumber(contextWindowData?.context_window) ??
+    readNumber(contextWindowData?.total_tokens);
+  const rawUsedPercentage = readNumber(contextWindowData?.used_percentage);
+  const usedPercentage =
+    rawUsedPercentage !== undefined
+      ? Math.max(0, Math.min(100, rawUsedPercentage <= 1 ? rawUsedPercentage * 100 : rawUsedPercentage))
+      : undefined;
+
+  const hasContextMetadata =
+    contextWindowData !== undefined ||
+    modelContextWindow !== undefined ||
+    explicitContextWindow !== undefined ||
+    usedPercentage !== undefined;
+
+  if (!hasContextMetadata) {
+    return undefined;
+  }
+
+  let contextWindow = explicitContextWindow ?? modelContextWindow ?? 0;
+  let windowSource: TokenUsage['windowSource'] = contextWindow > 0 ? 'runtime' : 'unknown';
+
+  if (contextWindow === 0 && usedPercentage && used > 0) {
+    contextWindow = Math.round(used / (usedPercentage / 100));
+    windowSource = contextWindow > 0 ? 'derived' : 'unknown';
+  }
+  return {
+    contextWindow,
+    used,
+    input,
+    output,
+    cached,
+    usedPercentage,
+    windowSource,
+  };
+};
+
+const extensionFromMime = (mimeType: string) => {
+  if (mimeType === 'image/png') {
+    return '.png';
+  }
+  if (mimeType === 'image/jpeg') {
+    return '.jpg';
+  }
+  if (mimeType === 'image/webp') {
+    return '.webp';
+  }
+  if (mimeType === 'image/gif') {
+    return '.gif';
+  }
+  return '.bin';
+};
+
+const sanitizeAttachmentName = (value: string) => {
+  const sanitized = value.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-').trim();
+  return sanitized || 'attachment';
+};
+
+const buildAttachmentFileName = (attachment: PendingAttachment) => {
+  const preferredName = sanitizeAttachmentName(path.basename(attachment.name || 'attachment'));
+  const hasExtension = path.extname(preferredName).length > 0;
+  const safeName = hasExtension ? preferredName : `${preferredName}${extensionFromMime(attachment.mimeType)}`;
+  return `${Date.now()}-${attachment.id}-${safeName}`;
+};
+
+const saveAttachments = async (sessionId: string, attachments: PendingAttachment[]): Promise<MessageAttachment[]> => {
+  if (attachments.length === 0) {
+    return [];
+  }
+
+  const dir = path.join(attachmentRoot(), sessionId);
+  const needsCopy = attachments.some((attachment) => !attachment.path);
+  if (needsCopy) {
+    await mkdir(dir, { recursive: true });
+  }
+
+  const saved = await Promise.all(
+    attachments.map(async (attachment) => {
+      if (attachment.path) {
+        return {
+          id: attachment.id,
+          name: attachment.name,
+          path: attachment.path,
+          mimeType: attachment.mimeType,
+          size: attachment.size,
+        };
+      }
+
+      if (!attachment.dataUrl) {
+        throw new Error(`Attachment ${attachment.name || attachment.id} is missing both path and data.`);
+      }
+
+      const [, base64 = ''] = (attachment.dataUrl ?? '').split(',');
+      const fileName = buildAttachmentFileName(attachment);
+      const filePath = path.join(dir, fileName);
+      await writeFile(filePath, Buffer.from(base64, 'base64'));
+
+      return {
+        id: attachment.id,
+        name: attachment.name,
+        path: filePath,
+        mimeType: attachment.mimeType,
+        size: attachment.size,
+      };
+    }),
+  );
+
+  return saved;
+};
+
+const buildPromptWithAttachments = (
+  prompt: string,
+  attachments: MessageAttachment[],
+  referenceContext?: string,
+) => {
+  const parts: string[] = [];
+
+  if (referenceContext?.trim()) {
+    parts.push(referenceContext.trim());
+  }
+
+  parts.push(prompt);
+
+  if (attachments.length > 0) {
+    const lines = attachments.map(
+      (attachment) => `- ${attachment.path} (${attachment.mimeType || 'application/octet-stream'}, ${attachment.size} bytes)`,
+    );
+    parts.push(
+      `Attached local files:\n${lines.join('\n')}\n\nPlease inspect these local files if they are relevant to the request.`,
+    );
+  }
+
+  return parts.join('\n\n');
+};
+
+const cloneMessageContextReferences = (references: ContextReference[] | undefined) =>
+  (references ?? []).map((reference) => ({
+    ...reference,
+  }));
+
+const getFileDiff = async (cwd: string, filePath: string): Promise<DiffPayload> => {
+  const normalized = filePath.replace(/\//g, path.sep);
+  try {
+    const { stdout: statusStdout } = await execFileAsync('git', ['status', '--porcelain', '--', normalized], { cwd });
+    const statusLine = statusStdout.split(/\r?\n/).find(Boolean) ?? '';
+
+    if (statusLine.startsWith('??')) {
+      try {
+        const absolutePath = path.isAbsolute(normalized) ? normalized : path.join(cwd, normalized);
+        const preview = await readFile(absolutePath, 'utf8');
+        return {
+          filePath: normalized,
+          kind: 'untracked',
+          content: `# Untracked file: ${normalized}\n\n${preview.slice(0, 12000)}`,
+        };
+      } catch {
+        return {
+          filePath: normalized,
+          kind: 'missing',
+          content: 'Unable to read this untracked file.',
+        };
+      }
+    }
+
+    const { stdout: diffStdout } = await execFileAsync('git', ['diff', '--', normalized], { cwd });
+    if (diffStdout.trim()) {
+      return {
+        filePath: normalized,
+        kind: 'git',
+        content: diffStdout,
+      };
+    }
+
+    const { stdout: cachedStdout } = await execFileAsync('git', ['diff', '--cached', '--', normalized], { cwd });
+    if (cachedStdout.trim()) {
+      return {
+        filePath: normalized,
+        kind: 'git',
+        content: cachedStdout,
+      };
+    }
+
+    const absolutePath = path.isAbsolute(normalized) ? normalized : path.join(cwd, normalized);
+    const preview = await readFile(absolutePath, 'utf8');
+    return {
+      filePath: normalized,
+      kind: 'preview',
+      content: preview.slice(0, 12000),
+    };
+  } catch {
+    return {
+      filePath: normalized,
+      kind: 'missing',
+      content: 'No diff available for this file.',
+    };
+  }
+};
+
+const openProjectDirectory = async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openDirectory'],
+    title: 'Open Project Folder',
+  });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return null;
+  }
+
+  const rootPath = result.filePaths[0];
+  const name = path.basename(rootPath);
+  return createProject(name, rootPath);
+};
+
+const handleClaudeLine = async (
+  sessionId: string,
+  assistantMessageId: string,
+  line: string,
+  state: ClaudeRunState,
+) => {
+  if (!line.trim()) {
+    return;
+  }
+
+  const parsed = JSON.parse(line) as Record<string, unknown>;
+
+  if (typeof parsed.session_id === 'string') {
+    state.claudeSessionId = parsed.session_id;
+  }
+
+  if (parsed.type === 'stream_event') {
+    const event = parsed.event as {
+      type?: string;
+      delta?: { type?: string; text?: string };
+      content_block?: { type?: string; name?: string; input?: unknown };
+    };
+    if (event?.type === 'content_block_delta' && event.delta?.type === 'text_delta' && event.delta.text) {
+      state.content += event.delta.text;
+      await updateAssistantMessage(sessionId, assistantMessageId, (message) => {
+        message.content = state.content;
+        message.status = 'streaming';
+        message.title = buildMessageTitle(state.content, 'Claude response');
+      });
+
+      broadcastClaudeEvent({
+        type: 'delta',
+        sessionId,
+        messageId: assistantMessageId,
+        delta: event.delta.text,
+      });
+    }
+
+    if (event?.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
+      const toolId = String((event.content_block as { id?: string }).id ?? randomUUID());
+      const message: ConversationMessage = {
+        id: toolId,
+        role: 'system',
+        kind: 'tool_use',
+        timestamp: nowLabel(),
+        title: event.content_block.name ?? 'Tool Use',
+        content: summarizeToolInput(event.content_block.input),
+        status: 'running',
+      };
+      state.toolTraces.set(toolId, message);
+      await emitTraceMessage(sessionId, message);
+    }
+  }
+
+  if (parsed.type === 'assistant') {
+    const message = parsed.message as {
+      model?: string;
+      content?: Array<{ type?: string; text?: string; name?: string; input?: unknown }>;
+    };
+    if (typeof message?.model === 'string' && message.model.trim()) {
+      state.model = message.model.trim();
+    }
+    const finalText = message?.content
+      ?.filter((block) => block.type === 'text' && typeof block.text === 'string')
+      .map((block) => block.text)
+      .join('') ?? state.content;
+    state.content = finalText;
+
+    for (const block of message?.content ?? []) {
+      if (block.type === 'tool_use') {
+        const inputSummary = summarizeToolInput(block.input);
+        const toolId = String((block as { id?: string }).id ?? randomUUID());
+        const existing = state.toolTraces.get(toolId) ?? {
+          id: toolId,
+          role: 'system',
+          kind: 'tool_use',
+          timestamp: nowLabel(),
+          title: block.name ?? 'Tool Use',
+          content: inputSummary,
+          status: 'running',
+        };
+        existing.title = block.name ?? existing.title;
+        if (!existing.content && inputSummary) {
+          existing.content = inputSummary;
+        }
+        state.toolTraces.set(toolId, existing);
+        await emitTraceMessage(sessionId, existing);
+      }
+    }
+  }
+
+  if (parsed.type === 'progress') {
+    const toolUseId = String(parsed.toolUseID ?? '');
+    if (toolUseId && state.toolTraces.has(toolUseId)) {
+      const current = state.toolTraces.get(toolUseId)!;
+      current.content = appendTraceContent(
+        current.content,
+        String((parsed.data as { statusMessage?: string; command?: string })?.statusMessage ?? (parsed.data as { command?: string })?.command ?? 'Progress update'),
+      );
+      current.status = 'running';
+      await emitTraceMessage(sessionId, current);
+    }
+  }
+
+  if (parsed.type === 'user' && parsed.isMeta !== true) {
+    const content = (parsed.message as { content?: unknown })?.content;
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        if (
+          block &&
+          typeof block === 'object' &&
+          (block as { type?: string }).type === 'tool_result' &&
+          typeof (block as { tool_use_id?: string }).tool_use_id === 'string'
+        ) {
+          const toolUseId = (block as { tool_use_id: string }).tool_use_id;
+          const current = state.toolTraces.get(toolUseId);
+          if (current) {
+            const resultText = String((block as { content?: string }).content ?? 'Tool result returned.');
+            current.content = appendTraceContent(current.content, resultText);
+            current.status = (block as { is_error?: boolean }).is_error ? 'error' : 'success';
+            await emitTraceMessage(sessionId, current);
+          }
+        }
+      }
+    }
+  }
+
+  if (parsed.type === 'result') {
+    state.receivedResult = true;
+    state.tokenUsage = mapTokenUsage(parsed);
+    await completeAssistantRun(sessionId, assistantMessageId, state, String(parsed.result ?? ''));
+  }
+};
+
+const runClaudePrint = async (
+  sessionId: string,
+  prompt: string,
+  pendingAttachments: PendingAttachment[] = [],
+  fallbackSession?: SessionSummary,
+  options?: {
+    model?: string;
+    effort?: 'low' | 'medium' | 'high' | 'max';
+    references?: ContextReference[];
+  },
+) => {
+  let session = (await findSession(sessionId)) ?? (fallbackSession ? await ensureSessionRecord(fallbackSession) : null);
+  if (!session) {
+    throw new Error('Session not found');
+  }
+  if (activeRuns.has(sessionId)) {
+    throw new Error('This session is already running.');
+  }
+
+  if (options?.references) {
+    await updateSessionContextReferences(sessionId, options.references);
+    session = await findSession(sessionId);
+    if (!session) {
+      throw new Error('Session not found');
+    }
+  }
+
+  const attachments = await saveAttachments(sessionId, pendingAttachments);
+  const referenceContext = await buildContextReferencePrompt(sessionId, options?.references);
+  const resolvedPrompt = buildPromptWithAttachments(prompt, attachments, referenceContext);
+
+  const userMessage: ConversationMessage = {
+    id: randomUUID(),
+    role: 'user',
+    timestamp: nowLabel(),
+    title: buildMessageTitle(prompt, 'User prompt'),
+    content: prompt,
+    status: 'complete',
+    contextReferences: cloneMessageContextReferences(options?.references),
+    attachments,
+  };
+
+  const assistantMessage: ConversationMessage = {
+    id: randomUUID(),
+    role: 'assistant',
+    timestamp: nowLabel(),
+    title: 'Claude response',
+    content: '',
+    status: 'streaming',
+  };
+
+  const projects = await appendMessagesToSession(
+    sessionId,
+    [userMessage, assistantMessage],
+    prompt,
+    'Just now',
+  );
+
+  const args = [
+    '-p',
+    resolvedPrompt,
+    '--output-format',
+    'stream-json',
+    '--include-partial-messages',
+    '--permission-mode',
+    'bypassPermissions',
+    '--verbose',
+  ];
+
+  if (options?.model) {
+    args.push('--model', options.model);
+  }
+
+  if (options?.effort) {
+    args.push('--effort', options.effort);
+  }
+
+  if (session.claudeSessionId) {
+    args.push('--resume', session.claudeSessionId);
+  } else {
+    args.push('-n', session.title);
+  }
+
+  const child = spawn('claude', args, {
+    cwd: session.workspace,
+    windowsHide: true,
+  });
+
+  activeRuns.set(sessionId, child);
+
+  let stdoutBuffer = '';
+  let stderrBuffer = '';
+  const runState: ClaudeRunState = {
+    content: '',
+    claudeSessionId: session.claudeSessionId,
+    model: session.model,
+    tokenUsage: session.tokenUsage,
+    receivedResult: false,
+    toolTraces: new Map<string, ConversationMessage>(),
+  };
+
+  child.stdout.on('data', (chunk: Buffer | string) => {
+    stdoutBuffer += chunk.toString();
+    const lines = stdoutBuffer.split(/\r?\n/);
+    stdoutBuffer = lines.pop() ?? '';
+
+    lines.forEach((line) => {
+      void handleClaudeLine(sessionId, assistantMessage.id, line, runState);
+    });
+  });
+
+  child.stderr.on('data', (chunk: Buffer | string) => {
+    stderrBuffer += chunk.toString();
+  });
+
+  child.on('close', async (code) => {
+    activeRuns.delete(sessionId);
+
+    if (stdoutBuffer.trim()) {
+      await handleClaudeLine(sessionId, assistantMessage.id, stdoutBuffer.trim(), runState);
+      stdoutBuffer = '';
+    }
+
+    if (code === 0) {
+      if (!runState.receivedResult) {
+        await completeAssistantRun(sessionId, assistantMessage.id, runState);
+      }
+      return;
+    }
+
+    const errorMessage = stderrBuffer.trim() || `Claude exited with code ${code ?? 'unknown'}.`;
+    await updateAssistantMessage(sessionId, assistantMessage.id, (message) => {
+      message.content = errorMessage;
+      message.status = 'error';
+      message.title = 'Claude error';
+    });
+
+    broadcastClaudeEvent({
+      type: 'error',
+      sessionId,
+      messageId: assistantMessage.id,
+      error: errorMessage,
+    });
+  });
+
+  child.on('error', async (error) => {
+    activeRuns.delete(sessionId);
+
+    await updateAssistantMessage(sessionId, assistantMessage.id, (message) => {
+      message.content = error.message;
+      message.status = 'error';
+      message.title = 'Claude error';
+    });
+
+    broadcastClaudeEvent({
+      type: 'error',
+      sessionId,
+      messageId: assistantMessage.id,
+      error: error.message,
+    });
+  });
+
+  return {
+    projects,
+    queued: {
+      sessionId,
+      userMessageId: userMessage.id,
+      assistantMessageId: assistantMessage.id,
+    },
+  };
+};
+
+const createMainWindow = async () => {
+  const window = new BrowserWindow({
+    width: 1560,
+    height: 960,
+    minWidth: 1180,
+    minHeight: 760,
+    backgroundColor: '#161412',
+    autoHideMenuBar: true,
+    title: 'EasyAIFlow',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+
+  if (app.isPackaged) {
+    await window.loadFile(path.join(__dirname, '../dist/index.html'));
+    return;
+  }
+
+  await loadDevServer(window);
+  window.webContents.openDevTools({ mode: 'detach' });
+};
+
+app.whenReady().then(async () => {
+  ipcMain.handle('clipboard:write-text', async (_event, value: string) => {
+    clipboard.writeText(value);
+  });
+  ipcMain.handle('app:meta', async () => ({
+    name: 'EasyAIFlow',
+    version: app.getVersion(),
+    platform: process.platform,
+    defaultModel: await getConfiguredClaudeModel(),
+  }));
+  ipcMain.handle('git:snapshot', (_event, cwd: string) => getGitSnapshot(cwd));
+  ipcMain.handle('claude:list-slash-commands', async (_event, payload: { cwd: string; model?: string }) => ({
+    commands: await getSlashCommands(payload.cwd, payload.model),
+  }));
+  ipcMain.handle(
+    'claude:btw-message',
+    async (
+      _event,
+      payload: {
+        cwd: string;
+        prompt: string;
+        model?: string;
+        effort?: 'low' | 'medium' | 'high' | 'max';
+        claudeSessionId?: string;
+        baseClaudeSessionId?: string;
+      },
+    ) => runBtwPrompt(payload.prompt, payload.cwd, payload),
+  );
+  ipcMain.handle('claude:btw-discard', async (_event, payload: { cwd: string; claudeSessionId?: string }) => {
+    await deleteNativeClaudeSession(payload.cwd, payload.claudeSessionId);
+  });
+  ipcMain.handle('sessions:bootstrap', async () => ({
+    projects: await getProjects(),
+  }));
+  ipcMain.handle(
+    'sessions:create',
+    async (_event, payload?: { sourceSessionId?: string; includeStreamworkSummary?: boolean }) =>
+      createSession(payload?.sourceSessionId, Boolean(payload?.includeStreamworkSummary)),
+  );
+  ipcMain.handle(
+    'sessions:create-in-streamwork',
+    async (_event, payload: { streamworkId: string; name?: string; includeStreamworkSummary?: boolean }) =>
+      createSessionInStreamwork(
+        payload.streamworkId,
+        payload.name,
+        Boolean(payload.includeStreamworkSummary),
+      ),
+  );
+  ipcMain.handle('projects:create', async (_event, payload: { name: string; rootPath: string }) =>
+    createProject(payload.name, payload.rootPath),
+  );
+  ipcMain.handle('projects:open-directory', async () => openProjectDirectory());
+  ipcMain.handle('projects:close', async (_event, payload: { projectId: string }) => {
+    const result = await closeProject(payload.projectId);
+    stopSessions(result.closedSessionIds);
+    return result;
+  });
+  ipcMain.handle('streamworks:create', async (_event, payload: { projectId: string; name: string }) =>
+    createStreamwork(payload.projectId, payload.name),
+  );
+  ipcMain.handle('streamworks:delete', async (_event, payload: { streamworkId: string }) => {
+    const result = await deleteStreamwork(payload.streamworkId);
+    stopSessions(result.deletedSessionIds);
+    return result;
+  });
+  ipcMain.handle(
+    'entities:rename',
+    async (_event, payload: { kind: 'project' | 'streamwork' | 'session'; id: string; name: string }) =>
+      renameEntity(payload.kind, payload.id, payload.name),
+  );
+  ipcMain.handle('sessions:delete', async (_event, payload: { sessionId: string }) => {
+    const result = await deleteSession(payload.sessionId);
+    stopSessions(result.deletedSessionIds);
+    return result;
+  });
+  ipcMain.handle(
+    'sessions:update-context-references',
+    async (_event, payload: { sessionId: string; references: ContextReference[] }) =>
+      updateSessionContextReferences(payload.sessionId, payload.references),
+  );
+  ipcMain.handle(
+    'streamworks:reorder',
+    async (_event, payload: { projectId: string; sourceId: string; targetId: string }) =>
+      reorderStreamworks(payload.projectId, payload.sourceId, payload.targetId),
+  );
+  ipcMain.handle('git:file-diff', async (_event, payload: { cwd: string; filePath: string }) =>
+    getFileDiff(payload.cwd, payload.filePath),
+  );
+  ipcMain.handle(
+    'claude:send-message',
+    async (
+      _event,
+      payload: {
+        sessionId: string;
+        prompt: string;
+        attachments?: PendingAttachment[];
+        session?: SessionSummary;
+        references?: ContextReference[];
+        model?: string;
+        effort?: 'low' | 'medium' | 'high' | 'max';
+      },
+    ) =>
+      runClaudePrint(payload.sessionId, payload.prompt, payload.attachments ?? [], payload.session, {
+        references: payload.references,
+        model: payload.model,
+        effort: payload.effort,
+      }),
+  );
+
+  await createMainWindow();
+
+  app.on('activate', async () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      await createMainWindow();
+    }
+  });
+});
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
