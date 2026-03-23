@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { sortDreamsWithTemporaryFirst } from '../data/streamworkOrder';
 import type { DreamRecord, ProjectRecord, SessionActivityState, SessionSummary } from '../data/types';
 
 type ChatHistoryProps = {
@@ -136,7 +137,7 @@ export function ChatHistory({
     if (!query) {
       return projects.map((project) => ({
         ...project,
-        dreams: project.dreams.map((dream) => ({
+        dreams: sortDreamsWithTemporaryFirst(project.dreams).map((dream) => ({
           ...dream,
           sessions: sortSessionsByLatest(dream.sessions),
         })),
@@ -177,7 +178,7 @@ export function ChatHistory({
 
         return {
           ...project,
-          dreams: projectMatch ? project.dreams : dreams,
+          dreams: sortDreamsWithTemporaryFirst(projectMatch ? project.dreams : dreams),
         };
       })
       .filter((project): project is ProjectRecord => Boolean(project));

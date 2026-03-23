@@ -3,6 +3,14 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { allSessions, projectTree } from '../src/data/mockSessions.js';
+import { resolveImportedSessionDisplay } from './importedSessionDisplay.js';
+import { shouldIgnoreImportedProgress } from './importedProgressFilter.js';
+import { deriveImportedSessionSummary } from './importedSessionSummary.js';
+import { mergeNativeImportedSessions } from './nativeSessionMerge.js';
+import { hydrateProjectForOpen } from './projectOpen.js';
+import { sortDreamsWithTemporaryFirst } from '../src/data/streamworkOrder.js';
+import { normalizeWorkspacePath, sameWorkspacePath, toClaudeProjectDirName } from './workspacePaths.js';
+import { filterVisibleProjects } from './projectVisibility.js';
 import type {
   BranchSnapshot,
   CloseProjectResult,
@@ -85,7 +93,7 @@ const normalizeTokenUsage = (tokenUsage: TokenUsage | undefined, model: string):
 const normalizeProjects = (projects: ProjectRecord[]) =>
   projects.map((project) => ({
     ...project,
-    dreams: project.dreams.map((dream) => ({
+    dreams: sortDreamsWithTemporaryFirst(project.dreams).map((dream) => ({
       ...dream,
       sessions: dream.sessions.map((session) => {
         const current = session as SessionRecord;
@@ -115,24 +123,8 @@ const toUpdatedAt = (timestamp: string | number | undefined) => {
   return undefined;
 };
 
-const projectPathToClaudeDirName = (rootPath: string) => {
-  const normalized = rootPath.replace(/\//g, '\\').replace(/\\+$/, '');
-  const match = normalized.match(/^([A-Za-z]):\\?(.*)$/);
-  if (!match) {
-    return null;
-  }
-
-  const drive = match[1];
-  const rest = match[2]
-    .split('\\')
-    .filter(Boolean)
-    .join('-');
-
-  return rest ? `${drive}--${rest}` : `${drive}--`;
-};
-
 const nativeClaudeSessionFilePath = (rootPath: string, claudeSessionId: string) => {
-  const dirName = projectPathToClaudeDirName(rootPath);
+  const dirName = toClaudeProjectDirName(rootPath);
   if (!dirName) {
     return null;
   }
@@ -225,9 +217,11 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
   let model = 'claude';
   let firstUserText = '';
   let lastAssistantText = '';
+  let lastErrorText = '';
   let lastTimestamp: string | number | undefined;
   let nativeSessionId = path.basename(filePath, '.jsonl');
   let customTitle = '';
+  let interrupted = false;
 
   for (const line of lines) {
     let parsed: Record<string, unknown>;
@@ -395,7 +389,16 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
     }
 
     if (parsed.type === 'progress') {
-      const data = parsed.data as { statusMessage?: string; command?: string };
+      const data = parsed.data as { type?: string; hookEvent?: string; statusMessage?: string; command?: string };
+      if (
+        shouldIgnoreImportedProgress({
+          dataType: data?.type,
+          hookEvent: data?.hookEvent,
+          command: data?.command,
+        })
+      ) {
+        continue;
+      }
       const toolUseId = parsed.toolUseID as string | undefined;
       if (toolUseId && toolTraceById.has(toolUseId)) {
         const current = toolTraceById.get(toolUseId)!;
@@ -413,15 +416,40 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
         });
       }
     }
+
+    if (parsed.type === 'system' && parsed.subtype === 'api_error') {
+      const error = parsed.error as
+        | { error?: { message?: string; error?: string }; message?: string }
+        | undefined;
+      lastErrorText =
+        error?.error?.error?.trim?.() ||
+        error?.error?.message?.trim?.() ||
+        error?.message?.trim?.() ||
+        'API error';
+      continue;
+    }
   }
+
+  if (messages.some((message) => message.role === 'user' && message.content.includes('[Request interrupted by user]'))) {
+    interrupted = true;
+  }
+
+  const summary = deriveImportedSessionSummary({
+    customTitle,
+    firstUserText,
+    lastAssistantText,
+    lastErrorText,
+    interrupted,
+    nativeSessionId,
+  });
 
   return {
     nativeSessionId,
     workspace,
     model,
     messages,
-    title: customTitle || (firstUserText ? firstUserText.slice(0, 42) : `Imported ${nativeSessionId.slice(0, 8)}`),
-    preview: lastAssistantText || firstUserText || 'Imported Claude history.',
+    title: summary.title,
+    preview: summary.preview,
     timeLabel: toTimeLabel(lastTimestamp),
     updatedAt: toUpdatedAt(lastTimestamp),
   };
@@ -474,15 +502,14 @@ const importNativeClaudeSessions = async (project: ProjectRecord) => {
     return;
   }
 
-  const existingSessions = [...temporary.sessions];
-  const preservedLocalSessions = existingSessions.filter((session) => !session.claudeSessionId);
+  const existingSessions = [...temporary.sessions] as SessionRecord[];
   const existingByClaudeSessionId = new Map(
     existingSessions
       .filter((session): session is SessionRecord & { claudeSessionId: string } => Boolean(session.claudeSessionId))
       .map((session) => [session.claudeSessionId, session]),
   );
 
-  const dirName = projectPathToClaudeDirName(project.rootPath);
+  const dirName = toClaudeProjectDirName(project.rootPath);
   if (!dirName) {
     temporary.sessions = existingSessions;
     return;
@@ -503,25 +530,27 @@ const importNativeClaudeSessions = async (project: ProjectRecord) => {
 
   for (const file of files) {
     const parsed = await parseNativeClaudeSessionFile(path.join(nativeDir, file));
-    if ((parsed.workspace || project.rootPath).replace(/\//g, '\\') !== project.rootPath.replace(/\//g, '\\')) {
+    const workspace = parsed.workspace || project.rootPath;
+    if (!sameWorkspacePath(workspace, project.rootPath)) {
       continue;
     }
 
     seenNativeIds.add(parsed.nativeSessionId);
     const existing = existingByClaudeSessionId.get(parsed.nativeSessionId);
+    const display = resolveImportedSessionDisplay(existing, parsed);
     const importedSession: SessionRecord = {
       id: existing?.id ?? randomUUID(),
-      title: existing?.title ?? parsed.title,
-      preview: parsed.preview,
-      timeLabel: parsed.timeLabel,
+      title: display.title,
+      preview: display.preview,
+      timeLabel: display.timeLabel,
       model: parsed.model,
-      workspace: parsed.workspace || project.rootPath,
+      workspace,
       projectId: project.id,
       projectName: project.name,
       dreamId: temporary.id,
       dreamName: temporary.name,
       claudeSessionId: parsed.nativeSessionId,
-      updatedAt: existing?.updatedAt ?? parsed.updatedAt,
+      updatedAt: display.updatedAt,
       groups: existing?.groups ?? [],
       contextReferences: normalizeContextReferences(existing?.contextReferences),
       tokenUsage: existing?.tokenUsage ?? {
@@ -538,29 +567,33 @@ const importNativeClaudeSessions = async (project: ProjectRecord) => {
     importedSessions.push(importedSession);
   }
 
-  const preservedRemoteSessions = existingSessions.filter(
-    (session) => session.claudeSessionId && !seenNativeIds.has(session.claudeSessionId),
-  );
-
-  temporary.sessions = [...preservedLocalSessions, ...preservedRemoteSessions, ...importedSessions];
+  temporary.sessions = mergeNativeImportedSessions(existingSessions, importedSessions, seenNativeIds);
 };
 
-const deleteNativeClaudeSessions = async (rootPath: string, nativeSessionIds: string[]) => {
-  if (nativeSessionIds.length === 0) {
+const deleteNativeClaudeSessions = async (nativeSessions: Array<{ workspace: string; sessionId: string }>) => {
+  if (nativeSessions.length === 0) {
     return;
   }
 
-  const uniqueIds = [...new Set(nativeSessionIds)];
-  const dirName = projectPathToClaudeDirName(rootPath);
-  if (dirName) {
-    const nativeDir = path.join(nativeClaudeProjectsRoot(), dirName);
-    await Promise.all(
-      uniqueIds.flatMap((sessionId) => [
-        rm(path.join(nativeDir, `${sessionId}.jsonl`), { force: true }),
-        rm(path.join(nativeDir, sessionId), { force: true, recursive: true }),
-      ]),
-    ).catch(() => undefined);
-  }
+  const uniqueSessions = [...new Map(
+    nativeSessions.map((session) => [`${normalizeWorkspacePath(session.workspace)}::${session.sessionId}`, session]),
+  ).values()];
+  const uniqueIds = [...new Set(uniqueSessions.map((session) => session.sessionId))];
+
+  await Promise.all(
+    uniqueSessions.flatMap((session) => {
+      const dirName = toClaudeProjectDirName(session.workspace);
+      if (!dirName) {
+        return [];
+      }
+
+      const nativeDir = path.join(nativeClaudeProjectsRoot(), dirName);
+      return [
+        rm(path.join(nativeDir, `${session.sessionId}.jsonl`), { force: true }),
+        rm(path.join(nativeDir, session.sessionId), { force: true, recursive: true }),
+      ];
+    }),
+  ).catch(() => undefined);
 
   try {
     const raw = await readFile(nativeClaudeHistoryPath(), 'utf8');
@@ -579,6 +612,7 @@ const ensureTemporaryStreamwork = (project: ProjectRecord) => {
   if (existing) {
     existing.name = 'Temporary';
     existing.isTemporary = true;
+    project.dreams = sortDreamsWithTemporaryFirst(project.dreams);
     return;
   }
 
@@ -606,6 +640,7 @@ const ensureTemporaryStreamwork = (project: ProjectRecord) => {
           sessions: [],
         },
   );
+  project.dreams = sortDreamsWithTemporaryFirst(project.dreams);
 };
 
 const ensureProjectHasSession = (project: ProjectRecord) => {
@@ -642,6 +677,7 @@ const buildInitialProjects = () => {
 };
 
 const cloneProjects = (projects: ProjectRecord[]) => JSON.parse(JSON.stringify(projects)) as ProjectRecord[];
+const cloneVisibleProjects = (projects: ProjectRecord[]) => cloneProjects(filterVisibleProjects(projects));
 
 const ensureStateShape = (value: unknown): AppState => {
   if (!value || typeof value !== 'object' || !Array.isArray((value as { projects?: unknown }).projects)) {
@@ -688,7 +724,7 @@ export const saveState = async (state: AppState) => {
 
 export const getProjects = async () => {
   const state = await loadState();
-  return cloneProjects(state.projects.filter((project) => !project.isClosed));
+  return cloneVisibleProjects(state.projects);
 };
 
 const forEachSession = (projects: ProjectRecord[], visitor: (session: SessionRecord, dreamName: string, projectName: string) => void) => {
@@ -764,7 +800,7 @@ export const appendMessagesToSession = async (
   });
 
   await saveState(state);
-  return cloneProjects(state.projects);
+  return cloneVisibleProjects(state.projects);
 };
 
 export const appendTraceMessagesToSession = async (
@@ -890,7 +926,7 @@ export const updateSessionContextReferences = async (
   await saveState(state);
 
   return {
-    projects: cloneProjects(state.projects),
+    projects: cloneVisibleProjects(state.projects),
     session: updatedSession,
   };
 };
@@ -983,7 +1019,7 @@ export const createSession = async (
   await saveState(state);
 
   return {
-    projects: cloneProjects(state.projects),
+    projects: cloneVisibleProjects(state.projects),
     session: JSON.parse(JSON.stringify(nextSession)) as SessionRecord,
   };
 };
@@ -1032,17 +1068,20 @@ const createBaseSession = (
 export const createProject = async (name: string, rootPath: string): Promise<ProjectCreateResult> => {
   const state = await loadState();
 
-  const existingProject = state.projects.find((project) => project.rootPath.toLowerCase() === rootPath.toLowerCase());
+  const existingProject = state.projects.find((project) => sameWorkspacePath(project.rootPath, rootPath));
   if (existingProject) {
     existingProject.name = name;
     existingProject.isClosed = false;
     ensureTemporaryStreamwork(existingProject);
-    await importNativeClaudeSessions(existingProject);
-    const existingSession = ensureProjectHasSession(existingProject);
+    const existingSession = await hydrateProjectForOpen(
+      existingProject,
+      importNativeClaudeSessions,
+      ensureProjectHasSession,
+    );
     await saveState(state);
 
     return {
-      projects: cloneProjects(state.projects.filter((project) => !project.isClosed)),
+      projects: cloneVisibleProjects(state.projects),
       project: JSON.parse(JSON.stringify(existingProject)) as ProjectRecord,
       session: JSON.parse(JSON.stringify(existingSession)) as SessionRecord,
     };
@@ -1069,15 +1108,14 @@ export const createProject = async (name: string, rootPath: string): Promise<Pro
     sessions: [],
   };
 
-  const session = createBaseSession(project, temporaryStreamwork, 'New Session 1', rootPath);
-  temporaryStreamwork.sessions.push(session);
   project.dreams.push(temporaryStreamwork, streamwork);
+  const session = await hydrateProjectForOpen(project, importNativeClaudeSessions, ensureProjectHasSession);
   state.projects.unshift(project);
 
   await saveState(state);
 
   return {
-    projects: cloneProjects(state.projects),
+    projects: cloneVisibleProjects(state.projects),
     project: JSON.parse(JSON.stringify(project)) as ProjectRecord,
     session: JSON.parse(JSON.stringify(session)) as SessionRecord,
   };
@@ -1104,7 +1142,7 @@ export const createStreamwork = async (projectId: string, name: string): Promise
   await saveState(state);
 
   return {
-    projects: cloneProjects(state.projects),
+    projects: cloneVisibleProjects(state.projects),
     streamwork: JSON.parse(JSON.stringify(streamwork)) as DreamRecord,
     session: JSON.parse(JSON.stringify(session)) as SessionRecord,
   };
@@ -1149,7 +1187,7 @@ export const createSessionInStreamwork = async (
   await saveState(state);
 
   return {
-    projects: cloneProjects(state.projects),
+    projects: cloneVisibleProjects(state.projects),
     session: JSON.parse(JSON.stringify(session)) as SessionRecord,
   };
 };
@@ -1179,7 +1217,7 @@ export const renameEntity = async (
         if (kind === 'session' && session.id === id) {
           session.title = nextName;
           if (session.claudeSessionId) {
-            nativeRenameTasks.push(renameNativeClaudeSession(project.rootPath, session.claudeSessionId, nextName));
+            nativeRenameTasks.push(renameNativeClaudeSession(session.workspace, session.claudeSessionId, nextName));
           }
         }
         if (kind === 'project' && session.projectId === project.id) {
@@ -1212,7 +1250,7 @@ export const renameEntity = async (
   await Promise.allSettled(nativeRenameTasks);
   await saveState(state);
   return {
-    projects: cloneProjects(state.projects),
+    projects: cloneVisibleProjects(state.projects),
   };
 };
 
@@ -1233,17 +1271,24 @@ export const reorderStreamworks = async (
 
   if (sourceIndex === -1 || targetIndex === -1 || sourceIndex === targetIndex) {
     return {
-      projects: cloneProjects(state.projects),
+      projects: cloneVisibleProjects(state.projects),
+    };
+  }
+
+  if (project.dreams[sourceIndex]?.isTemporary || project.dreams[targetIndex]?.isTemporary) {
+    return {
+      projects: cloneVisibleProjects(state.projects),
     };
   }
 
   const [moved] = project.dreams.splice(sourceIndex, 1);
   project.dreams.splice(targetIndex, 0, moved);
+  project.dreams = sortDreamsWithTemporaryFirst(project.dreams);
 
   await saveState(state);
 
   return {
-    projects: cloneProjects(state.projects),
+    projects: cloneVisibleProjects(state.projects),
   };
 };
 
@@ -1260,7 +1305,7 @@ export const closeProject = async (projectId: string): Promise<CloseProjectResul
   await saveState(state);
 
   return {
-    projects: cloneProjects(state.projects.filter((item) => !item.isClosed)),
+    projects: cloneVisibleProjects(state.projects),
     closedSessionIds,
   };
 };
@@ -1268,8 +1313,7 @@ export const closeProject = async (projectId: string): Promise<CloseProjectResul
 export const deleteStreamwork = async (streamworkId: string): Promise<DeleteEntityResult> => {
   const state = await loadState();
   let deletedSessionIds: string[] = [];
-  let deletedNativeSessionIds: string[] = [];
-  let nativeRootPath = '';
+  let deletedNativeSessions: Array<{ workspace: string; sessionId: string }> = [];
 
   state.projects.forEach((project) => {
     project.dreams = project.dreams.filter((dream) => {
@@ -1280,18 +1324,20 @@ export const deleteStreamwork = async (streamworkId: string): Promise<DeleteEnti
         return true;
       }
       deletedSessionIds = dream.sessions.map((session) => session.id);
-      deletedNativeSessionIds = dream.sessions
-        .map((session) => session.claudeSessionId)
-        .filter((value): value is string => Boolean(value));
-      nativeRootPath = project.rootPath;
+      deletedNativeSessions = dream.sessions
+        .filter((session): session is SessionRecord & { claudeSessionId: string } => Boolean(session.claudeSessionId))
+        .map((session) => ({
+          workspace: session.workspace,
+          sessionId: session.claudeSessionId,
+        }));
       return false;
     });
   });
 
-  await deleteNativeClaudeSessions(nativeRootPath, deletedNativeSessionIds);
+  await deleteNativeClaudeSessions(deletedNativeSessions);
   await saveState(state);
   return {
-    projects: cloneProjects(state.projects.filter((project) => !project.isClosed)),
+    projects: cloneVisibleProjects(state.projects),
     deletedSessionIds,
   };
 };
@@ -1299,15 +1345,16 @@ export const deleteStreamwork = async (streamworkId: string): Promise<DeleteEnti
 export const deleteSession = async (sessionId: string): Promise<DeleteEntityResult> => {
   const state = await loadState();
   let deleted = false;
-  let deletedNativeSessionIds: string[] = [];
-  let nativeRootPath = '';
+  let deletedNativeSessions: Array<{ workspace: string; sessionId: string }> = [];
 
   state.projects.forEach((project) => {
     project.dreams.forEach((dream) => {
       const target = dream.sessions.find((session) => session.id === sessionId);
       if (target?.claudeSessionId) {
-        deletedNativeSessionIds.push(target.claudeSessionId);
-        nativeRootPath = project.rootPath;
+        deletedNativeSessions.push({
+          workspace: target.workspace,
+          sessionId: target.claudeSessionId,
+        });
       }
       const nextSessions = dream.sessions.filter((session) => session.id !== sessionId);
       if (nextSessions.length !== dream.sessions.length) {
@@ -1317,10 +1364,10 @@ export const deleteSession = async (sessionId: string): Promise<DeleteEntityResu
     });
   });
 
-  await deleteNativeClaudeSessions(nativeRootPath, deletedNativeSessionIds);
+  await deleteNativeClaudeSessions(deletedNativeSessions);
   await saveState(state);
   return {
-    projects: cloneProjects(state.projects.filter((project) => !project.isClosed)),
+    projects: cloneVisibleProjects(state.projects),
     deletedSessionIds: deleted ? [sessionId] : [],
   };
 };
