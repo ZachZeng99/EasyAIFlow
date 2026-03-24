@@ -112,7 +112,7 @@ export type ConversationMessage = {
   timestamp: string;
   title: string;
   content: string;
-  status?: 'streaming' | 'running' | 'success' | 'complete' | 'error';
+  status?: 'queued' | 'streaming' | 'running' | 'success' | 'complete' | 'error';
   contextReferences?: ContextReference[];
   attachments?: MessageAttachment[];
   steps?: MessageStep[];
@@ -167,6 +167,14 @@ export type DeleteEntityResult = {
 
 export type ClaudeStreamEvent =
   | {
+      type: 'status';
+      sessionId: string;
+      messageId: string;
+      status: ConversationMessage['status'];
+      title?: string;
+      content?: string;
+    }
+  | {
       type: 'delta';
       sessionId: string;
       messageId: string;
@@ -176,6 +184,17 @@ export type ClaudeStreamEvent =
       type: 'trace';
       sessionId: string;
       message: ConversationMessage;
+    }
+  | {
+      type: 'permission-request';
+      sessionId: string;
+      requestId: string;
+      toolName: string;
+      targetPath?: string;
+      command?: string;
+      description?: string;
+      decisionReason?: string;
+      sensitive: boolean;
     }
   | {
       type: 'complete';

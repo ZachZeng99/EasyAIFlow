@@ -3,10 +3,20 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { allSessions, projectTree } from '../src/data/mockSessions.js';
+import { findImportedSessionTarget } from './importedSessionMatch.js';
+import { cleanupProjectSessions } from './projectSessionCleanup.js';
+import { pruneTemporaryImportedDuplicates } from './importedSessionCleanup.js';
+import { recoverStaleSessionMessages } from './sessionRecovery.js';
 import { resolveImportedSessionDisplay } from './importedSessionDisplay.js';
 import { shouldIgnoreImportedProgress } from './importedProgressFilter.js';
 import { deriveImportedSessionSummary } from './importedSessionSummary.js';
+import {
+  formatImportedAskUserQuestionAnswer,
+  formatImportedAskUserQuestionPrompt,
+} from './importedAskUserQuestion.js';
+import { isBackgroundTaskNotificationContent } from './backgroundTaskNotification.js';
 import { mergeNativeImportedSessions } from './nativeSessionMerge.js';
+import { mergeNativeSessionIntoExisting, shouldRecoverSessionFromNative } from './nativeSessionRecovery.js';
 import { hydrateProjectForOpen } from './projectOpen.js';
 import { sortDreamsWithTemporaryFirst } from '../src/data/streamworkOrder.js';
 import { normalizeWorkspacePath, sameWorkspacePath, toClaudeProjectDirName } from './workspacePaths.js';
@@ -91,24 +101,33 @@ const normalizeTokenUsage = (tokenUsage: TokenUsage | undefined, model: string):
 };
 
 const normalizeProjects = (projects: ProjectRecord[]) =>
-  projects.map((project) => ({
-    ...project,
-    dreams: sortDreamsWithTemporaryFirst(project.dreams).map((dream) => ({
-      ...dream,
-      sessions: dream.sessions.map((session) => {
-        const current = session as SessionRecord;
-        const model = normalizeSessionModel(current.model);
+  projects.map((project) =>
+    cleanupProjectSessions({
+      ...project,
+      dreams: sortDreamsWithTemporaryFirst(project.dreams).map((dream) => ({
+        ...dream,
+        sessions: normalizeDreamSessions(dream),
+      })),
+    }),
+  ) as ProjectRecord[];
 
-        return {
-          ...current,
-          model,
-          contextReferences: normalizeContextReferences(current.contextReferences),
-          tokenUsage: normalizeTokenUsage(current.tokenUsage, model),
-          updatedAt: current.updatedAt,
-        };
-      }),
-    })),
-  })) as ProjectRecord[];
+const normalizeDreamSessions = (dream: DreamRecord) => {
+  const sessions = dream.sessions.map((session) => {
+    const current = session as SessionRecord;
+    const model = normalizeSessionModel(current.model);
+
+    return {
+      ...current,
+      model,
+      contextReferences: normalizeContextReferences(current.contextReferences),
+      tokenUsage: normalizeTokenUsage(current.tokenUsage, model),
+      messages: recoverStaleSessionMessages(current.messages),
+      updatedAt: current.updatedAt,
+    };
+  }) as SessionRecord[];
+
+  return dream.isTemporary ? pruneTemporaryImportedDuplicates(sessions) : sessions;
+};
 
 const toUpdatedAt = (timestamp: string | number | undefined) => {
   if (typeof timestamp === 'number' && Number.isFinite(timestamp)) {
@@ -213,6 +232,7 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
   const lines = raw.split(/\r?\n/).filter(Boolean);
   const messages: ConversationMessage[] = [];
   const toolTraceById = new Map<string, ConversationMessage>();
+  const interactiveQuestionToolIds = new Set<string>();
   let workspace = '';
   let model = 'claude';
   let firstUserText = '';
@@ -222,6 +242,7 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
   let nativeSessionId = path.basename(filePath, '.jsonl');
   let customTitle = '';
   let interrupted = false;
+  let backgroundTaskNotificationPending = false;
 
   for (const line of lines) {
     let parsed: Record<string, unknown>;
@@ -256,6 +277,24 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
           ) {
             const resultText = extractTextFromContent((block as { content?: unknown }).content);
             const toolUseId = (block as { tool_use_id?: string }).tool_use_id;
+            const interactiveAnswer = toolUseId
+              ? formatImportedAskUserQuestionAnswer(
+                  (parsed as { toolUseResult?: unknown }).toolUseResult,
+                  resultText || 'User completed the interactive question.',
+                )
+              : null;
+            if (toolUseId && interactiveQuestionToolIds.has(toolUseId) && interactiveAnswer) {
+              messages.push({
+                id: randomUUID(),
+                role: 'user',
+                kind: 'message',
+                timestamp: toTimeLabel(parsed.timestamp as string | number | undefined),
+                title: interactiveAnswer.title.slice(0, 42),
+                content: interactiveAnswer.content,
+                status: 'complete',
+              });
+              continue;
+            }
             if (toolUseId && toolTraceById.has(toolUseId)) {
               const current = toolTraceById.get(toolUseId)!;
               current.content = `${current.content}\n${summarizeToolResult(resultText || 'Tool result returned.')}`;
@@ -300,6 +339,10 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
       if (!text) {
         continue;
       }
+      if (isBackgroundTaskNotificationContent(content)) {
+        backgroundTaskNotificationPending = true;
+        continue;
+      }
       if (!firstUserText) {
         firstUserText = text;
       }
@@ -324,6 +367,10 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
         const content = extractTextFromContent(messageObj?.content);
         const text = firstMeaningfulLine(content);
         if (!text) {
+          continue;
+        }
+        if (backgroundTaskNotificationPending) {
+          backgroundTaskNotificationPending = false;
           continue;
         }
         lastAssistantText = text;
@@ -352,6 +399,10 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
           if (!text) {
             continue;
           }
+          if (backgroundTaskNotificationPending) {
+            backgroundTaskNotificationPending = false;
+            continue;
+          }
           lastAssistantText = text;
           messages.push({
             id: randomUUID(),
@@ -371,6 +422,33 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
 
         if (blockType === 'tool_use') {
           const tool = block as { id?: string; name?: string; input?: unknown };
+          const interactivePrompt =
+            tool.name === 'AskUserQuestion' ? formatImportedAskUserQuestionPrompt(tool.input) : null;
+          if (interactivePrompt) {
+            const prior = messages[messages.length - 1];
+            if (
+              prior &&
+              prior.role === 'assistant' &&
+              prior.kind === 'message' &&
+              prior.timestamp === toTimeLabel(parsed.timestamp as string | number | undefined)
+            ) {
+              prior.content = `${prior.content.trimEnd()}\n\n${interactivePrompt.content}`;
+            } else {
+              messages.push({
+                id: randomUUID(),
+                role: 'assistant',
+                kind: 'message',
+                timestamp: toTimeLabel(parsed.timestamp as string | number | undefined),
+                title: interactivePrompt.title.slice(0, 42),
+                content: interactivePrompt.content,
+                status: 'complete',
+              });
+            }
+            if (tool.id) {
+              interactiveQuestionToolIds.add(tool.id);
+            }
+            continue;
+          }
           const toolMessage: ConversationMessage = {
             id: tool.id ?? randomUUID(),
             role: 'system',
@@ -503,8 +581,9 @@ const importNativeClaudeSessions = async (project: ProjectRecord) => {
   }
 
   const existingSessions = [...temporary.sessions] as SessionRecord[];
+  const projectSessions = project.dreams.flatMap((dream) => dream.sessions) as SessionRecord[];
   const existingByClaudeSessionId = new Map(
-    existingSessions
+    projectSessions
       .filter((session): session is SessionRecord & { claudeSessionId: string } => Boolean(session.claudeSessionId))
       .map((session) => [session.claudeSessionId, session]),
   );
@@ -536,7 +615,9 @@ const importNativeClaudeSessions = async (project: ProjectRecord) => {
     }
 
     seenNativeIds.add(parsed.nativeSessionId);
-    const existing = existingByClaudeSessionId.get(parsed.nativeSessionId);
+    const existing =
+      findImportedSessionTarget(projectSessions, parsed.nativeSessionId, parsed.title, workspace) ??
+      existingByClaudeSessionId.get(parsed.nativeSessionId);
     const display = resolveImportedSessionDisplay(existing, parsed);
     const importedSession: SessionRecord = {
       id: existing?.id ?? randomUUID(),
@@ -564,10 +645,51 @@ const importNativeClaudeSessions = async (project: ProjectRecord) => {
       branchSnapshot: existing?.branchSnapshot ?? makeEmptyBranchSnapshot(project.rootPath),
       messages: parsed.messages,
     };
-    importedSessions.push(importedSession);
+    if (existing) {
+      Object.assign(existing, importedSession);
+      if (existing.dreamId === temporary.id) {
+        importedSessions.push(existing);
+      }
+    } else {
+      importedSessions.push(importedSession);
+    }
   }
 
-  temporary.sessions = mergeNativeImportedSessions(existingSessions, importedSessions, seenNativeIds);
+  temporary.sessions = pruneTemporaryImportedDuplicates(
+    mergeNativeImportedSessions(existingSessions, importedSessions, seenNativeIds),
+  );
+};
+
+const recoverExistingSessionsFromNativeHistory = async (projects: ProjectRecord[]) => {
+  const sessions = projects.flatMap((project) =>
+    project.dreams.flatMap((dream) => dream.sessions as SessionRecord[]),
+  );
+
+  for (const session of sessions) {
+    if (!session.claudeSessionId) {
+      continue;
+    }
+
+    const filePath = nativeClaudeSessionFilePath(session.workspace, session.claudeSessionId);
+    if (!filePath) {
+      continue;
+    }
+
+    let parsed:
+      | Awaited<ReturnType<typeof parseNativeClaudeSessionFile>>
+      | undefined;
+    try {
+      parsed = await parseNativeClaudeSessionFile(filePath);
+    } catch {
+      parsed = undefined;
+    }
+
+    if (!parsed || !shouldRecoverSessionFromNative(session, parsed)) {
+      continue;
+    }
+
+    Object.assign(session, mergeNativeSessionIntoExisting(session, parsed));
+  }
 };
 
 const deleteNativeClaudeSessions = async (nativeSessions: Array<{ workspace: string; sessionId: string }>) => {
@@ -703,10 +825,12 @@ export const loadState = async () => {
     const raw = await readFile(storePath(), 'utf8');
     cachedState = ensureStateShape(JSON.parse(raw));
     await Promise.all(cachedState.projects.map((project) => importNativeClaudeSessions(project)));
+    await recoverExistingSessionsFromNativeHistory(cachedState.projects);
     await saveState(cachedState);
   } catch {
     cachedState = { projects: buildInitialProjects() };
     await Promise.all(cachedState.projects.map((project) => importNativeClaudeSessions(project)));
+    await recoverExistingSessionsFromNativeHistory(cachedState.projects);
     await saveState(cachedState);
   }
 

@@ -47,6 +47,7 @@ declare global {
         commands: string[];
       }>;
       sendBtwMessage: (payload: {
+        sessionId?: string;
         cwd: string;
         prompt: string;
         model?: string;
@@ -59,6 +60,13 @@ declare global {
       getPathForFile: (file: File) => string;
       getProjects: () => Promise<{
         projects: ProjectRecord[];
+      }>;
+      grantPathPermission: (payload: { projectRoot: string; targetPath: string }) => Promise<void>;
+      respondToPermissionRequest: (payload: {
+        requestId: string;
+        behavior: 'allow' | 'deny';
+      }) => Promise<{
+        mode: 'interactive' | 'fallback' | 'missing';
       }>;
       openProjectDirectory: () => Promise<ProjectOpenResult | null>;
       closeProject: (payload: { projectId: string }) => Promise<CloseProjectResult>;

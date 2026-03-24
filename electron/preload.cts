@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('easyAIFlow', {
   getGitSnapshot: (cwd: string) => ipcRenderer.invoke('git:snapshot', cwd),
   getSlashCommands: (payload: { cwd: string; model?: string }) => ipcRenderer.invoke('claude:list-slash-commands', payload),
   sendBtwMessage: (payload: {
+    sessionId?: string;
     cwd: string;
     prompt: string;
     model?: string;
@@ -17,6 +18,10 @@ contextBridge.exposeInMainWorld('easyAIFlow', {
   getFileDiff: (payload: { cwd: string; filePath: string }) => ipcRenderer.invoke('git:file-diff', payload),
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
   getProjects: () => ipcRenderer.invoke('sessions:bootstrap'),
+  grantPathPermission: (payload: { projectRoot: string; targetPath: string }) =>
+    ipcRenderer.invoke('permissions:grant-path', payload),
+  respondToPermissionRequest: (payload: { requestId: string; behavior: 'allow' | 'deny' }) =>
+    ipcRenderer.invoke('permissions:respond', payload),
   openProjectDirectory: () => ipcRenderer.invoke('projects:open-directory'),
   closeProject: (payload: { projectId: string }) => ipcRenderer.invoke('projects:close', payload),
   createProject: (payload: { name: string; rootPath: string }) => ipcRenderer.invoke('projects:create', payload),

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { DiffContent } from './DiffContent';
 import type { DiffPayload, GitSnapshot, SessionSummary } from '../data/types';
 
 type ContextPanelProps = {
@@ -140,33 +141,5 @@ export function ContextPanel({ session, appVersion, gitSnapshot, onRequestDiff }
         </div>
       </div>
     </aside>
-  );
-}
-
-function DiffContent({ payload }: { payload: DiffPayload | null }) {
-  const content = payload?.content ?? 'No diff loaded.';
-  const lines = content.split(/\r?\n/);
-
-  return (
-    <pre className="diff-code">
-      {lines.map((line, index) => {
-        const lineClass =
-          line.startsWith('+++') || line.startsWith('---')
-            ? 'file'
-            : line.startsWith('@@')
-              ? 'hunk'
-              : line.startsWith('+')
-                ? 'add'
-                : line.startsWith('-')
-                  ? 'del'
-                  : 'ctx';
-
-        return (
-          <span key={`${index}-${line}`} className={`diff-line ${lineClass}`}>
-            {line || ' '}
-          </span>
-        );
-      })}
-    </pre>
   );
 }

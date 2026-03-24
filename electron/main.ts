@@ -24,14 +24,39 @@ import {
   upsertSessionMessage,
   updateAssistantMessage,
 } from './sessionStore.js';
+import { getClaudeSyntheticApiError } from './claudeErrors.js';
+import { extractClaudeSessionId } from './claudeSessionId.js';
+import {
+  applyAssistantTextToRunState,
+  createClaudeRunState,
+  markClaudeRunCompleted,
+  noteBackgroundTaskNotificationInRunState,
+  shouldCompleteClaudeRunOnClose,
+  type ClaudeRunStateCompletion,
+} from './claudeRunState.js';
+import { isBackgroundTaskNotificationContent } from './backgroundTaskNotification.js';
+import {
+  buildClaudeControlResponseLine,
+  buildClaudeUserMessageLine,
+  parseClaudePermissionControlRequest,
+  type ClaudePermissionControlRequest,
+} from './claudeControlMessages.js';
+import { buildClaudePrintArgs } from './claudePrintArgs.js';
+import { buildClaudeSessionArgs } from './claudeSessionArgs.js';
+import { buildPermissionRulesForPath } from './permissionRules.js';
+import { readLatestNativeClaudeApiError } from './nativeClaudeError.js';
+import { getClaudeSpawnOptions } from './claudeSpawn.js';
+import { createSequentialLineProcessor } from './sequentialLineProcessor.js';
+import { createSessionRunQueue, enqueueSessionRun, hasSessionRunQueued } from './sessionRunQueue.js';
+import { getFileDiff } from './fileDiff.js';
 import type {
   BtwResponse,
   ClaudeStreamEvent,
   ConversationMessage,
   ContextReference,
-  DiffPayload,
   MessageAttachment,
   PendingAttachment,
+  ProjectRecord,
   SessionRecord,
   SessionSummary,
   TokenUsage,
@@ -41,19 +66,36 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const devServerUrl = 'http://127.0.0.1:4173';
 const execFileAsync = promisify(execFile);
-const activeRuns = new Map<string, ReturnType<typeof spawn>>();
+type ActiveClaudeRun = {
+  child: ReturnType<typeof spawn>;
+  projectRoot: string;
+};
+
+type PendingPermissionRequest = {
+  sessionId: string;
+  activeRun: ActiveClaudeRun;
+  request: ClaudePermissionControlRequest;
+};
+
+const activeRuns = new Map<string, ActiveClaudeRun>();
+const pendingPermissionRequests = new Map<string, PendingPermissionRequest>();
+const sessionRunQueue = createSessionRunQueue();
 const slashCommandCache = new Map<string, { commands: string[]; expiresAt: number }>();
 const attachmentRoot = () => path.join(app.getPath('userData'), 'attachments');
 const claudeSettingsPath = () => path.join(process.env.USERPROFILE ?? app.getPath('home'), '.claude', 'settings.json');
 
-const getConfiguredClaudeModel = async () => {
+const readClaudeSettings = async () => {
   try {
     const raw = await readFile(claudeSettingsPath(), 'utf8');
-    const parsed = JSON.parse(raw) as { model?: unknown };
-    return typeof parsed.model === 'string' && parsed.model.trim() ? parsed.model.trim() : undefined;
+    return JSON.parse(raw) as { model?: unknown };
   } catch {
     return undefined;
   }
+};
+
+const getConfiguredClaudeModel = async () => {
+  const parsed = await readClaudeSettings();
+  return typeof parsed?.model === 'string' && parsed.model.trim() ? parsed.model.trim() : undefined;
 };
 
 const getSlashCommands = async (cwd: string, model?: string) => {
@@ -79,10 +121,7 @@ const getSlashCommands = async (cwd: string, model?: string) => {
       args.push('--model', model);
     }
 
-    const child = spawn('claude', args, {
-      cwd,
-      windowsHide: true,
-    });
+    const child = spawn('claude', args, getClaudeSpawnOptions(cwd));
 
     let stdoutBuffer = '';
     let settled = false;
@@ -167,10 +206,39 @@ const deleteNativeClaudeSession = async (cwd: string, claudeSessionId?: string) 
   ]);
 };
 
+const grantPathPermission = async (projectRoot: string, targetPath: string) => {
+  const settingsPath = path.join(projectRoot, '.claude', 'settings.local.json');
+  const homeDir = process.env.USERPROFILE ?? app.getPath('home');
+  const rules = buildPermissionRulesForPath(targetPath, homeDir);
+
+  let parsed: { permissions?: { allow?: string[]; additionalDirectories?: string[] } } = {};
+  try {
+    parsed = JSON.parse(await readFile(settingsPath, 'utf8')) as typeof parsed;
+  } catch {
+    parsed = {};
+  }
+
+  const allow = new Set(parsed.permissions?.allow ?? []);
+  rules.forEach((rule) => allow.add(rule));
+
+  const next = {
+    ...parsed,
+    permissions: {
+      ...parsed.permissions,
+      allow: [...allow],
+      additionalDirectories: parsed.permissions?.additionalDirectories ?? [],
+    },
+  };
+
+  await mkdir(path.dirname(settingsPath), { recursive: true });
+  await writeFile(settingsPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+};
+
 const runBtwPrompt = async (
   prompt: string,
   cwd: string,
   options?: {
+    sessionId?: string;
     model?: string;
     effort?: 'low' | 'medium' | 'high' | 'max';
     claudeSessionId?: string;
@@ -178,121 +246,151 @@ const runBtwPrompt = async (
   },
 ): Promise<BtwResponse> =>
   new Promise((resolve, reject) => {
-    const args = [
-      '-p',
-      prompt,
-      '--output-format',
-      'stream-json',
-      '--include-partial-messages',
-      '--permission-mode',
-      'bypassPermissions',
-      '--verbose',
-    ];
+    void (async () => {
+      let inheritedContext = false;
+      const sessionArgs: string[] = [];
 
-    if (options?.model) {
-      args.push('--model', options.model);
-    }
-
-    if (options?.effort) {
-      args.push('--effort', options.effort);
-    }
-
-    let inheritedContext = false;
-
-    if (options?.claudeSessionId) {
-      args.push('--resume', options.claudeSessionId);
-      inheritedContext = true;
-    } else if (options?.baseClaudeSessionId) {
-      args.push('--resume', options.baseClaudeSessionId, '--fork-session');
-      inheritedContext = true;
-    } else {
-      args.push('-n', 'BTW');
-    }
-
-    const child = spawn('claude', args, {
-      cwd,
-      windowsHide: true,
-    });
-
-    let stdoutBuffer = '';
-    let stderrBuffer = '';
-    let content = '';
-    let claudeSessionId = options?.claudeSessionId;
-    let model = options?.model;
-    let tokenUsage: TokenUsage | undefined;
-
-    const processLine = (line: string) => {
-      if (!line.trim()) {
-        return;
+      if (options?.claudeSessionId) {
+        sessionArgs.push('--resume', options.claudeSessionId);
+        inheritedContext = true;
+      } else if (options?.baseClaudeSessionId) {
+        sessionArgs.push('--resume', options.baseClaudeSessionId, '--fork-session');
+        inheritedContext = true;
+      } else {
+        sessionArgs.push('-n', 'BTW');
       }
 
-      const parsed = JSON.parse(line) as Record<string, unknown>;
-      if (typeof parsed.session_id === 'string') {
-        claudeSessionId = parsed.session_id;
-      }
-
-      if (parsed.type === 'assistant') {
-        const message = parsed.message as { model?: string; content?: Array<{ type?: string; text?: string }> };
-        if (typeof message?.model === 'string' && message.model.trim()) {
-          model = message.model.trim();
-        }
-        const text = message?.content
-          ?.filter((block) => block.type === 'text' && typeof block.text === 'string')
-          .map((block) => block.text)
-          .join('');
-        if (text) {
-          content = text;
-        }
-      }
-
-      if (parsed.type === 'result') {
-        tokenUsage = mapTokenUsage(parsed);
-        if (!content) {
-          content = String(parsed.result ?? '');
-        }
-      }
-    };
-
-    child.stdout.on('data', (chunk: Buffer | string) => {
-      stdoutBuffer += chunk.toString();
-      const lines = stdoutBuffer.split(/\r?\n/);
-      stdoutBuffer = lines.pop() ?? '';
-      lines.forEach(processLine);
-    });
-
-    child.stderr.on('data', (chunk: Buffer | string) => {
-      stderrBuffer += chunk.toString();
-    });
-
-    child.on('error', (error) => {
-      reject(error);
-    });
-
-    child.on('close', (code) => {
-      if (stdoutBuffer.trim()) {
-        processLine(stdoutBuffer.trim());
-      }
-
-      if (code !== 0) {
-        reject(new Error(stderrBuffer.trim() || `Claude exited with code ${code ?? 'unknown'}.`));
-        return;
-      }
-
-      resolve({
-        claudeSessionId,
-        model,
-        content,
-        tokenUsage,
-        inheritedContext,
+      const args = buildClaudePrintArgs({
+        model: options?.model,
+        effort: options?.effort,
+        sessionArgs,
       });
-    });
+      const child = spawn('claude', args, getClaudeSpawnOptions(cwd));
+
+      let stderrBuffer = '';
+      let content = '';
+      let claudeSessionId = options?.claudeSessionId;
+      let model = options?.model;
+      let tokenUsage: TokenUsage | undefined;
+
+      const processLine = (line: string) => {
+        if (!line.trim()) {
+          return;
+        }
+
+        const parsed = JSON.parse(line) as Record<string, unknown>;
+        const permissionControlRequest = parseClaudePermissionControlRequest(parsed);
+        if (permissionControlRequest) {
+          pendingPermissionRequests.set(permissionControlRequest.requestId, {
+            sessionId: options?.sessionId ?? '',
+            activeRun: {
+              child,
+              projectRoot: cwd,
+            },
+            request: permissionControlRequest,
+          });
+
+          if (options?.sessionId) {
+            broadcastClaudeEvent({
+              type: 'permission-request',
+              sessionId: options.sessionId,
+              requestId: permissionControlRequest.requestId,
+              toolName: permissionControlRequest.toolName,
+              targetPath: permissionControlRequest.targetPath,
+              command: permissionControlRequest.command,
+              description: permissionControlRequest.description,
+              decisionReason: permissionControlRequest.decisionReason,
+              sensitive: permissionControlRequest.sensitive,
+            });
+          }
+          return;
+        }
+        const resolvedClaudeSessionId = extractClaudeSessionId(parsed);
+        if (resolvedClaudeSessionId) {
+          claudeSessionId = resolvedClaudeSessionId;
+        }
+
+        if (parsed.type === 'assistant') {
+          const message = parsed.message as { model?: string; content?: Array<{ type?: string; text?: string }> };
+          if (typeof message?.model === 'string' && message.model.trim()) {
+            model = message.model.trim();
+          }
+          const text = message?.content
+            ?.filter((block) => block.type === 'text' && typeof block.text === 'string')
+            .map((block) => block.text)
+            .join('');
+          if (text) {
+            content = text;
+          }
+        }
+
+        if (parsed.type === 'result') {
+          tokenUsage = mapTokenUsage(parsed);
+          if (!content) {
+            content = String(parsed.result ?? '');
+          }
+        }
+      };
+
+      const stdoutProcessor = createSequentialLineProcessor(async (line) => {
+        processLine(line);
+      });
+
+      child.stdout.on('data', (chunk: Buffer | string) => {
+        stdoutProcessor.pushChunk(chunk.toString());
+      });
+
+      child.stderr.on('data', (chunk: Buffer | string) => {
+        stderrBuffer += chunk.toString();
+      });
+
+      child.stdin.write(`${buildClaudeUserMessageLine(prompt)}\n`);
+
+      child.on('error', (error) => {
+        reject(error);
+      });
+
+      child.on('close', (code) => {
+        void (async () => {
+          for (const [requestId, pending] of pendingPermissionRequests) {
+            if (pending.activeRun.child === child) {
+              pendingPermissionRequests.delete(requestId);
+            }
+          }
+          try {
+            await stdoutProcessor.flush();
+          } catch (error) {
+            reject(error instanceof Error ? error : new Error(String(error)));
+            return;
+          }
+
+          if (code !== 0) {
+            reject(new Error(stderrBuffer.trim() || `Claude exited with code ${code ?? 'unknown'}.`));
+            return;
+          }
+
+          resolve({
+            claudeSessionId,
+            model,
+            content,
+            tokenUsage,
+            inheritedContext,
+          });
+        })();
+      });
+    })().catch(reject);
   });
 
 const stopSessions = (sessionIds: string[]) => {
   sessionIds.forEach((sessionId) => {
     const run = activeRuns.get(sessionId);
-    if (run && !run.killed) {
-      run.kill();
+    if (run && !run.child.killed) {
+      run.child.kill();
+    }
+    for (const [requestId, pending] of pendingPermissionRequests) {
+      if (pending.sessionId === sessionId) {
+        pendingPermissionRequests.delete(requestId);
+      }
     }
     activeRuns.delete(sessionId);
   });
@@ -506,13 +604,29 @@ const buildContextReferencePrompt = async (sessionId: string, overrideReferences
   ].join('\n\n');
 };
 
-type ClaudeRunState = {
-  content: string;
+type ClaudeRunState = ClaudeRunStateCompletion & {
   claudeSessionId?: string;
   model?: string;
   tokenUsage?: TokenUsage;
-  receivedResult: boolean;
+  terminalError?: string;
   toolTraces: Map<string, ConversationMessage>;
+};
+
+type ClaudePrintOptions = {
+  model?: string;
+  effort?: 'low' | 'medium' | 'high' | 'max';
+  references?: ContextReference[];
+};
+
+type PreparedClaudeRun = {
+  sessionId: string;
+  userMessageId: string;
+  assistantMessageId: string;
+  session: SessionSummary;
+  resolvedPrompt: string;
+  options?: ClaudePrintOptions;
+  projects: ProjectRecord[];
+  assistantWasQueued: boolean;
 };
 
 const summarizeToolInput = (input: unknown) => {
@@ -567,6 +681,7 @@ const completeAssistantRun = async (
   fallbackContent = '',
 ) => {
   const content = state.content || fallbackContent;
+  Object.assign(state, markClaudeRunCompleted(state, content));
   await finalizeToolTraces(sessionId, state);
 
   await updateAssistantMessage(sessionId, assistantMessageId, (message) => {
@@ -826,64 +941,6 @@ const cloneMessageContextReferences = (references: ContextReference[] | undefine
     ...reference,
   }));
 
-const getFileDiff = async (cwd: string, filePath: string): Promise<DiffPayload> => {
-  const normalized = filePath.replace(/\//g, path.sep);
-  try {
-    const { stdout: statusStdout } = await execFileAsync('git', ['status', '--porcelain', '--', normalized], { cwd });
-    const statusLine = statusStdout.split(/\r?\n/).find(Boolean) ?? '';
-
-    if (statusLine.startsWith('??')) {
-      try {
-        const absolutePath = path.isAbsolute(normalized) ? normalized : path.join(cwd, normalized);
-        const preview = await readFile(absolutePath, 'utf8');
-        return {
-          filePath: normalized,
-          kind: 'untracked',
-          content: `# Untracked file: ${normalized}\n\n${preview.slice(0, 12000)}`,
-        };
-      } catch {
-        return {
-          filePath: normalized,
-          kind: 'missing',
-          content: 'Unable to read this untracked file.',
-        };
-      }
-    }
-
-    const { stdout: diffStdout } = await execFileAsync('git', ['diff', '--', normalized], { cwd });
-    if (diffStdout.trim()) {
-      return {
-        filePath: normalized,
-        kind: 'git',
-        content: diffStdout,
-      };
-    }
-
-    const { stdout: cachedStdout } = await execFileAsync('git', ['diff', '--cached', '--', normalized], { cwd });
-    if (cachedStdout.trim()) {
-      return {
-        filePath: normalized,
-        kind: 'git',
-        content: cachedStdout,
-      };
-    }
-
-    const absolutePath = path.isAbsolute(normalized) ? normalized : path.join(cwd, normalized);
-    const preview = await readFile(absolutePath, 'utf8');
-    return {
-      filePath: normalized,
-      kind: 'preview',
-      content: preview.slice(0, 12000),
-    };
-  } catch {
-    return {
-      filePath: normalized,
-      kind: 'missing',
-      content: 'No diff available for this file.',
-    };
-  }
-};
-
 const openProjectDirectory = async () => {
   const result = await dialog.showOpenDialog({
     properties: ['openDirectory'],
@@ -910,9 +967,51 @@ const handleClaudeLine = async (
   }
 
   const parsed = JSON.parse(line) as Record<string, unknown>;
+  const permissionControlRequest = parseClaudePermissionControlRequest(parsed);
+  if (permissionControlRequest) {
+    const activeRun = activeRuns.get(sessionId);
+    if (activeRun) {
+      pendingPermissionRequests.set(permissionControlRequest.requestId, {
+        sessionId,
+        activeRun,
+        request: permissionControlRequest,
+      });
+    }
 
-  if (typeof parsed.session_id === 'string') {
-    state.claudeSessionId = parsed.session_id;
+    broadcastClaudeEvent({
+      type: 'permission-request',
+      sessionId,
+      requestId: permissionControlRequest.requestId,
+      toolName: permissionControlRequest.toolName,
+      targetPath: permissionControlRequest.targetPath,
+      command: permissionControlRequest.command,
+      description: permissionControlRequest.description,
+      decisionReason: permissionControlRequest.decisionReason,
+      sensitive: permissionControlRequest.sensitive,
+    });
+    return;
+  }
+  const syntheticApiError = getClaudeSyntheticApiError(parsed);
+  if (syntheticApiError) {
+    state.terminalError = syntheticApiError;
+    await updateAssistantMessage(sessionId, assistantMessageId, (message) => {
+      message.content = syntheticApiError;
+      message.status = 'error';
+      message.title = 'Claude error';
+    });
+
+    broadcastClaudeEvent({
+      type: 'error',
+      sessionId,
+      messageId: assistantMessageId,
+      error: syntheticApiError,
+    });
+    return;
+  }
+
+  const resolvedClaudeSessionId = extractClaudeSessionId(parsed);
+  if (resolvedClaudeSessionId) {
+    state.claudeSessionId = resolvedClaudeSessionId;
   }
 
   if (parsed.type === 'stream_event') {
@@ -965,7 +1064,7 @@ const handleClaudeLine = async (
       ?.filter((block) => block.type === 'text' && typeof block.text === 'string')
       .map((block) => block.text)
       .join('') ?? state.content;
-    state.content = finalText;
+    Object.assign(state, applyAssistantTextToRunState(state, finalText));
 
     for (const block of message?.content ?? []) {
       if (block.type === 'tool_use') {
@@ -1005,6 +1104,11 @@ const handleClaudeLine = async (
 
   if (parsed.type === 'user' && parsed.isMeta !== true) {
     const content = (parsed.message as { content?: unknown })?.content;
+    if (typeof content === 'string' && isBackgroundTaskNotificationContent(content)) {
+      Object.assign(state, noteBackgroundTaskNotificationInRunState(state, content));
+      return;
+    }
+
     if (Array.isArray(content)) {
       for (const block of content) {
         if (
@@ -1030,26 +1134,21 @@ const handleClaudeLine = async (
     state.receivedResult = true;
     state.tokenUsage = mapTokenUsage(parsed);
     await completeAssistantRun(sessionId, assistantMessageId, state, String(parsed.result ?? ''));
+    activeRuns.get(sessionId)?.child.stdin?.end();
   }
 };
 
-const runClaudePrint = async (
+const prepareClaudeRun = async (
   sessionId: string,
   prompt: string,
   pendingAttachments: PendingAttachment[] = [],
   fallbackSession?: SessionSummary,
-  options?: {
-    model?: string;
-    effort?: 'low' | 'medium' | 'high' | 'max';
-    references?: ContextReference[];
-  },
-) => {
+  options?: ClaudePrintOptions,
+  assistantStatus: 'queued' | 'streaming' = 'streaming',
+): Promise<PreparedClaudeRun> => {
   let session = (await findSession(sessionId)) ?? (fallbackSession ? await ensureSessionRecord(fallbackSession) : null);
   if (!session) {
     throw new Error('Session not found');
-  }
-  if (activeRuns.has(sessionId)) {
-    throw new Error('This session is already running.');
   }
 
   if (options?.references) {
@@ -1079,9 +1178,9 @@ const runClaudePrint = async (
     id: randomUUID(),
     role: 'assistant',
     timestamp: nowLabel(),
-    title: 'Claude response',
-    content: '',
-    status: 'streaming',
+    title: assistantStatus === 'queued' ? 'Claude queued' : 'Claude response',
+    content: assistantStatus === 'queued' ? 'Queued. Claude will start this message after the current run completes.' : '',
+    status: assistantStatus,
   };
 
   const projects = await appendMessagesToSession(
@@ -1091,116 +1190,212 @@ const runClaudePrint = async (
     'Just now',
   );
 
-  const args = [
-    '-p',
+  return {
+    sessionId,
+    userMessageId: userMessage.id,
+    assistantMessageId: assistantMessage.id,
+    session,
     resolvedPrompt,
-    '--output-format',
-    'stream-json',
-    '--include-partial-messages',
-    '--permission-mode',
-    'bypassPermissions',
-    '--verbose',
-  ];
-
-  if (options?.model) {
-    args.push('--model', options.model);
-  }
-
-  if (options?.effort) {
-    args.push('--effort', options.effort);
-  }
-
-  if (session.claudeSessionId) {
-    args.push('--resume', session.claudeSessionId);
-  } else {
-    args.push('-n', session.title);
-  }
-
-  const child = spawn('claude', args, {
-    cwd: session.workspace,
-    windowsHide: true,
-  });
-
-  activeRuns.set(sessionId, child);
-
-  let stdoutBuffer = '';
-  let stderrBuffer = '';
-  const runState: ClaudeRunState = {
-    content: '',
-    claudeSessionId: session.claudeSessionId,
-    model: session.model,
-    tokenUsage: session.tokenUsage,
-    receivedResult: false,
-    toolTraces: new Map<string, ConversationMessage>(),
+    options,
+    projects,
+    assistantWasQueued: assistantStatus === 'queued',
   };
+};
 
-  child.stdout.on('data', (chunk: Buffer | string) => {
-    stdoutBuffer += chunk.toString();
-    const lines = stdoutBuffer.split(/\r?\n/);
-    stdoutBuffer = lines.pop() ?? '';
+const markPreparedClaudeRunStarted = async (prepared: PreparedClaudeRun) => {
+  if (!prepared.assistantWasQueued) {
+    return;
+  }
 
-    lines.forEach((line) => {
-      void handleClaudeLine(sessionId, assistantMessage.id, line, runState);
+  await updateAssistantMessage(prepared.sessionId, prepared.assistantMessageId, (message) => {
+    message.content = '';
+    message.status = 'streaming';
+    message.title = 'Claude response';
+  });
+
+  broadcastClaudeEvent({
+    type: 'status',
+    sessionId: prepared.sessionId,
+    messageId: prepared.assistantMessageId,
+    status: 'streaming',
+    content: '',
+    title: 'Claude response',
+  });
+};
+
+const executePreparedClaudeRun = async (prepared: PreparedClaudeRun) =>
+  new Promise<void>((resolve) => {
+    const { sessionId, assistantMessageId, session, resolvedPrompt, options } = prepared;
+    const args = buildClaudePrintArgs({
+      model: options?.model,
+      effort: options?.effort,
+      sessionArgs: buildClaudeSessionArgs(session.claudeSessionId, session.title),
     });
-  });
 
-  child.stderr.on('data', (chunk: Buffer | string) => {
-    stderrBuffer += chunk.toString();
-  });
+    const child = spawn('claude', args, getClaudeSpawnOptions(session.workspace));
 
-  child.on('close', async (code) => {
-    activeRuns.delete(sessionId);
+    activeRuns.set(sessionId, {
+      child,
+      projectRoot: session.workspace,
+    });
 
-    if (stdoutBuffer.trim()) {
-      await handleClaudeLine(sessionId, assistantMessage.id, stdoutBuffer.trim(), runState);
-      stdoutBuffer = '';
-    }
-
-    if (code === 0) {
-      if (!runState.receivedResult) {
-        await completeAssistantRun(sessionId, assistantMessage.id, runState);
+    let stderrBuffer = '';
+    let finalizing = false;
+    const beginFinalize = () => {
+      if (finalizing) {
+        return false;
       }
-      return;
-    }
+      finalizing = true;
+      for (const [requestId, pending] of pendingPermissionRequests) {
+        if (pending.sessionId === sessionId) {
+          pendingPermissionRequests.delete(requestId);
+        }
+      }
+      activeRuns.delete(sessionId);
+      return true;
+    };
+    const runState: ClaudeRunState = {
+      ...createClaudeRunState(),
+      claudeSessionId: session.claudeSessionId,
+      model: session.model,
+      tokenUsage: session.tokenUsage,
+      toolTraces: new Map<string, ConversationMessage>(),
+    };
 
-    const errorMessage = stderrBuffer.trim() || `Claude exited with code ${code ?? 'unknown'}.`;
-    await updateAssistantMessage(sessionId, assistantMessage.id, (message) => {
-      message.content = errorMessage;
-      message.status = 'error';
-      message.title = 'Claude error';
+    const stdoutProcessor = createSequentialLineProcessor((line) =>
+      handleClaudeLine(sessionId, assistantMessageId, line, runState),
+    );
+
+    child.stdout.on('data', (chunk: Buffer | string) => {
+      stdoutProcessor.pushChunk(chunk.toString());
     });
 
-    broadcastClaudeEvent({
-      type: 'error',
-      sessionId,
-      messageId: assistantMessage.id,
-      error: errorMessage,
+    child.stderr.on('data', (chunk: Buffer | string) => {
+      stderrBuffer += chunk.toString();
+    });
+
+    child.stdin.write(`${buildClaudeUserMessageLine(resolvedPrompt)}\n`);
+
+    child.on('close', (code) => {
+      if (!beginFinalize()) {
+        return;
+      }
+
+      void (async () => {
+        try {
+          await stdoutProcessor.flush();
+
+          if (code === 0) {
+            if (runState.terminalError) {
+              await setSessionRuntime(sessionId, {
+                claudeSessionId: runState.claudeSessionId,
+                model: runState.model,
+                preview: runState.terminalError,
+                timeLabel: 'Just now',
+              });
+              return;
+            }
+            if (shouldCompleteClaudeRunOnClose(runState)) {
+              await completeAssistantRun(sessionId, assistantMessageId, runState);
+            }
+            return;
+          }
+
+          const nativeApiError = await readLatestNativeClaudeApiError(
+            session.workspace,
+            runState.claudeSessionId ?? session.claudeSessionId,
+          );
+          const errorMessage =
+            stderrBuffer.trim() ||
+            runState.terminalError ||
+            nativeApiError ||
+            `Claude exited with code ${code ?? 'unknown'}.`;
+          await updateAssistantMessage(sessionId, assistantMessageId, (message) => {
+            message.content = errorMessage;
+            message.status = 'error';
+            message.title = 'Claude error';
+          });
+          await setSessionRuntime(sessionId, {
+            claudeSessionId: runState.claudeSessionId,
+            model: runState.model,
+            preview: errorMessage,
+            timeLabel: 'Just now',
+          });
+
+          broadcastClaudeEvent({
+            type: 'error',
+            sessionId,
+            messageId: assistantMessageId,
+            error: errorMessage,
+          });
+        } finally {
+          resolve();
+        }
+      })();
+    });
+
+    child.on('error', (error) => {
+      if (!beginFinalize()) {
+        return;
+      }
+
+      void (async () => {
+        try {
+          await updateAssistantMessage(sessionId, assistantMessageId, (message) => {
+            message.content = error.message;
+            message.status = 'error';
+            message.title = 'Claude error';
+          });
+          await setSessionRuntime(sessionId, {
+            claudeSessionId: runState.claudeSessionId,
+            model: runState.model,
+            preview: error.message,
+            timeLabel: 'Just now',
+          });
+
+          broadcastClaudeEvent({
+            type: 'error',
+            sessionId,
+            messageId: assistantMessageId,
+            error: error.message,
+          });
+        } finally {
+          resolve();
+        }
+      })();
     });
   });
 
-  child.on('error', async (error) => {
-    activeRuns.delete(sessionId);
-
-    await updateAssistantMessage(sessionId, assistantMessage.id, (message) => {
-      message.content = error.message;
-      message.status = 'error';
-      message.title = 'Claude error';
-    });
-
-    broadcastClaudeEvent({
-      type: 'error',
-      sessionId,
-      messageId: assistantMessage.id,
-      error: error.message,
-    });
+const runClaudePrint = async (
+  sessionId: string,
+  prompt: string,
+  pendingAttachments: PendingAttachment[] = [],
+  fallbackSession?: SessionSummary,
+  options?: ClaudePrintOptions,
+) => {
+  const queued = hasSessionRunQueued(sessionRunQueue, sessionId);
+  const preparedRun = prepareClaudeRun(
+    sessionId,
+    prompt,
+    pendingAttachments,
+    fallbackSession,
+    options,
+    queued ? 'queued' : 'streaming',
+  );
+  const scheduledRun = enqueueSessionRun(sessionRunQueue, sessionId, async () => {
+    const prepared = await preparedRun;
+    await markPreparedClaudeRunStarted(prepared);
+    await executePreparedClaudeRun(prepared);
   });
+  void scheduledRun.completion.catch(() => undefined);
+  const prepared = await preparedRun;
 
   return {
-    projects,
+    projects: prepared.projects,
     queued: {
       sessionId,
-      userMessageId: userMessage.id,
-      assistantMessageId: assistantMessage.id,
+      userMessageId: prepared.userMessageId,
+      assistantMessageId: prepared.assistantMessageId,
     },
   };
 };
@@ -1249,6 +1444,7 @@ app.whenReady().then(async () => {
     async (
       _event,
       payload: {
+        sessionId?: string;
         cwd: string;
         prompt: string;
         model?: string;
@@ -1280,6 +1476,45 @@ app.whenReady().then(async () => {
   );
   ipcMain.handle('projects:create', async (_event, payload: { name: string; rootPath: string }) =>
     createProject(payload.name, payload.rootPath),
+  );
+  ipcMain.handle('permissions:grant-path', async (_event, payload: { projectRoot: string; targetPath: string }) => {
+    await grantPathPermission(payload.projectRoot, payload.targetPath);
+  });
+  ipcMain.handle(
+    'permissions:respond',
+    async (_event, payload: { requestId: string; behavior: 'allow' | 'deny' }) => {
+      const pending = pendingPermissionRequests.get(payload.requestId);
+      if (!pending) {
+        return { mode: 'missing' as const };
+      }
+
+      pendingPermissionRequests.delete(payload.requestId);
+
+      if (payload.behavior === 'allow' && pending.request.targetPath) {
+        await grantPathPermission(pending.activeRun.projectRoot, pending.request.targetPath);
+      }
+
+      const stdin = pending.activeRun.child.stdin;
+      if (
+        stdin &&
+        !pending.activeRun.child.killed &&
+        !stdin.destroyed &&
+        !stdin.writableEnded
+      ) {
+        stdin.write(`${buildClaudeControlResponseLine(pending.request, payload.behavior)}\n`);
+        return { mode: 'interactive' as const };
+      }
+
+      if (payload.behavior === 'allow' && pending.request.targetPath) {
+        await runClaudePrint(
+          pending.sessionId,
+          `Permission was granted for ${pending.request.targetPath}. Retry only the blocked tool action.`,
+        );
+        return { mode: 'fallback' as const };
+      }
+
+      return { mode: 'missing' as const };
+    },
   );
   ipcMain.handle('projects:open-directory', async () => openProjectDirectory());
   ipcMain.handle('projects:close', async (_event, payload: { projectId: string }) => {

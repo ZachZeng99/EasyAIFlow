@@ -5,4 +5,7 @@ dist-server
 release
 *.tsbuildinfo
 run.log
+.codex-dev.stdout.log
+.codex-dev.stderr.log
+.tmp-tests/
 .DS_Store

@@ -1,149 +1,26 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { ConversationMessage, SessionSummary } from '../data/types';
+import { DiffContent } from './DiffContent';
+import { parsePermissionRequest, type PermissionRequest } from '../data/permissionRequest';
+import { buildDisplayItems, shouldShowTitle } from '../data/chatThreadDisplay';
+import type { ConversationMessage, DiffPayload, SessionSummary } from '../data/types';
 
 type ChatThreadProps = {
   session: SessionSummary;
   messages: ConversationMessage[];
+  onRequestPermission?: (request: PermissionRequest) => void;
+  onRequestDiff?: (filePath: string) => Promise<DiffPayload>;
 };
 
-type DisplayItem =
-  | { type: 'message'; message: ConversationMessage }
-  | { type: 'trace-group'; id: string; items: ConversationMessage[] };
-
-const shouldShowTitle = (message: ConversationMessage) => {
-  if (message.kind && message.kind !== 'message') {
-    return true;
-  }
-
-  const normalizedTitle = message.title.trim();
-  const normalizedContent = message.content.trim();
-  if (!normalizedTitle || !normalizedContent) {
-    return Boolean(normalizedTitle);
-  }
-
-  return normalizedTitle !== normalizedContent && !normalizedContent.startsWith(normalizedTitle);
-};
-
-const normalizeMessages = (messages: ConversationMessage[]) => {
-  const result: ConversationMessage[] = [];
-  let activeTrace: ConversationMessage | null = null;
-
-  const flushTrace = () => {
-    if (activeTrace) {
-      result.push(activeTrace);
-      activeTrace = null;
-    }
-  };
-
-  for (const message of messages) {
-    if (message.role !== 'system') {
-      flushTrace();
-      result.push(message);
-      continue;
-    }
-
-    if (message.kind === 'thinking') {
-      const text = message.content.trim();
-      if (!text || text === 'Thinking step captured.' || text === 'Thinking was redacted by provider.') {
-        continue;
-      }
-    }
-
-    if (message.kind === 'tool_use') {
-      flushTrace();
-      activeTrace = {
-        ...message,
-        content: message.content.trim(),
-        status:
-          message.status === 'error'
-            ? 'error'
-            : message.status === 'success'
-              ? 'success'
-              : message.status === 'complete'
-                ? 'complete'
-                : 'running',
-      };
-      continue;
-    }
-
-    if ((message.kind === 'progress' || message.kind === 'tool_result') && activeTrace) {
-      const extra = message.content.trim();
-      activeTrace = {
-        ...activeTrace,
-        content: extra ? `${activeTrace.content}\n${extra}` : activeTrace.content,
-        status:
-          message.status === 'error'
-            ? 'error'
-            : message.kind === 'tool_result'
-              ? 'success'
-              : activeTrace.status,
-      };
-      continue;
-    }
-
-    flushTrace();
-    result.push(message);
-  }
-
-  flushTrace();
-  return result;
-};
-
-const buildDisplayItems = (messages: ConversationMessage[]): DisplayItem[] => {
-  const normalized = normalizeMessages(messages);
-  const items: DisplayItem[] = [];
-
-  for (let index = 0; index < normalized.length; index += 1) {
-    const current = normalized[index];
-
-    if (current.role === 'assistant') {
-      const systemRun: ConversationMessage[] = [];
-      let nextIndex = index + 1;
-      while (nextIndex < normalized.length && normalized[nextIndex].role === 'system') {
-        systemRun.push(normalized[nextIndex]);
-        nextIndex += 1;
-      }
-
-      if (systemRun.length > 0) {
-        items.push({
-          type: 'trace-group',
-          id: `trace-group-${current.id}`,
-          items: systemRun,
-        });
-        items.push({ type: 'message', message: current });
-        index = nextIndex - 1;
-        continue;
-      }
-    }
-
-    if (current.role === 'system') {
-      const systemRun: ConversationMessage[] = [current];
-      let nextIndex = index + 1;
-      while (nextIndex < normalized.length && normalized[nextIndex].role === 'system') {
-        systemRun.push(normalized[nextIndex]);
-        nextIndex += 1;
-      }
-
-      items.push({
-        type: 'trace-group',
-        id: `trace-group-${current.id}`,
-        items: systemRun,
-      });
-      index = nextIndex - 1;
-      continue;
-    }
-
-    items.push({ type: 'message', message: current });
-  }
-
-  return items;
-};
-
-export function ChatThread({ session, messages }: ChatThreadProps) {
+export function ChatThread({ session, messages, onRequestPermission, onRequestDiff }: ChatThreadProps) {
   const displayItems = useMemo(() => buildDisplayItems(messages), [messages]);
   const [openTraceIds, setOpenTraceIds] = useState<Record<string, boolean>>({});
+  const [openTraceGroupIds, setOpenTraceGroupIds] = useState<Record<string, boolean>>({});
+  const [openCodeChangeGroupIds, setOpenCodeChangeGroupIds] = useState<Record<string, boolean>>({});
+  const [openCodeChangeIds, setOpenCodeChangeIds] = useState<Record<string, boolean>>({});
+  const [codeChangeDiffs, setCodeChangeDiffs] = useState<Record<string, DiffPayload | null>>({});
+  const [loadingCodeChangeDiffIds, setLoadingCodeChangeDiffIds] = useState<Record<string, boolean>>({});
   const streamRef = useRef<HTMLDivElement | null>(null);
 
   const traceSummary = useMemo(() => {
@@ -163,6 +40,52 @@ export function ChatThread({ session, messages }: ChatThreadProps) {
 
     element.scrollTop = element.scrollHeight;
   }, [displayItems]);
+
+  useEffect(() => {
+    setOpenCodeChangeGroupIds({});
+    setOpenCodeChangeIds({});
+    setCodeChangeDiffs({});
+    setLoadingCodeChangeDiffIds({});
+  }, [session.id]);
+
+  const toggleCodeChange = async (changeId: string, filePath: string) => {
+    const nextOpen = !openCodeChangeIds[changeId];
+    setOpenCodeChangeIds((current) => ({
+      ...current,
+      [changeId]: nextOpen,
+    }));
+
+    if (!nextOpen || !onRequestDiff || codeChangeDiffs[changeId] || loadingCodeChangeDiffIds[changeId]) {
+      return;
+    }
+
+    setLoadingCodeChangeDiffIds((current) => ({
+      ...current,
+      [changeId]: true,
+    }));
+
+    try {
+      const payload = await onRequestDiff(filePath);
+      setCodeChangeDiffs((current) => ({
+        ...current,
+        [changeId]: payload,
+      }));
+    } catch {
+      setCodeChangeDiffs((current) => ({
+        ...current,
+        [changeId]: {
+          filePath,
+          kind: 'missing',
+          content: 'Failed to load diff for this file.',
+        },
+      }));
+    } finally {
+      setLoadingCodeChangeDiffIds((current) => ({
+        ...current,
+        [changeId]: false,
+      }));
+    }
+  };
 
   return (
     <section className="chat-pane">
@@ -196,12 +119,29 @@ export function ChatThread({ session, messages }: ChatThreadProps) {
       <div ref={streamRef} className="message-stream">
         {displayItems.map((item) =>
           item.type === 'trace-group' ? (
-            <section key={item.id} className="trace-group-card">
-              <div className="trace-group-head">
-                <strong>Process</strong>
-                <span>{item.items.length} steps</span>
-              </div>
+            <section
+              key={item.id}
+              className={`trace-group-card${openTraceGroupIds[item.id] ? ' expanded' : ' collapsed'}`}
+            >
+              <button
+                type="button"
+                className="trace-group-head"
+                aria-expanded={Boolean(openTraceGroupIds[item.id])}
+                onClick={() =>
+                  setOpenTraceGroupIds((current) => ({
+                    ...current,
+                    [item.id]: !current[item.id],
+                  }))
+                }
+              >
+                <div className="trace-group-summary">
+                  <strong>Process</strong>
+                  <span>{item.items.length} steps</span>
+                </div>
+                <span className="trace-arrow">{openTraceGroupIds[item.id] ? '▾' : '▸'}</span>
+              </button>
 
+              {openTraceGroupIds[item.id] ? (
                 <div className="trace-group-list">
                   {item.items.map((message) => {
                     const hasDetails = Boolean(message.content.trim());
@@ -236,13 +176,30 @@ export function ChatThread({ session, messages }: ChatThreadProps) {
                         {isOpen ? (
                           <div className="markdown-body trace-markdown">
                             <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                            {(() => {
+                              const request = parsePermissionRequest(message.content);
+                              if (!request || !onRequestPermission) {
+                                return null;
+                              }
+
+                              return (
+                                <button
+                                  type="button"
+                                  className="dialog-button primary"
+                                  onClick={() => onRequestPermission(request)}
+                                >
+                                  Grant Access
+                                </button>
+                              );
+                            })()}
                           </div>
                         ) : null}
                       </article>
                     );
                   })}
                 </div>
-              </section>
+              ) : null}
+            </section>
           ) : (
             <article key={item.message.id} className={`message-card ${item.message.role}${item.message.role === 'assistant' ? ' final-reply' : ''}`}>
               <div className="message-meta">
@@ -260,6 +217,82 @@ export function ChatThread({ session, messages }: ChatThreadProps) {
               ) : (
                 <pre className="message-body">{item.message.content}</pre>
               )}
+
+              {item.type === 'message' && item.message.role === 'assistant' && (item.codeChanges?.length ?? 0) > 0 ? (
+                <section
+                  className={`code-change-section${openCodeChangeGroupIds[item.message.id] ? ' expanded' : ' collapsed'}`}
+                >
+                  <button
+                    type="button"
+                    className="code-change-head"
+                    aria-expanded={Boolean(openCodeChangeGroupIds[item.message.id])}
+                    onClick={() =>
+                      setOpenCodeChangeGroupIds((current) => ({
+                        ...current,
+                        [item.message.id]: !current[item.message.id],
+                      }))
+                    }
+                  >
+                    <div className="code-change-summary">
+                      <strong>Code Changes</strong>
+                      <span>
+                        {item.codeChanges?.length} file{item.codeChanges?.length === 1 ? '' : 's'}
+                      </span>
+                    </div>
+                    <span className="trace-arrow">{openCodeChangeGroupIds[item.message.id] ? '▾' : '▸'}</span>
+                  </button>
+
+                  {openCodeChangeGroupIds[item.message.id] ? (
+                    <div className="code-change-list">
+                      {item.codeChanges?.map((change) => {
+                        const isOpen = Boolean(openCodeChangeIds[change.id]);
+                        const diffPayload = codeChangeDiffs[change.id] ?? null;
+                        const isLoadingDiff = Boolean(loadingCodeChangeDiffIds[change.id]);
+
+                        return (
+                          <article key={change.id} className={`code-change-card${isOpen ? ' expanded' : ''}`}>
+                            <button
+                              type="button"
+                              className="code-change-toggle"
+                              aria-expanded={isOpen}
+                              onClick={() => {
+                                void toggleCodeChange(change.id, change.filePath);
+                              }}
+                            >
+                              <div className="code-change-card-copy">
+                                <div className="code-change-card-head">
+                                  <strong>{change.filePath}</strong>
+                                  <span className="code-change-badge">{change.operationLabel}</span>
+                                </div>
+                                <p>{change.summary}</p>
+                              </div>
+                              <span className="trace-arrow">{isOpen ? '▾' : '▸'}</span>
+                            </button>
+
+                            {isOpen ? (
+                              <div className="code-change-body">
+                                {isLoadingDiff ? (
+                                  <pre>Loading diff...</pre>
+                                ) : diffPayload ? (
+                                  <div className="diff-viewer inline">
+                                    <div className="diff-header">
+                                      <strong>{change.filePath}</strong>
+                                      <span>{diffPayload.kind}</span>
+                                    </div>
+                                    <DiffContent payload={diffPayload} />
+                                  </div>
+                                ) : (
+                                  <pre>{change.details}</pre>
+                                )}
+                              </div>
+                            ) : null}
+                          </article>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </section>
+              ) : null}
 
               {item.message.contextReferences && item.message.contextReferences.length > 0 ? (
                 <div className="message-context-reference-list">

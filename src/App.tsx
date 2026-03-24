@@ -3,9 +3,12 @@ import { BtwPanel, type BtwMessage } from './components/BtwPanel';
 import { ChatComposer, type ComposerAttachment } from './components/ChatComposer';
 import { ChatHistory } from './components/ChatHistory';
 import { ManageDialog } from './components/ManageDialog';
+import { PermissionDialog } from './components/PermissionDialog';
 import { ChatThread } from './components/ChatThread';
 import { ContextPanel } from './components/ContextPanel';
 import { projectTree } from './data/mockSessions';
+import { parsePermissionRequest } from './data/permissionRequest';
+import { resolveRequestedModelArg, syncImplicitModelSelection, type ModelSelectionSource } from './data/modelSelection';
 import type {
   BtwResponse,
   ClaudeStreamEvent,
@@ -29,19 +32,8 @@ const flattenSessions = (projects: ProjectRecord[]) =>
 const findLastAssistantMessage = (session: SessionRecord) =>
   [...(session.messages ?? [])].reverse().find((message) => message.role === 'assistant');
 
-const toRequestedModel = (model: string, fallback: string) => {
-  const normalized = model.trim().toLowerCase();
-  if (!normalized) {
-    return fallback;
-  }
-  if (normalized.includes('opus')) {
-    return 'opus[1m]';
-  }
-  if (normalized.includes('sonnet')) {
-    return 'sonnet[1m]';
-  }
-  return fallback;
-};
+const isAssistantPendingStatus = (status: string | undefined) =>
+  status === 'queued' || status === 'streaming' || status === 'running';
 
 const updateSessionInProjects = (
   projects: ProjectRecord[],
@@ -61,6 +53,10 @@ const updateSessionInProjects = (
 const applyClaudeEvent = (projects: ProjectRecord[], event: ClaudeStreamEvent) =>
   updateSessionInProjects(projects, event.sessionId, (session) => {
     const updatedAt = Date.now();
+
+    if (event.type === 'permission-request') {
+      return session;
+    }
 
     if (event.type === 'trace') {
       const messages = [...(session.messages ?? [])];
@@ -85,6 +81,24 @@ const applyClaudeEvent = (projects: ProjectRecord[], event: ClaudeStreamEvent) =
     }
 
     const target = { ...messages[targetIndex] };
+
+    if (event.type === 'status') {
+      if (typeof event.content === 'string') {
+        target.content = event.content;
+      }
+      if (typeof event.title === 'string') {
+        target.title = event.title;
+      }
+      if (event.status) {
+        target.status = event.status;
+      }
+      messages[targetIndex] = target;
+      return {
+        ...session,
+        messages,
+        updatedAt,
+      };
+    }
 
     if (event.type === 'delta') {
       target.content += event.delta;
@@ -274,6 +288,13 @@ type SessionIndicator = {
   state: SessionActivityState;
 };
 
+type ActivePermissionRequest = {
+  path: string;
+  sensitive: boolean;
+  requestId?: string;
+  sessionId?: string;
+};
+
 export default function App() {
   const [projects, setProjects] = useState<ProjectRecord[]>(projectTree);
   const [selectedSessionId, setSelectedSessionId] = useState('');
@@ -281,12 +302,15 @@ export default function App() {
   const [appVersion, setAppVersion] = useState('desktop');
   const [isSending, setIsSending] = useState(false);
   const [model, setModel] = useState('opus[1m]');
+  const [modelSelectionSource, setModelSelectionSource] = useState<ModelSelectionSource>('implicit');
   const [effort, setEffort] = useState<'low' | 'medium' | 'high' | 'max'>('high');
   const [isResizingPane, setIsResizingPane] = useState(false);
   const [leftPaneWidth, setLeftPaneWidth] = useState(338);
   const [isDialogBusy, setIsDialogBusy] = useState(false);
   const [uiError, setUiError] = useState<string | null>(null);
   const [dialogState, setDialogState] = useState<DialogState | null>(null);
+  const [permissionRequest, setPermissionRequest] = useState<ActivePermissionRequest | null>(null);
+  const [isGrantingPermission, setIsGrantingPermission] = useState(false);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const attachmentsRef = useRef<ComposerAttachment[]>([]);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -335,7 +359,7 @@ export default function App() {
       Object.fromEntries(
         allSessions.map((session) => {
           const lastAssistant = findLastAssistantMessage(session);
-          const isResponding = lastAssistant?.status === 'streaming' || lastAssistant?.status === 'running';
+          const isResponding = isAssistantPendingStatus(lastAssistant?.status);
           const hasUnread = unreadSessionIds.includes(session.id);
 
           if (isResponding) {
@@ -479,6 +503,7 @@ export default function App() {
         }
         if (meta?.defaultModel) {
           setModel(meta.defaultModel);
+          setModelSelectionSource('implicit');
         }
 
         if (bootstrap?.projects?.length) {
@@ -502,6 +527,23 @@ export default function App() {
     try {
       unsubscribe = getBridge().onClaudeEvent((event) => {
         setProjects((current) => applyClaudeEvent(current, event));
+        if (event.type === 'permission-request') {
+          setPermissionRequest({
+            path: event.targetPath ?? event.command ?? event.description ?? event.toolName,
+            sensitive: event.sensitive,
+            requestId: event.requestId,
+            sessionId: event.sessionId,
+          });
+        }
+        if (event.type === 'trace' && event.message.status === 'error') {
+          const request = parsePermissionRequest(event.message.content);
+          if (request) {
+            setPermissionRequest({
+              path: request.targetPath,
+              sensitive: request.sensitive,
+            });
+          }
+        }
         if (event.type === 'complete') {
           playReplyCompleteTone();
         }
@@ -509,9 +551,6 @@ export default function App() {
           setUnreadSessionIds((current) =>
             current.includes(event.sessionId) ? current : [...current, event.sessionId],
           );
-        }
-        if (event.sessionId === selectedSessionId && (event.type === 'complete' || event.type === 'error')) {
-          setIsSending(false);
         }
       });
     } catch {
@@ -522,18 +561,6 @@ export default function App() {
       unsubscribe?.();
     };
   }, [playReplyCompleteTone, selectedSessionId]);
-
-  useEffect(() => {
-    if (!isSending || !selectedSession) {
-      return;
-    }
-
-    const lastAssistant = findLastAssistantMessage(selectedSession);
-
-    if (lastAssistant?.status === 'complete' || lastAssistant?.status === 'error') {
-      setIsSending(false);
-    }
-  }, [isSending, selectedSession]);
 
   useEffect(() => {
     if (!selectedSessionId) {
@@ -553,7 +580,13 @@ export default function App() {
       return;
     }
 
-    setModel((current) => toRequestedModel(selectedSession.model, current));
+    setModel((current) => {
+      const next = syncImplicitModelSelection(current, modelSelectionSource, selectedSession.model);
+      if (next.source !== modelSelectionSource) {
+        setModelSelectionSource(next.source);
+      }
+      return next.model;
+    });
 
     setGitSnapshot({
       ...selectedSession.branchSnapshot,
@@ -579,7 +612,7 @@ export default function App() {
     void getBridge()
       .getSlashCommands({
         cwd: selectedSession.workspace,
-        model,
+        model: resolveRequestedModelArg(model, modelSelectionSource),
       })
       .then((result) => {
         if (!cancelled) {
@@ -595,7 +628,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [selectedSession?.workspace, model]);
+  }, [selectedSession?.workspace, model, modelSelectionSource]);
 
   useEffect(() => {
     attachmentsRef.current = attachments;
@@ -782,7 +815,7 @@ export default function App() {
         attachments: pendingAttachments,
         session: selectedSession,
         references: displayContextReferences,
-        model,
+        model: resolveRequestedModelArg(model, modelSelectionSource),
         effort,
       });
 
@@ -802,7 +835,6 @@ export default function App() {
       setDraft('');
       clearAttachments();
     } catch (error) {
-      setIsSending(false);
       const message = error instanceof Error ? error.message : 'Failed to send message.';
       setUiError(message);
       setProjects((current) =>
@@ -821,6 +853,8 @@ export default function App() {
           ],
         })),
       );
+    } finally {
+      setIsSending(false);
     }
   };
 
@@ -852,9 +886,10 @@ export default function App() {
 
     try {
       const result = await getBridge().sendBtwMessage({
+        sessionId: selectedSession.id,
         cwd: selectedSession.workspace,
         prompt,
-        model,
+        model: resolveRequestedModelArg(model, modelSelectionSource),
         effort,
         claudeSessionId: btwState.claudeSessionId,
         baseClaudeSessionId: btwState.claudeSessionId ? undefined : selectedSession.claudeSessionId,
@@ -926,6 +961,58 @@ export default function App() {
       }
     } catch (error) {
       setUiError(error instanceof Error ? error.message : 'Failed to open project.');
+    }
+  };
+
+  const handleGrantPermission = async () => {
+    if (!permissionRequest) {
+      return;
+    }
+
+    setIsGrantingPermission(true);
+    try {
+      if (permissionRequest.requestId) {
+        await getBridge().respondToPermissionRequest({
+          requestId: permissionRequest.requestId,
+          behavior: 'allow',
+        });
+      } else {
+        if (!selectedProject) {
+          throw new Error('No active project available to persist this permission.');
+        }
+
+        await getBridge().grantPathPermission({
+          projectRoot: selectedProject.rootPath,
+          targetPath: permissionRequest.path,
+        });
+      }
+      setPermissionRequest(null);
+      setUiError(null);
+    } catch (error) {
+      setUiError(error instanceof Error ? error.message : 'Failed to grant permission.');
+    } finally {
+      setIsGrantingPermission(false);
+    }
+  };
+
+  const handleCancelPermission = async () => {
+    if (!permissionRequest?.requestId) {
+      setPermissionRequest(null);
+      return;
+    }
+
+    setIsGrantingPermission(true);
+    try {
+      await getBridge().respondToPermissionRequest({
+        requestId: permissionRequest.requestId,
+        behavior: 'deny',
+      });
+      setPermissionRequest(null);
+      setUiError(null);
+    } catch (error) {
+      setUiError(error instanceof Error ? error.message : 'Failed to deny permission.');
+    } finally {
+      setIsGrantingPermission(false);
     }
   };
 
@@ -1194,7 +1281,17 @@ export default function App() {
         <>
           <main className="conversation-layout">
             {uiError ? <div className="ui-error-banner">{uiError}</div> : null}
-            <ChatThread session={selectedSession} messages={selectedSession.messages ?? []} />
+            <ChatThread
+              session={selectedSession}
+              messages={selectedSession.messages ?? []}
+              onRequestDiff={handleRequestDiff}
+              onRequestPermission={(request) =>
+                setPermissionRequest({
+                  path: request.targetPath,
+                  sensitive: request.sensitive,
+                })
+              }
+            />
             <BtwPanel
               isOpen={btwState.isOpen}
               draft={btwState.draft}
@@ -1226,7 +1323,10 @@ export default function App() {
               model={model}
               effort={effort}
               onDraftChange={handleDraftChange}
-              onModelChange={setModel}
+              onModelChange={(value) => {
+                setModel(value);
+                setModelSelectionSource('explicit');
+              }}
               onEffortChange={setEffort}
               onUpdateContextReferenceMode={(referenceId, mode) => {
                 handleUpdateContextReferences(
@@ -1314,6 +1414,19 @@ export default function App() {
         onCancel={() => setDialogState(null)}
         onSubmit={() => {
           void handleSubmitDialog();
+        }}
+      />
+      <PermissionDialog
+        open={Boolean(permissionRequest)}
+        path={permissionRequest?.path ?? ''}
+        sensitive={Boolean(permissionRequest?.sensitive)}
+        interactive={Boolean(permissionRequest?.requestId)}
+        busy={isGrantingPermission}
+        onCancel={() => {
+          void handleCancelPermission();
+        }}
+        onGrant={() => {
+          void handleGrantPermission();
         }}
       />
     </div>
