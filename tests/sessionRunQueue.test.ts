@@ -11,39 +11,46 @@ const run = async (name: string, fn: () => Promise<void> | void) => {
   }
 };
 
-await run('enqueueSessionRun serializes runs for the same session', async () => {
+await run('enqueueSessionRun releases the next turn before prior background cleanup finishes', async () => {
   const queue = createSessionRunQueue();
   const order: string[] = [];
-  let releaseFirst!: () => void;
-  const firstGate = new Promise<void>((resolve) => {
-    releaseFirst = resolve;
+  let finishFirstCleanup!: () => void;
+  const firstCleanup = new Promise<void>((resolve) => {
+    finishFirstCleanup = resolve;
   });
 
   assert.equal(hasSessionRunQueued(queue, 'session-1'), false);
 
-  const first = enqueueSessionRun(queue, 'session-1', async () => {
+  const first = enqueueSessionRun(queue, 'session-1');
+  const firstExecution = first.whenReady.then(async () => {
     order.push('first:start');
-    await firstGate;
-    order.push('first:end');
+    await firstCleanup;
+    order.push('first:cleanup');
   });
 
   assert.equal(first.queued, false);
   assert.equal(hasSessionRunQueued(queue, 'session-1'), true);
 
-  const second = enqueueSessionRun(queue, 'session-1', async () => {
+  const second = enqueueSessionRun(queue, 'session-1');
+  const secondExecution = second.whenReady.then(() => {
     order.push('second:start');
-    order.push('second:end');
+    second.release();
   });
 
   assert.equal(second.queued, true);
-  await Promise.resolve();
+  await first.whenReady;
   await Promise.resolve();
   assert.deepEqual(order, ['first:start']);
 
-  releaseFirst();
-  await Promise.all([first.completion, second.completion]);
+  first.release();
+  await second.whenReady;
+  await Promise.resolve();
+  assert.deepEqual(order, ['first:start', 'second:start']);
 
-  assert.deepEqual(order, ['first:start', 'first:end', 'second:start', 'second:end']);
+  finishFirstCleanup();
+  await Promise.all([firstExecution, secondExecution, first.completion, second.completion]);
+
+  assert.deepEqual(order, ['first:start', 'second:start', 'first:cleanup']);
   assert.equal(hasSessionRunQueued(queue, 'session-1'), false);
 });
 
@@ -51,16 +58,27 @@ await run('enqueueSessionRun keeps different sessions independent', async () => 
   const queue = createSessionRunQueue();
   const order: string[] = [];
 
-  const first = enqueueSessionRun(queue, 'session-1', async () => {
+  const first = enqueueSessionRun(queue, 'session-1');
+  const firstExecution = first.whenReady.then(() => {
     order.push('session-1');
+    first.release();
   });
-  const second = enqueueSessionRun(queue, 'session-2', async () => {
+  const second = enqueueSessionRun(queue, 'session-2');
+  const secondExecution = second.whenReady.then(() => {
     order.push('session-2');
+    second.release();
   });
 
   assert.equal(first.queued, false);
   assert.equal(second.queued, false);
 
-  await Promise.all([first.completion, second.completion]);
+  await Promise.all([
+    first.whenReady,
+    second.whenReady,
+    firstExecution,
+    secondExecution,
+    first.completion,
+    second.completion,
+  ]);
   assert.deepEqual(new Set(order), new Set(['session-1', 'session-2']));
 });

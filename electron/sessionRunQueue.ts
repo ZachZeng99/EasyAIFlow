@@ -4,19 +4,18 @@ export const createSessionRunQueue = (): SessionRunQueue => new Map<string, Prom
 
 export const hasSessionRunQueued = (queue: SessionRunQueue, sessionId: string) => queue.has(sessionId);
 
-export const enqueueSessionRun = (
-  queue: SessionRunQueue,
-  sessionId: string,
-  task: () => Promise<void>,
-) => {
+export const enqueueSessionRun = (queue: SessionRunQueue, sessionId: string) => {
   const previous = queue.get(sessionId);
+  const whenReady = (previous ?? Promise.resolve()).catch(() => undefined);
   const queued = Boolean(previous);
-  const completion = (previous ?? Promise.resolve())
-    .catch(() => undefined)
-    .then(task);
+  let releaseTurn!: () => void;
+  let released = false;
+  const turnReleased = new Promise<void>((resolve) => {
+    releaseTurn = resolve;
+  });
 
   let tracked!: Promise<void>;
-  tracked = completion.finally(() => {
+  tracked = whenReady.then(() => turnReleased).finally(() => {
     if (queue.get(sessionId) === tracked) {
       queue.delete(sessionId);
     }
@@ -26,6 +25,14 @@ export const enqueueSessionRun = (
 
   return {
     queued,
+    whenReady,
+    release: () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      releaseTurn();
+    },
     completion: tracked,
   };
 };

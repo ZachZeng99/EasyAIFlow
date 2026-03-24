@@ -6,7 +6,6 @@ import { allSessions, projectTree } from '../src/data/mockSessions.js';
 import { findImportedSessionTarget } from './importedSessionMatch.js';
 import { cleanupProjectSessions } from './projectSessionCleanup.js';
 import { pruneTemporaryImportedDuplicates } from './importedSessionCleanup.js';
-import { recoverStaleSessionMessages } from './sessionRecovery.js';
 import { resolveImportedSessionDisplay } from './importedSessionDisplay.js';
 import { shouldIgnoreImportedProgress } from './importedProgressFilter.js';
 import { deriveImportedSessionSummary } from './importedSessionSummary.js';
@@ -21,6 +20,7 @@ import { hydrateProjectForOpen } from './projectOpen.js';
 import { sortDreamsWithTemporaryFirst } from '../src/data/streamworkOrder.js';
 import { normalizeWorkspacePath, sameWorkspacePath, toClaudeProjectDirName } from './workspacePaths.js';
 import { filterVisibleProjects } from './projectVisibility.js';
+import { normalizeProjectsForCache, normalizeProjectsFromPersistence } from './sessionStoreNormalization.js';
 import type {
   BranchSnapshot,
   CloseProjectResult,
@@ -123,7 +123,7 @@ const normalizeDreamSessions = (dream: DreamRecord) => {
       model,
       contextReferences: normalizeContextReferences(current.contextReferences),
       tokenUsage: normalizeTokenUsage(current.tokenUsage, model),
-      messages: recoverStaleSessionMessages(current.messages),
+      messages: current.messages ?? [],
       updatedAt: current.updatedAt,
     };
   }) as SessionRecord[];
@@ -797,7 +797,7 @@ const buildInitialProjects = () => {
     ensureTemporaryStreamwork(project);
   });
 
-  return normalizeProjects(cloned);
+  return normalizeProjectsForCache(normalizeProjects(cloned));
 };
 
 const cloneProjects = (projects: ProjectRecord[]) => JSON.parse(JSON.stringify(projects)) as ProjectRecord[];
@@ -812,13 +812,13 @@ const ensureStateShape = (value: unknown): AppState => {
   projects.forEach((project) => ensureTemporaryStreamwork(project));
 
   return {
-    projects: normalizeProjects(projects),
+    projects: normalizeProjectsForCache(normalizeProjects(projects)),
   };
 };
 
 export const loadState = async () => {
   if (cachedState) {
-    cachedState.projects = normalizeProjects(cachedState.projects);
+    cachedState.projects = normalizeProjectsForCache(normalizeProjects(cachedState.projects));
     cachedState.projects.forEach((project) => ensureTemporaryStreamwork(project));
     return cachedState;
   }
@@ -828,11 +828,13 @@ export const loadState = async () => {
     cachedState = ensureStateShape(JSON.parse(raw));
     await Promise.all(cachedState.projects.map((project) => importNativeClaudeSessions(project)));
     await recoverExistingSessionsFromNativeHistory(cachedState.projects);
+    cachedState.projects = normalizeProjectsFromPersistence(normalizeProjects(cachedState.projects));
     await saveState(cachedState);
   } catch {
     cachedState = { projects: buildInitialProjects() };
     await Promise.all(cachedState.projects.map((project) => importNativeClaudeSessions(project)));
     await recoverExistingSessionsFromNativeHistory(cachedState.projects);
+    cachedState.projects = normalizeProjectsFromPersistence(normalizeProjects(cachedState.projects));
     await saveState(cachedState);
   }
 
@@ -841,7 +843,7 @@ export const loadState = async () => {
 
 export const saveState = async (state: AppState) => {
   cachedState = {
-    projects: normalizeProjects(cloneProjects(state.projects)),
+    projects: normalizeProjectsForCache(normalizeProjects(cloneProjects(state.projects))),
   };
 
   await mkdir(path.dirname(storePath()), { recursive: true });

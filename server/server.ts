@@ -1,6 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { existsSync } from 'node:fs';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -52,7 +53,18 @@ import {
   hasSessionRunQueued,
 } from '../electron/sessionRunQueue.js';
 import { getFileDiff } from '../electron/fileDiff.js';
-import { configureRuntimePaths, getRuntimePaths } from '../backend/runtimePaths.js';
+import {
+  addActiveClaudeRun,
+  createActiveClaudeRunRegistry,
+  listActiveClaudeRunsForSession,
+  removeActiveClaudeRun,
+  type ActiveClaudeRun as RegisteredClaudeRun,
+} from '../electron/claudeRunRegistry.js';
+import {
+  configureRuntimePaths,
+  getRuntimePaths,
+  resolveDefaultWebUserDataPath,
+} from '../backend/runtimePaths.js';
 import type {
   BtwResponse,
   ClaudeStreamEvent,
@@ -72,10 +84,8 @@ const sessionRunQueue = createSessionRunQueue();
 const slashCommandCache = new Map<string, { commands: string[]; expiresAt: number }>();
 const eventClients = new Set<ServerResponse<IncomingMessage>>();
 
-type ActiveClaudeRun = {
-  child: ReturnType<typeof spawn>;
-  projectRoot: string;
-};
+type ClaudeChildProcess = ReturnType<typeof spawn>;
+type ActiveClaudeRun = RegisteredClaudeRun<ClaudeChildProcess>;
 
 type PendingPermissionRequest = {
   sessionId: string;
@@ -108,12 +118,17 @@ type PreparedClaudeRun = {
   assistantWasQueued: boolean;
 };
 
-const activeRuns = new Map<string, ActiveClaudeRun>();
+const activeRuns = createActiveClaudeRunRegistry<ClaudeChildProcess>();
 const pendingPermissionRequests = new Map<string, PendingPermissionRequest>();
 
 configureRuntimePaths({
   mode: 'web',
-  userDataPath: process.env.EASYAIFLOW_DATA_DIR || path.join(os.homedir(), '.easyaiflow-web'),
+  userDataPath: resolveDefaultWebUserDataPath({
+    platform: process.platform,
+    env: process.env,
+    homePath: process.env.USERPROFILE || os.homedir(),
+    pathExists: (candidate) => existsSync(path.join(candidate, 'easyaiflow-sessions.json')),
+  }),
   homePath: process.env.USERPROFILE || os.homedir(),
 });
 
@@ -761,6 +776,8 @@ const handleClaudeLine = async (
   assistantMessageId: string,
   line: string,
   state: ClaudeRunState,
+  activeRun: ActiveClaudeRun,
+  releaseQueuedTurn: () => void,
 ) => {
   if (!line.trim()) {
     return;
@@ -769,26 +786,23 @@ const handleClaudeLine = async (
   const parsed = JSON.parse(line) as Record<string, unknown>;
   const permissionControlRequest = parseClaudePermissionControlRequest(parsed);
   if (permissionControlRequest) {
-    const activeRun = activeRuns.get(sessionId);
-    if (activeRun) {
-      pendingPermissionRequests.set(permissionControlRequest.requestId, {
-        sessionId,
-        activeRun,
-        request: permissionControlRequest,
-      });
+    pendingPermissionRequests.set(permissionControlRequest.requestId, {
+      sessionId,
+      activeRun,
+      request: permissionControlRequest,
+    });
 
-      broadcastClaudeEvent({
-        type: 'permission-request',
-        sessionId,
-        requestId: permissionControlRequest.requestId,
-        toolName: permissionControlRequest.toolName,
-        targetPath: permissionControlRequest.targetPath,
-        command: permissionControlRequest.command,
-        description: permissionControlRequest.description,
-        decisionReason: permissionControlRequest.decisionReason,
-        sensitive: permissionControlRequest.sensitive,
-      });
-    }
+    broadcastClaudeEvent({
+      type: 'permission-request',
+      sessionId,
+      requestId: permissionControlRequest.requestId,
+      toolName: permissionControlRequest.toolName,
+      targetPath: permissionControlRequest.targetPath,
+      command: permissionControlRequest.command,
+      description: permissionControlRequest.description,
+      decisionReason: permissionControlRequest.decisionReason,
+      sensitive: permissionControlRequest.sensitive,
+    });
     return;
   }
 
@@ -937,8 +951,12 @@ const handleClaudeLine = async (
   if (parsed.type === 'result') {
     state.receivedResult = true;
     state.tokenUsage = mapTokenUsage(parsed);
-    await completeAssistantRun(sessionId, assistantMessageId, state, String(parsed.result ?? ''));
-    activeRuns.get(sessionId)?.child.stdin?.end();
+    try {
+      await completeAssistantRun(sessionId, assistantMessageId, state, String(parsed.result ?? ''));
+    } finally {
+      releaseQueuedTurn();
+      activeRun.child.stdin?.end();
+    }
   }
 };
 
@@ -1022,7 +1040,10 @@ const markPreparedClaudeRunStarted = async (prepared: PreparedClaudeRun) => {
   });
 };
 
-const executePreparedClaudeRun = async (prepared: PreparedClaudeRun) =>
+const executePreparedClaudeRun = async (
+  prepared: PreparedClaudeRun,
+  releaseQueuedTurn: () => void,
+) =>
   new Promise<void>((resolve) => {
     const { sessionId, assistantMessageId, session, resolvedPrompt, options } = prepared;
     const args = buildClaudePrintArgs({
@@ -1032,7 +1053,9 @@ const executePreparedClaudeRun = async (prepared: PreparedClaudeRun) =>
     });
 
     const child = spawn('claude', args, getClaudeSpawnOptions(session.workspace));
-    activeRuns.set(sessionId, {
+    const activeRun = addActiveClaudeRun(activeRuns, {
+      runId: randomUUID(),
+      sessionId,
       child,
       projectRoot: session.workspace,
     });
@@ -1045,11 +1068,12 @@ const executePreparedClaudeRun = async (prepared: PreparedClaudeRun) =>
       }
       finalizing = true;
       for (const [requestId, pending] of pendingPermissionRequests) {
-        if (pending.sessionId === sessionId) {
+        if (pending.activeRun.runId === activeRun.runId) {
           pendingPermissionRequests.delete(requestId);
         }
       }
-      activeRuns.delete(sessionId);
+      removeActiveClaudeRun(activeRuns, activeRun.runId);
+      releaseQueuedTurn();
       return true;
     };
 
@@ -1062,7 +1086,7 @@ const executePreparedClaudeRun = async (prepared: PreparedClaudeRun) =>
     };
 
     const stdoutProcessor = createSequentialLineProcessor((line) =>
-      handleClaudeLine(sessionId, assistantMessageId, line, runState),
+      handleClaudeLine(sessionId, assistantMessageId, line, runState, activeRun, releaseQueuedTurn),
     );
 
     child.stdout.on('data', (chunk: Buffer | string) => {
@@ -1174,6 +1198,7 @@ const runClaudePrint = async (
   options?: ClaudePrintOptions,
 ) => {
   const queued = hasSessionRunQueued(sessionRunQueue, sessionId);
+  const scheduledRun = enqueueSessionRun(sessionRunQueue, sessionId);
   const preparedRun = prepareClaudeRun(
     sessionId,
     prompt,
@@ -1182,11 +1207,16 @@ const runClaudePrint = async (
     options,
     queued ? 'queued' : 'streaming',
   );
-  const scheduledRun = enqueueSessionRun(sessionRunQueue, sessionId, async () => {
-    const prepared = await preparedRun;
-    await markPreparedClaudeRunStarted(prepared);
-    await executePreparedClaudeRun(prepared);
-  });
+  void (async () => {
+    try {
+      const prepared = await preparedRun;
+      await scheduledRun.whenReady;
+      await markPreparedClaudeRunStarted(prepared);
+      await executePreparedClaudeRun(prepared, scheduledRun.release);
+    } catch {
+      scheduledRun.release();
+    }
+  })();
   void scheduledRun.completion.catch(() => undefined);
   const prepared = await preparedRun;
 
@@ -1250,6 +1280,8 @@ const runBtwPrompt = async (
           pendingPermissionRequests.set(permissionControlRequest.requestId, {
             sessionId: options?.sessionId ?? '',
             activeRun: {
+              runId: randomUUID(),
+              sessionId: options?.sessionId ?? '',
               child,
               projectRoot: cwd,
             },
@@ -1351,16 +1383,18 @@ const runBtwPrompt = async (
 
 const stopSessions = (sessionIds: string[]) => {
   sessionIds.forEach((sessionId) => {
-    const run = activeRuns.get(sessionId);
-    if (run && !run.child.killed) {
-      run.child.kill();
-    }
+    const runs = listActiveClaudeRunsForSession(activeRuns, sessionId);
+    runs.forEach((run) => {
+      if (!run.child.killed) {
+        run.child.kill();
+      }
+      removeActiveClaudeRun(activeRuns, run.runId);
+    });
     for (const [requestId, pending] of pendingPermissionRequests) {
       if (pending.sessionId === sessionId) {
         pendingPermissionRequests.delete(requestId);
       }
     }
-    activeRuns.delete(sessionId);
   });
 };
 

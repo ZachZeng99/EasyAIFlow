@@ -50,6 +50,13 @@ import { getClaudeSpawnOptions } from './claudeSpawn.js';
 import { createSequentialLineProcessor } from './sequentialLineProcessor.js';
 import { createSessionRunQueue, enqueueSessionRun, hasSessionRunQueued } from './sessionRunQueue.js';
 import { getFileDiff } from './fileDiff.js';
+import {
+  addActiveClaudeRun,
+  createActiveClaudeRunRegistry,
+  listActiveClaudeRunsForSession,
+  removeActiveClaudeRun,
+  type ActiveClaudeRun as RegisteredClaudeRun,
+} from './claudeRunRegistry.js';
 import type {
   BtwResponse,
   ClaudeStreamEvent,
@@ -67,10 +74,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const devServerUrl = 'http://127.0.0.1:4173';
 const execFileAsync = promisify(execFile);
-type ActiveClaudeRun = {
-  child: ReturnType<typeof spawn>;
-  projectRoot: string;
-};
+type ClaudeChildProcess = ReturnType<typeof spawn>;
+type ActiveClaudeRun = RegisteredClaudeRun<ClaudeChildProcess>;
 
 type PendingPermissionRequest = {
   sessionId: string;
@@ -78,7 +83,7 @@ type PendingPermissionRequest = {
   request: ClaudePermissionControlRequest;
 };
 
-const activeRuns = new Map<string, ActiveClaudeRun>();
+const activeRuns = createActiveClaudeRunRegistry<ClaudeChildProcess>();
 const pendingPermissionRequests = new Map<string, PendingPermissionRequest>();
 const sessionRunQueue = createSessionRunQueue();
 const slashCommandCache = new Map<string, { commands: string[]; expiresAt: number }>();
@@ -285,6 +290,8 @@ const runBtwPrompt = async (
           pendingPermissionRequests.set(permissionControlRequest.requestId, {
             sessionId: options?.sessionId ?? '',
             activeRun: {
+              runId: randomUUID(),
+              sessionId: options?.sessionId ?? '',
               child,
               projectRoot: cwd,
             },
@@ -384,16 +391,18 @@ const runBtwPrompt = async (
 
 const stopSessions = (sessionIds: string[]) => {
   sessionIds.forEach((sessionId) => {
-    const run = activeRuns.get(sessionId);
-    if (run && !run.child.killed) {
-      run.child.kill();
-    }
+    const runs = listActiveClaudeRunsForSession(activeRuns, sessionId);
+    runs.forEach((run) => {
+      if (!run.child.killed) {
+        run.child.kill();
+      }
+      removeActiveClaudeRun(activeRuns, run.runId);
+    });
     for (const [requestId, pending] of pendingPermissionRequests) {
       if (pending.sessionId === sessionId) {
         pendingPermissionRequests.delete(requestId);
       }
     }
-    activeRuns.delete(sessionId);
   });
 };
 
@@ -962,6 +971,8 @@ const handleClaudeLine = async (
   assistantMessageId: string,
   line: string,
   state: ClaudeRunState,
+  activeRun: ActiveClaudeRun,
+  releaseQueuedTurn: () => void,
 ) => {
   if (!line.trim()) {
     return;
@@ -970,14 +981,11 @@ const handleClaudeLine = async (
   const parsed = JSON.parse(line) as Record<string, unknown>;
   const permissionControlRequest = parseClaudePermissionControlRequest(parsed);
   if (permissionControlRequest) {
-    const activeRun = activeRuns.get(sessionId);
-    if (activeRun) {
-      pendingPermissionRequests.set(permissionControlRequest.requestId, {
-        sessionId,
-        activeRun,
-        request: permissionControlRequest,
-      });
-    }
+    pendingPermissionRequests.set(permissionControlRequest.requestId, {
+      sessionId,
+      activeRun,
+      request: permissionControlRequest,
+    });
 
     broadcastClaudeEvent({
       type: 'permission-request',
@@ -1134,8 +1142,12 @@ const handleClaudeLine = async (
   if (parsed.type === 'result') {
     state.receivedResult = true;
     state.tokenUsage = mapTokenUsage(parsed);
-    await completeAssistantRun(sessionId, assistantMessageId, state, String(parsed.result ?? ''));
-    activeRuns.get(sessionId)?.child.stdin?.end();
+    try {
+      await completeAssistantRun(sessionId, assistantMessageId, state, String(parsed.result ?? ''));
+    } finally {
+      releaseQueuedTurn();
+      activeRun.child.stdin?.end();
+    }
   }
 };
 
@@ -1224,7 +1236,10 @@ const markPreparedClaudeRunStarted = async (prepared: PreparedClaudeRun) => {
   });
 };
 
-const executePreparedClaudeRun = async (prepared: PreparedClaudeRun) =>
+const executePreparedClaudeRun = async (
+  prepared: PreparedClaudeRun,
+  releaseQueuedTurn: () => void,
+) =>
   new Promise<void>((resolve) => {
     const { sessionId, assistantMessageId, session, resolvedPrompt, options } = prepared;
     const args = buildClaudePrintArgs({
@@ -1234,8 +1249,9 @@ const executePreparedClaudeRun = async (prepared: PreparedClaudeRun) =>
     });
 
     const child = spawn('claude', args, getClaudeSpawnOptions(session.workspace));
-
-    activeRuns.set(sessionId, {
+    const activeRun = addActiveClaudeRun(activeRuns, {
+      runId: randomUUID(),
+      sessionId,
       child,
       projectRoot: session.workspace,
     });
@@ -1248,11 +1264,12 @@ const executePreparedClaudeRun = async (prepared: PreparedClaudeRun) =>
       }
       finalizing = true;
       for (const [requestId, pending] of pendingPermissionRequests) {
-        if (pending.sessionId === sessionId) {
+        if (pending.activeRun.runId === activeRun.runId) {
           pendingPermissionRequests.delete(requestId);
         }
       }
-      activeRuns.delete(sessionId);
+      removeActiveClaudeRun(activeRuns, activeRun.runId);
+      releaseQueuedTurn();
       return true;
     };
     const runState: ClaudeRunState = {
@@ -1264,7 +1281,7 @@ const executePreparedClaudeRun = async (prepared: PreparedClaudeRun) =>
     };
 
     const stdoutProcessor = createSequentialLineProcessor((line) =>
-      handleClaudeLine(sessionId, assistantMessageId, line, runState),
+      handleClaudeLine(sessionId, assistantMessageId, line, runState, activeRun, releaseQueuedTurn),
     );
 
     child.stdout.on('data', (chunk: Buffer | string) => {
@@ -1375,6 +1392,7 @@ const runClaudePrint = async (
   options?: ClaudePrintOptions,
 ) => {
   const queued = hasSessionRunQueued(sessionRunQueue, sessionId);
+  const scheduledRun = enqueueSessionRun(sessionRunQueue, sessionId);
   const preparedRun = prepareClaudeRun(
     sessionId,
     prompt,
@@ -1383,11 +1401,16 @@ const runClaudePrint = async (
     options,
     queued ? 'queued' : 'streaming',
   );
-  const scheduledRun = enqueueSessionRun(sessionRunQueue, sessionId, async () => {
-    const prepared = await preparedRun;
-    await markPreparedClaudeRunStarted(prepared);
-    await executePreparedClaudeRun(prepared);
-  });
+  void (async () => {
+    try {
+      const prepared = await preparedRun;
+      await scheduledRun.whenReady;
+      await markPreparedClaudeRunStarted(prepared);
+      await executePreparedClaudeRun(prepared, scheduledRun.release);
+    } catch {
+      scheduledRun.release();
+    }
+  })();
   void scheduledRun.completion.catch(() => undefined);
   const prepared = await preparedRun;
 

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { resolveDiffTarget } from '../electron/fileDiff.ts';
+import { getFileDiff, resolveDiffTarget } from '../electron/fileDiff.ts';
 
 const run = async (name: string, fn: () => Promise<void> | void) => {
   try {
@@ -36,4 +36,29 @@ run('resolveDiffTarget returns no git target for absolute files outside any know
 
   assert.equal(target.gitCwd, undefined);
   assert.equal(target.gitPath, undefined);
+});
+
+run('getFileDiff retries a transient read failure before giving up on preview content', async () => {
+  let readAttempts = 0;
+
+  const payload = await getFileDiff(
+    'X:\\PBZ\\ProjectPBZ',
+    'X:\\PBZ\\ProjectPBZ\\PS5_MemoryOptimization_AssetChanges.md',
+    async () => {
+      throw new Error('git unavailable');
+    },
+    async () => {
+      readAttempts += 1;
+      if (readAttempts === 1) {
+        const error = new Error('file busy') as Error & { code?: string };
+        error.code = 'EPERM';
+        throw error;
+      }
+      return '# Asset changes';
+    },
+  );
+
+  assert.equal(readAttempts, 2);
+  assert.equal(payload.kind, 'preview');
+  assert.equal(payload.content, '# Asset changes');
 });

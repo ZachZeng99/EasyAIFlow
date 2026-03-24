@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { DiffContent } from './DiffContent';
+import { shouldRequestCodeChangeDiff } from '../data/codeChangeDiff';
 import { parsePermissionRequest, type PermissionRequest } from '../data/permissionRequest';
 import { buildDisplayItems, shouldShowTitle } from '../data/chatThreadDisplay';
 import type { ConversationMessage, DiffPayload, SessionSummary } from '../data/types';
@@ -50,12 +51,26 @@ export function ChatThread({ session, messages, onRequestPermission, onRequestDi
 
   const toggleCodeChange = async (changeId: string, filePath: string) => {
     const nextOpen = !openCodeChangeIds[changeId];
+    const currentPayload = codeChangeDiffs[changeId];
+    const isLoadingDiff = Boolean(loadingCodeChangeDiffIds[changeId]);
+    const requestDiff = onRequestDiff;
     setOpenCodeChangeIds((current) => ({
       ...current,
       [changeId]: nextOpen,
     }));
 
-    if (!nextOpen || !onRequestDiff || codeChangeDiffs[changeId] || loadingCodeChangeDiffIds[changeId]) {
+    if (
+      !shouldRequestCodeChangeDiff({
+        nextOpen,
+        hasRequestDiff: Boolean(requestDiff),
+        currentPayload,
+        isLoading: isLoadingDiff,
+      })
+    ) {
+      return;
+    }
+
+    if (!requestDiff) {
       return;
     }
 
@@ -65,7 +80,7 @@ export function ChatThread({ session, messages, onRequestPermission, onRequestDi
     }));
 
     try {
-      const payload = await onRequestDiff(filePath);
+      const payload = await requestDiff(filePath);
       setCodeChangeDiffs((current) => ({
         ...current,
         [changeId]: payload,

@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import type { DiffPayload } from '../src/data/types.js';
 
 const execFileAsync = promisify(execFile);
+const TRANSIENT_FILE_READ_ERROR_CODES = new Set(['EBUSY', 'EMFILE', 'ENOENT', 'EPERM']);
 
 type RepoRootResolver = (candidatePath: string) => Promise<string | null>;
 type ExecFileAsyncFn = typeof execFileAsync;
@@ -15,6 +16,39 @@ const normalizeFilePath = (filePath: string) => path.normalize(filePath.replace(
 const isPathInside = (rootPath: string, targetPath: string) => {
   const relativePath = path.relative(rootPath, targetPath);
   return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
+};
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const isTransientFileReadError = (error: unknown) =>
+  Boolean(
+    error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      typeof (error as { code?: unknown }).code === 'string' &&
+      TRANSIENT_FILE_READ_ERROR_CODES.has((error as { code: string }).code),
+  );
+
+const readTextFileWithRetry = async (
+  filePath: string,
+  readFileFn: ReadTextFile,
+  attempts = 3,
+) => {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await readFileFn(filePath, 'utf8');
+    } catch (error) {
+      lastError = error;
+      if (!isTransientFileReadError(error) || attempt === attempts - 1) {
+        throw error;
+      }
+      await sleep(80);
+    }
+  }
+
+  throw lastError;
 };
 
 const resolveGitRoot = async (
@@ -77,7 +111,7 @@ export const getFileDiff = async (
       const statusLine = statusStdout.split(/\r?\n/).find(Boolean) ?? '';
 
       if (statusLine.startsWith('??')) {
-        const preview = await readFileFn(target.absolutePath, 'utf8');
+        const preview = await readTextFileWithRetry(target.absolutePath, readFileFn);
         return {
           filePath: target.normalizedPath,
           kind: 'untracked',
@@ -110,7 +144,7 @@ export const getFileDiff = async (
   }
 
   try {
-    const preview = await readFileFn(target.absolutePath, 'utf8');
+    const preview = await readTextFileWithRetry(target.absolutePath, readFileFn);
     return {
       filePath: target.normalizedPath,
       kind: 'preview',
