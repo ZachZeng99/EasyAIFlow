@@ -2,11 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BtwPanel, type BtwMessage } from './components/BtwPanel';
 import { ChatComposer, type ComposerAttachment } from './components/ChatComposer';
 import { ChatHistory } from './components/ChatHistory';
+import { bridge } from './bridge';
 import { ManageDialog } from './components/ManageDialog';
 import { PermissionDialog } from './components/PermissionDialog';
 import { ChatThread } from './components/ChatThread';
 import { ContextPanel } from './components/ContextPanel';
-import { projectTree } from './data/mockSessions';
 import { parsePermissionRequest } from './data/permissionRequest';
 import { resolveRequestedModelArg, syncImplicitModelSelection, type ModelSelectionSource } from './data/modelSelection';
 import type {
@@ -265,7 +265,13 @@ const consumeReferenceTokens = (
   };
 };
 
-type DialogKind = 'create-streamwork' | 'create-session' | 'close-project' | 'delete-streamwork' | 'delete-session';
+type DialogKind =
+  | 'create-project'
+  | 'create-streamwork'
+  | 'create-session'
+  | 'close-project'
+  | 'delete-streamwork'
+  | 'delete-session';
 
 type DialogState = {
   kind: DialogKind;
@@ -295,8 +301,10 @@ type ActivePermissionRequest = {
   sessionId?: string;
 };
 
+type MobilePanel = 'history' | 'session' | 'context';
+
 export default function App() {
-  const [projects, setProjects] = useState<ProjectRecord[]>(projectTree);
+  const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState('');
   const [draft, setDraft] = useState('');
   const [appVersion, setAppVersion] = useState('desktop');
@@ -311,6 +319,10 @@ export default function App() {
   const [dialogState, setDialogState] = useState<DialogState | null>(null);
   const [permissionRequest, setPermissionRequest] = useState<ActivePermissionRequest | null>(null);
   const [isGrantingPermission, setIsGrantingPermission] = useState(false);
+  const [isMobileLayout, setIsMobileLayout] = useState(() =>
+    globalThis.matchMedia ? globalThis.matchMedia('(max-width: 920px)').matches : false,
+  );
+  const [mobilePanel, setMobilePanel] = useState<MobilePanel>('session');
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const attachmentsRef = useRef<ComposerAttachment[]>([]);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -375,18 +387,11 @@ export default function App() {
       ),
     [allSessions, unreadSessionIds],
   );
-
-  const getBridge = () => {
-    if (!window.easyAIFlow) {
-      throw new Error('EasyAIFlow desktop bridge is unavailable. Please run inside the Electron app.');
-    }
-
-    return window.easyAIFlow;
-  };
+  const isWebRuntime = bridge.runtime === 'web';
 
   const getOriginalFilePath = (file: File) => {
     try {
-      const candidate = getBridge().getPathForFile(file);
+      const candidate = bridge.getPathForFile(file);
       return typeof candidate === 'string' && candidate.trim() ? candidate : undefined;
     } catch {
       return undefined;
@@ -438,6 +443,15 @@ export default function App() {
 
   const openDialog = (kind: DialogKind, targetId: string) => {
     const presets: Record<DialogKind, DialogState> = {
+      'create-project': {
+        kind,
+        targetId,
+        fields: {
+          name: '',
+          rootPath: '',
+        },
+        toggles: {},
+      },
       'create-streamwork': {
         kind,
         targetId,
@@ -480,6 +494,32 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (!globalThis.matchMedia) {
+      return;
+    }
+
+    const mediaQuery = globalThis.matchMedia('(max-width: 920px)');
+    const handleChange = (event: MediaQueryListEvent) => {
+      setIsMobileLayout(event.matches);
+      if (!event.matches) {
+        setMobilePanel('session');
+      }
+    };
+
+    setIsMobileLayout(mediaQuery.matches);
+    mediaQuery.addEventListener('change', handleChange);
+    return () => {
+      mediaQuery.removeEventListener('change', handleChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isMobileLayout && allSessions.length === 0) {
+      setMobilePanel('history');
+    }
+  }, [allSessions.length, isMobileLayout]);
+
+  useEffect(() => {
     if (allSessions.length === 0) {
       if (selectedSessionId) {
         setSelectedSessionId('');
@@ -495,7 +535,6 @@ export default function App() {
   useEffect(() => {
     const loadMeta = async () => {
       try {
-        const bridge = getBridge();
         const [meta, bootstrap] = await Promise.all([bridge.getAppMeta(), bridge.getProjects()]);
 
         if (meta?.version) {
@@ -506,12 +545,13 @@ export default function App() {
           setModelSelectionSource('implicit');
         }
 
-        if (bootstrap?.projects?.length) {
-          setProjects(bootstrap.projects);
-          const firstSession = flattenSessions(bootstrap.projects)[0];
-          if (firstSession) {
-            setSelectedSessionId((current) => current || firstSession.id);
-          }
+        const nextProjects = bootstrap?.projects ?? [];
+        setProjects(nextProjects);
+        const firstSession = flattenSessions(nextProjects)[0];
+        if (firstSession) {
+          setSelectedSessionId((current) => current || firstSession.id);
+        } else {
+          setSelectedSessionId('');
         }
       } catch (error) {
         setUiError(error instanceof Error ? error.message : 'Failed to initialize EasyAIFlow.');
@@ -525,7 +565,7 @@ export default function App() {
     let unsubscribe: (() => void) | undefined;
 
     try {
-      unsubscribe = getBridge().onClaudeEvent((event) => {
+      unsubscribe = bridge.onClaudeEvent((event) => {
         setProjects((current) => applyClaudeEvent(current, event));
         if (event.type === 'permission-request') {
           setPermissionRequest({
@@ -594,7 +634,7 @@ export default function App() {
     });
 
     const loadGitSnapshot = async () => {
-      const liveSnapshot = await getBridge().getGitSnapshot(selectedSession.workspace);
+      const liveSnapshot = await bridge.getGitSnapshot(selectedSession.workspace);
       if (liveSnapshot) {
         setGitSnapshot(liveSnapshot);
       }
@@ -609,7 +649,7 @@ export default function App() {
     }
 
     let cancelled = false;
-    void getBridge()
+    void bridge
       .getSlashCommands({
         cwd: selectedSession.workspace,
         model: resolveRequestedModelArg(model, modelSelectionSource),
@@ -671,7 +711,7 @@ export default function App() {
   };
 
   const persistContextReferences = async (sessionId: string, references: ContextReference[]) => {
-    const result = await getBridge().updateSessionContextReferences({
+    const result = await bridge.updateSessionContextReferences({
       sessionId,
       references,
     });
@@ -738,6 +778,11 @@ export default function App() {
 
   const handleInsertDroppedPaths = (files: FileList | null) => {
     if (!files) {
+      return;
+    }
+
+    if (bridge.runtime === 'web') {
+      void handleAttachFiles(files);
       return;
     }
 
@@ -809,7 +854,7 @@ export default function App() {
     }));
 
     try {
-      const result = await getBridge().sendMessage({
+      const result = await bridge.sendMessage({
         sessionId: selectedSession.id,
         prompt: outgoingPrompt,
         attachments: pendingAttachments,
@@ -824,7 +869,7 @@ export default function App() {
       }
 
       if (displayContextReferences.length > 0) {
-        await getBridge().updateSessionContextReferences({
+        await bridge.updateSessionContextReferences({
           sessionId: selectedSession.id,
           references: [],
         }).then((next) => {
@@ -885,7 +930,7 @@ export default function App() {
     }));
 
     try {
-      const result = await getBridge().sendBtwMessage({
+      const result = await bridge.sendBtwMessage({
         sessionId: selectedSession.id,
         cwd: selectedSession.workspace,
         prompt,
@@ -945,15 +990,20 @@ export default function App() {
       messages: [],
     });
     try {
-      await getBridge().discardBtwSession({ cwd, claudeSessionId });
+      await bridge.discardBtwSession({ cwd, claudeSessionId });
     } catch {
       // Ignore cleanup failures for ephemeral BTW sessions.
     }
   };
 
   const handleOpenProject = async () => {
+    if (isWebRuntime) {
+      openDialog('create-project', '');
+      return;
+    }
+
     try {
-      const result = await getBridge().openProjectDirectory();
+      const result = await bridge.openProjectDirectory();
       if (result) {
         setProjects(result.projects);
         setSelectedSessionId(result.session.id);
@@ -972,7 +1022,7 @@ export default function App() {
     setIsGrantingPermission(true);
     try {
       if (permissionRequest.requestId) {
-        await getBridge().respondToPermissionRequest({
+        await bridge.respondToPermissionRequest({
           requestId: permissionRequest.requestId,
           behavior: 'allow',
         });
@@ -981,7 +1031,7 @@ export default function App() {
           throw new Error('No active project available to persist this permission.');
         }
 
-        await getBridge().grantPathPermission({
+        await bridge.grantPathPermission({
           projectRoot: selectedProject.rootPath,
           targetPath: permissionRequest.path,
         });
@@ -1003,7 +1053,7 @@ export default function App() {
 
     setIsGrantingPermission(true);
     try {
-      await getBridge().respondToPermissionRequest({
+      await bridge.respondToPermissionRequest({
         requestId: permissionRequest.requestId,
         behavior: 'deny',
       });
@@ -1018,7 +1068,7 @@ export default function App() {
 
   const handleCreateStreamwork = async (projectId: string, name: string) => {
     try {
-      const result = await getBridge().createStreamwork({
+      const result = await bridge.createStreamwork({
         projectId,
         name: name.trim(),
       });
@@ -1049,7 +1099,7 @@ export default function App() {
     }
 
     try {
-      const result = await getBridge().renameEntity({
+      const result = await bridge.renameEntity({
         kind,
         id: defaults.id,
         name: nextName.trim(),
@@ -1067,7 +1117,7 @@ export default function App() {
     }
 
     try {
-      const result = await getBridge().reorderStreamworks({
+      const result = await bridge.reorderStreamworks({
         projectId,
         sourceId,
         targetId,
@@ -1085,14 +1135,14 @@ export default function App() {
         throw new Error('No active session.');
       }
 
-      return getBridge().getFileDiff({ cwd: selectedSession.workspace, filePath });
+      return bridge.getFileDiff({ cwd: selectedSession.workspace, filePath });
     },
     [selectedSession?.workspace],
   );
 
   const handleCloseProject = async (projectId: string) => {
     try {
-      const result = await getBridge().closeProject({ projectId });
+      const result = await bridge.closeProject({ projectId });
       setProjects(result.projects);
       const nextSession = flattenSessions(result.projects)[0];
       if (nextSession) {
@@ -1106,7 +1156,7 @@ export default function App() {
 
   const handleDeleteStreamwork = async (streamworkId: string) => {
     try {
-      const result = await getBridge().deleteStreamwork({ streamworkId });
+      const result = await bridge.deleteStreamwork({ streamworkId });
       setProjects(result.projects);
       const nextSession = flattenSessions(result.projects)[0];
       if (nextSession) {
@@ -1120,7 +1170,7 @@ export default function App() {
 
   const handleDeleteSession = async (sessionId: string) => {
     try {
-      const result = await getBridge().deleteSession({ sessionId });
+      const result = await bridge.deleteSession({ sessionId });
       setProjects(result.projects);
       const nextSession = flattenSessions(result.projects)[0];
       if (nextSession) {
@@ -1134,7 +1184,7 @@ export default function App() {
 
   const handleCopySessionReference = async (sessionId: string) => {
     try {
-      await getBridge().writeClipboardText(`[[session:${sessionId}]]`);
+      await bridge.writeClipboardText(`[[session:${sessionId}]]`);
       setUiError(null);
     } catch (error) {
       setUiError(error instanceof Error ? error.message : 'Failed to copy session reference.');
@@ -1147,10 +1197,17 @@ export default function App() {
     }
 
     const name = dialogState.fields.name?.trim() ?? '';
-    const requiresName = dialogState.kind === 'create-streamwork' || dialogState.kind === 'create-session';
+    const rootPath = dialogState.fields.rootPath?.trim() ?? '';
+    const requiresName =
+      dialogState.kind === 'create-streamwork' || dialogState.kind === 'create-session';
 
     if (requiresName && !name) {
       setUiError('Please complete the required fields.');
+      return;
+    }
+
+    if (dialogState.kind === 'create-project' && !rootPath) {
+      setUiError('Please provide a project root path.');
       return;
     }
 
@@ -1158,10 +1215,19 @@ export default function App() {
     setUiError(null);
 
     try {
-      if (dialogState.kind === 'create-streamwork') {
+      if (dialogState.kind === 'create-project') {
+        const fallbackName =
+          name || rootPath.split(/[\\/]/).filter(Boolean).at(-1) || 'Project';
+        const result = await bridge.createProject({
+          name: fallbackName,
+          rootPath,
+        });
+        setProjects(result.projects);
+        setSelectedSessionId(result.session.id);
+      } else if (dialogState.kind === 'create-streamwork') {
         await handleCreateStreamwork(dialogState.targetId, name);
       } else if (dialogState.kind === 'create-session') {
-        const result = await getBridge().createSessionInStreamwork({
+        const result = await bridge.createSessionInStreamwork({
           streamworkId: dialogState.targetId,
           name,
           includeStreamworkSummary: Boolean(dialogState.toggles.includeStreamworkSummary),
@@ -1183,7 +1249,9 @@ export default function App() {
   };
 
   const dialogTitle =
-    dialogState?.kind === 'create-streamwork'
+    dialogState?.kind === 'create-project'
+      ? 'Connect Project'
+      : dialogState?.kind === 'create-streamwork'
       ? 'Create Streamwork'
       : dialogState?.kind === 'create-session'
           ? 'Create Session'
@@ -1196,7 +1264,9 @@ export default function App() {
           : '';
 
   const dialogDescription =
-    dialogState?.kind === 'close-project'
+    dialogState?.kind === 'create-project'
+      ? 'Web mode cannot open the native folder picker. Enter a project path that the server machine can access.'
+      : dialogState?.kind === 'close-project'
       ? 'This will close the project and stop all running Claude conversations under it.'
       : dialogState?.kind === 'delete-streamwork'
         ? 'This will permanently delete this streamwork and all its session history.'
@@ -1205,19 +1275,32 @@ export default function App() {
           : undefined;
 
   const dialogConfirmLabel =
-    dialogState?.kind === 'close-project'
+    dialogState?.kind === 'create-project'
+      ? 'Connect'
+      : dialogState?.kind === 'close-project'
       ? 'Close'
       : dialogState?.kind === 'delete-streamwork' || dialogState?.kind === 'delete-session'
         ? 'Delete'
         : 'Save';
 
   const dialogFields = dialogState
-    ? Object.entries(dialogState.fields).map(([key, value]) => ({
-        key,
-        value,
-        label: 'Name',
-        placeholder: 'Enter name',
-      }))
+    ? Object.entries(dialogState.fields).map(([key, value]) => {
+        if (dialogState.kind === 'create-project' && key === 'rootPath') {
+          return {
+            key,
+            value,
+            label: 'Root Path',
+            placeholder: 'D:\\repo or /srv/repo',
+          };
+        }
+
+        return {
+          key,
+          value,
+          label: key === 'name' ? 'Name' : key,
+          placeholder: key === 'name' ? 'Enter name' : 'Enter value',
+        };
+      })
     : [];
   const dialogToggles =
     dialogState?.kind === 'create-session'
@@ -1232,148 +1315,196 @@ export default function App() {
       : [];
 
   const hasActiveSession = Boolean(selectedSession && selectedProject && selectedStreamwork);
+  const shellStyle = isMobileLayout
+    ? undefined
+    : { gridTemplateColumns: `${leftPaneWidth}px 8px minmax(0, 1fr) 340px` };
 
   return (
     <div
-      className={`desktop-shell${isResizingPane ? ' resizing' : ''}`}
-      style={{ gridTemplateColumns: `${leftPaneWidth}px 8px minmax(0, 1fr) 340px` }}
+      className={`desktop-shell${isResizingPane ? ' resizing' : ''}${isMobileLayout ? ' mobile-layout' : ''}`}
+      style={shellStyle}
     >
-      <ChatHistory
-        projects={projects}
-        selectedSessionId={selectedSession?.id ?? selectedSessionId}
-        sessionIndicators={sessionIndicators}
-        onOpenProject={() => {
-          void handleOpenProject();
-        }}
-        onCreateStreamwork={(projectId) => openDialog('create-streamwork', projectId)}
-        onCreateSession={(streamworkId) => openDialog('create-session', streamworkId)}
-        onRenameStreamwork={(streamworkId, name) => {
-          void handleRenameEntity('streamwork', streamworkId, name);
-        }}
-        onRenameSession={(sessionId, name) => {
-          void handleRenameEntity('session', sessionId, name);
-        }}
-        onCloseProject={(projectId) => openDialog('close-project', projectId)}
-        onDeleteStreamwork={(streamworkId) => openDialog('delete-streamwork', streamworkId)}
-        onDeleteSession={(sessionId) => openDialog('delete-session', sessionId)}
-        onCopySessionReference={(sessionId) => {
-          void handleCopySessionReference(sessionId);
-        }}
-        onReorderStreamworks={(projectId, sourceId, targetId) => {
-          void handleReorderStreamworks(projectId, sourceId, targetId);
-        }}
-        onSelectSession={(session) => {
-          setSelectedSessionId(session.id);
-          setUnreadSessionIds((current) => current.filter((sessionId) => sessionId !== session.id));
-          setDraft('');
-          clearAttachments();
-        }}
-      />
+      {isMobileLayout ? (
+        <nav className="mobile-shell-nav" aria-label="Mobile sections">
+          <button
+            type="button"
+            className={`mobile-shell-tab${mobilePanel === 'history' ? ' active' : ''}`}
+            onClick={() => setMobilePanel('history')}
+          >
+            History
+          </button>
+          <button
+            type="button"
+            className={`mobile-shell-tab${mobilePanel === 'session' ? ' active' : ''}`}
+            onClick={() => setMobilePanel('session')}
+          >
+            Session
+          </button>
+          <button
+            type="button"
+            className={`mobile-shell-tab${mobilePanel === 'context' ? ' active' : ''}`}
+            onClick={() => setMobilePanel('context')}
+            disabled={!hasActiveSession}
+          >
+            Context
+          </button>
+        </nav>
+      ) : null}
 
-      <div
-        className="pane-resizer"
-        role="separator"
-        aria-orientation="vertical"
-        onMouseDown={() => setIsResizingPane(true)}
-      />
+      {!isMobileLayout || mobilePanel === 'history' ? (
+        <ChatHistory
+          projects={projects}
+          selectedSessionId={selectedSession?.id ?? selectedSessionId}
+          sessionIndicators={sessionIndicators}
+          onOpenProject={() => {
+            void handleOpenProject();
+          }}
+          onCreateStreamwork={(projectId) => openDialog('create-streamwork', projectId)}
+          onCreateSession={(streamworkId) => openDialog('create-session', streamworkId)}
+          onRenameStreamwork={(streamworkId, name) => {
+            void handleRenameEntity('streamwork', streamworkId, name);
+          }}
+          onRenameSession={(sessionId, name) => {
+            void handleRenameEntity('session', sessionId, name);
+          }}
+          onCloseProject={(projectId) => openDialog('close-project', projectId)}
+          onDeleteStreamwork={(streamworkId) => openDialog('delete-streamwork', streamworkId)}
+          onDeleteSession={(sessionId) => openDialog('delete-session', sessionId)}
+          onCopySessionReference={(sessionId) => {
+            void handleCopySessionReference(sessionId);
+          }}
+          onReorderStreamworks={(projectId, sourceId, targetId) => {
+            void handleReorderStreamworks(projectId, sourceId, targetId);
+          }}
+          onSelectSession={(session) => {
+            setSelectedSessionId(session.id);
+            setUnreadSessionIds((current) => current.filter((sessionId) => sessionId !== session.id));
+            setDraft('');
+            clearAttachments();
+            if (isMobileLayout) {
+              setMobilePanel('session');
+            }
+          }}
+        />
+      ) : null}
+
+      {!isMobileLayout ? (
+        <div
+          className="pane-resizer"
+          role="separator"
+          aria-orientation="vertical"
+          onMouseDown={() => setIsResizingPane(true)}
+        />
+      ) : null}
 
       {hasActiveSession ? (
         <>
-          <main className="conversation-layout">
-            {uiError ? <div className="ui-error-banner">{uiError}</div> : null}
-            <ChatThread
-              session={selectedSession}
-              messages={selectedSession.messages ?? []}
-              onRequestDiff={handleRequestDiff}
-              onRequestPermission={(request) =>
-                setPermissionRequest({
-                  path: request.targetPath,
-                  sensitive: request.sensitive,
-                })
-              }
-            />
-            <BtwPanel
-              isOpen={btwState.isOpen}
-              draft={btwState.draft}
-              messages={btwState.messages}
-              isSending={btwState.isSending}
-              tokenUsage={btwState.tokenUsage}
-              inheritedContext={btwState.inheritedContext}
-              onDraftChange={(value) =>
-                setBtwState((current) => ({
-                  ...current,
-                  draft: value,
-                }))
-              }
-              onSend={() => {
-                void handleSendBtwMessage();
-              }}
-              onClose={() => {
-                void handleCloseBtw();
-              }}
-            />
-            <ChatComposer
-              draft={draft}
-              tokenUsage={selectedSession.tokenUsage}
-              sessionModel={selectedSession.model}
-              contextReferences={displayContextReferences}
-              slashCommands={slashCommands}
-              attachments={attachments}
-              isSending={isSending}
-              model={model}
-              effort={effort}
-              onDraftChange={handleDraftChange}
-              onModelChange={(value) => {
-                setModel(value);
-                setModelSelectionSource('explicit');
-              }}
-              onEffortChange={setEffort}
-              onUpdateContextReferenceMode={(referenceId, mode) => {
-                handleUpdateContextReferences(
-                  displayContextReferences.map((reference) =>
-                    reference.id === referenceId
-                      ? {
-                          ...reference,
-                          mode,
-                        }
-                      : reference,
-                  ),
-                );
-              }}
-              onRemoveContextReference={(referenceId) => {
-                handleUpdateContextReferences(
-                  displayContextReferences.filter((reference) => reference.id !== referenceId),
-                );
-              }}
-              onInsertDroppedPaths={handleInsertDroppedPaths}
-              onAttachFiles={(files) => {
-                void handleAttachFiles(files);
-              }}
-              onRemoveAttachment={handleRemoveAttachment}
-              onSend={() => {
-                void handleSend();
-              }}
-            />
-          </main>
+          {!isMobileLayout || mobilePanel === 'session' ? (
+            <main className="conversation-layout">
+              {uiError ? <div className="ui-error-banner">{uiError}</div> : null}
+              <ChatThread
+                session={selectedSession}
+                messages={selectedSession.messages ?? []}
+                onRequestDiff={handleRequestDiff}
+                onRequestPermission={(request) =>
+                  setPermissionRequest({
+                    path: request.targetPath,
+                    sensitive: request.sensitive,
+                  })
+                }
+              />
+              <BtwPanel
+                isOpen={btwState.isOpen}
+                draft={btwState.draft}
+                messages={btwState.messages}
+                isSending={btwState.isSending}
+                tokenUsage={btwState.tokenUsage}
+                inheritedContext={btwState.inheritedContext}
+                onDraftChange={(value) =>
+                  setBtwState((current) => ({
+                    ...current,
+                    draft: value,
+                  }))
+                }
+                onSend={() => {
+                  void handleSendBtwMessage();
+                }}
+                onClose={() => {
+                  void handleCloseBtw();
+                }}
+              />
+              <ChatComposer
+                draft={draft}
+                tokenUsage={selectedSession.tokenUsage}
+                sessionModel={selectedSession.model}
+                contextReferences={displayContextReferences}
+                slashCommands={slashCommands}
+                attachments={attachments}
+                isSending={isSending}
+                model={model}
+                effort={effort}
+                supportsPathDrop={!isWebRuntime}
+                onDraftChange={handleDraftChange}
+                onModelChange={(value) => {
+                  setModel(value);
+                  setModelSelectionSource('explicit');
+                }}
+                onEffortChange={setEffort}
+                onUpdateContextReferenceMode={(referenceId, mode) => {
+                  handleUpdateContextReferences(
+                    displayContextReferences.map((reference) =>
+                      reference.id === referenceId
+                        ? {
+                            ...reference,
+                            mode,
+                          }
+                        : reference,
+                    ),
+                  );
+                }}
+                onRemoveContextReference={(referenceId) => {
+                  handleUpdateContextReferences(
+                    displayContextReferences.filter((reference) => reference.id !== referenceId),
+                  );
+                }}
+                onInsertDroppedPaths={handleInsertDroppedPaths}
+                onAttachFiles={(files) => {
+                  void handleAttachFiles(files);
+                }}
+                onRemoveAttachment={handleRemoveAttachment}
+                onSend={() => {
+                  void handleSend();
+                }}
+              />
+            </main>
+          ) : null}
 
-          <ContextPanel
-            session={selectedSession}
-            appVersion={appVersion}
-            gitSnapshot={gitSnapshot}
-            onRequestDiff={handleRequestDiff}
-          />
+          {!isMobileLayout || mobilePanel === 'context' ? (
+            <ContextPanel
+              session={selectedSession}
+              appVersion={appVersion}
+              gitSnapshot={gitSnapshot}
+              onRequestDiff={handleRequestDiff}
+            />
+          ) : null}
         </>
       ) : (
         <>
-          <main className="conversation-layout empty-state-panel">
-            {uiError ? <div className="ui-error-banner">{uiError}</div> : null}
-            <section className="empty-state-card">
-              <p className="empty-state-kicker">Workspace</p>
-              <h1>No open project</h1>
-              <p>Open a project folder from the left panel to restore the workspace.</p>
-            </section>
-          </main>
-          <aside className="empty-side-panel" />
+          {!isMobileLayout || mobilePanel !== 'history' ? (
+            <main className="conversation-layout empty-state-panel">
+              {uiError ? <div className="ui-error-banner">{uiError}</div> : null}
+              <section className="empty-state-card">
+                <p className="empty-state-kicker">Workspace</p>
+                <h1>{isWebRuntime ? 'No connected project' : 'No open project'}</h1>
+                <p>
+                  {isWebRuntime
+                    ? 'Connect a server-accessible project path from the history panel to start using the web app.'
+                    : 'Open a project folder from the left panel to restore the workspace.'}
+                </p>
+              </section>
+            </main>
+          ) : null}
+          {!isMobileLayout ? <aside className="empty-side-panel" /> : null}
         </>
       )}
 

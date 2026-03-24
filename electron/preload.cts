@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron') as typeof import('electron');
 
 contextBridge.exposeInMainWorld('easyAIFlow', {
+  runtime: 'desktop',
   writeClipboardText: (value: string) => ipcRenderer.invoke('clipboard:write-text', value),
   getAppMeta: () => ipcRenderer.invoke('app:meta'),
   getGitSnapshot: (cwd: string) => ipcRenderer.invoke('git:snapshot', cwd),

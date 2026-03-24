@@ -1,7 +1,7 @@
-import { app } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { getRuntimePaths } from '../backend/runtimePaths.js';
 import { allSessions, projectTree } from '../src/data/mockSessions.js';
 import { findImportedSessionTarget } from './importedSessionMatch.js';
 import { cleanupProjectSessions } from './projectSessionCleanup.js';
@@ -44,9 +44,11 @@ type AppState = {
 };
 
 let cachedState: AppState | null = null;
-const storePath = () => path.join(app.getPath('userData'), 'easyaiflow-sessions.json');
-const nativeClaudeProjectsRoot = () => path.join(process.env.USERPROFILE ?? app.getPath('home'), '.claude', 'projects');
-const nativeClaudeHistoryPath = () => path.join(process.env.USERPROFILE ?? app.getPath('home'), '.claude', 'history.jsonl');
+const storePath = () => path.join(getRuntimePaths().userDataPath, 'easyaiflow-sessions.json');
+const nativeClaudeProjectsRoot = () =>
+  path.join(process.env.USERPROFILE ?? getRuntimePaths().homePath, '.claude', 'projects');
+const nativeClaudeHistoryPath = () =>
+  path.join(process.env.USERPROFILE ?? getRuntimePaths().homePath, '.claude', 'history.jsonl');
 
 const normalizeSessionModel = (model: string) => model.trim();
 

@@ -50,6 +50,31 @@ p {
   overflow: hidden;
 }
 
+.mobile-shell-nav {
+  display: none;
+}
+
+.mobile-shell-tab {
+  min-height: 42px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(245, 239, 230, 0.7);
+  font-family: 'Cascadia Code', 'Consolas', monospace;
+  font-size: 0.74rem;
+}
+
+.mobile-shell-tab.active {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.22), rgba(251, 113, 133, 0.18));
+  border-color: rgba(245, 158, 11, 0.32);
+  color: #fff4dd;
+}
+
+.mobile-shell-tab:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .desktop-shell.resizing {
   cursor: col-resize;
   user-select: none;
@@ -66,6 +91,9 @@ p {
   min-width: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
 }
 
 .context-pane {
@@ -73,6 +101,9 @@ p {
   border-left: 1px solid rgba(255, 255, 255, 0.06);
   overflow-y: auto;
   overflow-x: hidden;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
 }
 
 .pane-resizer {
@@ -843,6 +874,9 @@ p {
   gap: 18px;
   align-items: center;
   min-height: 0;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
 }
 
 .message-card {
@@ -1897,18 +1931,47 @@ p {
     overflow: auto;
   }
 
+  .desktop-shell.mobile-layout {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    min-height: 100dvh;
+    overflow: hidden;
+  }
+
+  .mobile-shell-nav {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    padding: 12px 14px;
+    background: rgba(20, 18, 16, 0.96);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
+  .desktop-shell.mobile-layout > .history-pane,
+  .desktop-shell.mobile-layout > .context-pane,
+  .desktop-shell.mobile-layout > .conversation-layout {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
   .pane-resizer {
     display: none;
   }
 
-  .history-pane {
+  .history-pane,
+  .desktop-shell.mobile-layout .context-pane {
     border-right: 0;
     border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-    overflow: visible;
+    overflow: auto;
   }
 
   .conversation-layout {
-    min-height: calc(100vh - 360px);
+    min-height: 0;
     height: auto;
   }
 
@@ -1918,9 +1981,199 @@ p {
     grid-template-columns: 1fr;
   }
 
+  .history-pane,
+  .context-pane,
+  .composer,
+  .chat-header,
+  .message-stream,
+  .ui-error-banner,
+  .btw-panel {
+    margin-left: 0;
+    margin-right: 0;
+  }
+
+  .history-pane {
+    padding: 14px 12px 20px;
+  }
+
+  .context-pane {
+    display: block;
+    border-left: 0;
+    padding: 14px 12px 24px;
+  }
+
+  .chat-header {
+    padding: 10px 12px 8px;
+    gap: 8px;
+  }
+
+  .chat-header h1 {
+    font-size: 1.1rem;
+    margin-bottom: 4px;
+  }
+
+  .chat-actions {
+    display: none;
+  }
+
+  .chat-header .section-kicker {
+    margin-bottom: 4px;
+    font-size: 0.64rem;
+    letter-spacing: 0.12em;
+  }
+
+  .session-tags {
+    gap: 6px;
+  }
+
+  .session-tag {
+    padding: 4px 8px;
+    font-size: 0.7rem;
+  }
+
+  .process-tag {
+    display: none;
+  }
+
+  .message-stream {
+    padding: 10px 10px 12px;
+    gap: 10px;
+    align-items: stretch;
+  }
+
+  .message-card,
+  .trace-group-card,
+  .trace-row {
+    width: 100%;
+  }
+
+  .message-card {
+    padding: 12px;
+    border-radius: 16px;
+  }
+
+  .message-meta {
+    gap: 8px;
+    margin-bottom: 8px;
+    font-size: 0.68rem;
+  }
+
+  .message-card h2 {
+    margin-bottom: 8px;
+    font-size: 0.94rem;
+  }
+
+  .message-body,
+  .trace-content,
+  .markdown-body {
+    line-height: 1.5;
+    font-size: 0.9rem;
+  }
+
+  .composer {
+    padding: 8px 10px calc(12px + env(safe-area-inset-bottom));
+    background: rgba(20, 18, 16, 0.98);
+  }
+
+  .composer-toolbar {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+
+  .composer-control,
   .composer-usage {
+    width: 100%;
+  }
+
+  .composer-control {
+    min-width: 0;
+    padding: 2px 8px;
+    gap: 6px;
+  }
+
+  .composer-control span {
+    font-size: 0.66rem;
+  }
+
+  .composer-control select {
+    min-width: 0;
+    width: 100%;
+    font-size: 0.86rem;
+  }
+
+  .composer-usage {
+    grid-column: 1 / -1;
     margin-left: 0;
     overflow-x: auto;
+    gap: 8px;
+    padding: 5px 8px;
+    border-radius: 10px;
+  }
+
+  .composer-usage strong {
+    font-size: 0.72rem;
+  }
+
+  .composer-usage span {
+    font-size: 0.66rem;
+  }
+
+  .composer-box {
+    gap: 8px;
+  }
+
+  .composer-box textarea {
+    min-height: 68px;
+    padding: 12px 14px;
+    border-radius: 14px;
+    font-size: 0.94rem;
+  }
+
+  .send-button {
+    width: 100%;
+    height: 44px;
+    border-radius: 12px;
+  }
+
+  .context-reference-card {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .context-reference-mode-group {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .context-reference-mode-group .context-reference-mode {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .attachment-strip {
+    gap: 8px;
+  }
+
+  .attachment-card {
+    min-width: min(250px, 86vw);
+  }
+
+  .empty-state-card {
+    padding: 24px 18px;
+  }
+
+  .btw-panel {
+    margin: 8px 10px 0;
+    padding: 12px;
+    border-radius: 14px;
+  }
+
+  .ui-error-banner {
+    margin: 8px 10px 0;
+    padding: 10px 12px;
+    border-radius: 12px;
   }
 
   .token-flip-card {

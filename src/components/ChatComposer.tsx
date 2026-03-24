@@ -21,6 +21,7 @@ type ChatComposerProps = {
   isSending: boolean;
   model: string;
   effort: 'low' | 'medium' | 'high' | 'max';
+  supportsPathDrop?: boolean;
   onDraftChange: (value: string) => void;
   onInsertDroppedPaths: (files: FileList | null) => void;
   onAttachFiles: (files: FileList | null) => void;
@@ -66,6 +67,7 @@ export function ChatComposer({
   isSending,
   model,
   effort,
+  supportsPathDrop = true,
   onDraftChange,
   onInsertDroppedPaths,
   onAttachFiles,
@@ -330,10 +332,18 @@ export function ChatComposer({
                 onAttachFiles(files);
               }
             }}
-            placeholder="在这里输入。也可以粘贴 `[[session:ID]]` 引用 token，或把文件拖进来直接插入路径。"
+            placeholder={
+              supportsPathDrop
+                ? '在这里输入。也可以粘贴 `[[session:ID]]` 引用 token，或把文件拖进来直接插入路径。'
+                : '在这里输入。也可以粘贴 `[[session:ID]]` 引用 token，或把文件拖进来直接作为附件上传。'
+            }
             rows={4}
           />
-          {isDragActive ? <div className="composer-drop-hint">松开以插入文件路径</div> : null}
+          {isDragActive ? (
+            <div className="composer-drop-hint">
+              {supportsPathDrop ? '松开以插入文件路径' : '松开以上传附件'}
+            </div>
+          ) : null}
         </div>
         <button type="button" className="send-button" onClick={onSend} disabled={isSending || !canSend}>
           {isSending ? '发送中' : '发送'}

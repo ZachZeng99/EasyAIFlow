@@ -5,6 +5,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { configureRuntimePaths } from '../backend/runtimePaths.js';
 import {
   appendMessagesToSession,
   closeProject,
@@ -1426,6 +1427,12 @@ const createMainWindow = async () => {
 };
 
 app.whenReady().then(async () => {
+  configureRuntimePaths({
+    mode: 'desktop',
+    userDataPath: app.getPath('userData'),
+    homePath: app.getPath('home'),
+  });
+
   ipcMain.handle('clipboard:write-text', async (_event, value: string) => {
     clipboard.writeText(value);
   });
