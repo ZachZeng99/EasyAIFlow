@@ -1,3 +1,10 @@
+import {
+  buildAskUserQuestionResultText,
+  parseAskUserQuestions,
+  type AskUserQuestion,
+  type AskUserQuestionResponsePayload,
+} from '../src/data/askUserQuestion.js';
+
 export type ClaudePermissionBehavior = 'allow' | 'deny';
 
 export type ClaudePermissionControlRequest = {
@@ -9,6 +16,14 @@ export type ClaudePermissionControlRequest = {
   description?: string;
   decisionReason?: string;
   sensitive: boolean;
+  rawInput: Record<string, unknown>;
+};
+
+export type ClaudeAskUserQuestionControlRequest = {
+  requestId: string;
+  toolUseId: string;
+  toolName: 'AskUserQuestion';
+  questions: AskUserQuestion[];
   rawInput: Record<string, unknown>;
 };
 
@@ -57,6 +72,9 @@ export const parseClaudePermissionControlRequest = (
   if (!request || !requestId || request.subtype !== 'can_use_tool' || !toolName || !rawInput) {
     return null;
   }
+  if (toolName === 'AskUserQuestion') {
+    return null;
+  }
 
   const targetPath = pickTargetPath(rawInput);
   const command = getString(rawInput.command);
@@ -76,8 +94,45 @@ export const parseClaudePermissionControlRequest = (
   };
 };
 
+export const parseClaudeAskUserQuestionControlRequest = (
+  parsed: Record<string, unknown>,
+): ClaudeAskUserQuestionControlRequest | null => {
+  if (parsed.type !== 'control_request') {
+    return null;
+  }
+
+  const request = asObject(parsed.request);
+  const requestId = getString(parsed.request_id);
+  const toolName = getString(request?.tool_name);
+  const rawInput = asObject(request?.input);
+  const toolUseId = getString(request?.tool_use_id);
+  if (
+    !request ||
+    !requestId ||
+    request.subtype !== 'can_use_tool' ||
+    toolName !== 'AskUserQuestion' ||
+    !rawInput ||
+    !toolUseId
+  ) {
+    return null;
+  }
+
+  const questions = parseAskUserQuestions(rawInput);
+  if (questions.length === 0) {
+    return null;
+  }
+
+  return {
+    requestId,
+    toolUseId,
+    toolName: 'AskUserQuestion',
+    questions,
+    rawInput,
+  };
+};
+
 export const buildClaudeControlResponseLine = (
-  request: ClaudePermissionControlRequest,
+  request: Pick<ClaudePermissionControlRequest, 'requestId' | 'rawInput'>,
   behavior: ClaudePermissionBehavior,
 ) =>
   JSON.stringify({
@@ -95,5 +150,29 @@ export const buildClaudeControlResponseLine = (
               behavior: 'deny',
               message: 'User denied this action in EasyAIFlow.',
             },
+    },
+  });
+
+export const buildClaudeAskUserQuestionToolResultLine = (payload: {
+  toolUseId: string;
+  questions: AskUserQuestion[];
+  response: AskUserQuestionResponsePayload;
+}) =>
+  JSON.stringify({
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          content: buildAskUserQuestionResultText(payload.questions, payload.response),
+          tool_use_id: payload.toolUseId,
+        },
+      ],
+    },
+    toolUseResult: {
+      questions: payload.questions,
+      answers: payload.response.answers,
+      annotations: payload.response.annotations,
     },
   });

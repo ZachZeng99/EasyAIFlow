@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
 import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -37,8 +37,10 @@ import {
 } from './claudeRunState.js';
 import { isBackgroundTaskNotificationContent } from './backgroundTaskNotification.js';
 import {
+  buildClaudeAskUserQuestionToolResultLine,
   buildClaudeControlResponseLine,
   buildClaudeUserMessageLine,
+  parseClaudeAskUserQuestionControlRequest,
   parseClaudePermissionControlRequest,
   type ClaudePermissionControlRequest,
 } from './claudeControlMessages.js';
@@ -49,7 +51,16 @@ import { readLatestNativeClaudeApiError } from './nativeClaudeError.js';
 import { getClaudeSpawnOptions } from './claudeSpawn.js';
 import { createSequentialLineProcessor } from './sequentialLineProcessor.js';
 import { createSessionRunQueue, enqueueSessionRun, hasSessionRunQueued } from './sessionRunQueue.js';
+import {
+  createSessionStopVersionRegistry,
+  readSessionStopVersion,
+  requestSessionStop,
+  stopAssistantMessage,
+  stopPendingSessionMessages,
+} from './sessionStop.js';
 import { getFileDiff } from './fileDiff.js';
+import { buildRecordedCodeChangeDiff } from './recordedCodeChangeDiff.js';
+import { shouldOpenExternally } from './externalNavigation.js';
 import {
   addActiveClaudeRun,
   createActiveClaudeRunRegistry,
@@ -57,6 +68,12 @@ import {
   removeActiveClaudeRun,
   type ActiveClaudeRun as RegisteredClaudeRun,
 } from './claudeRunRegistry.js';
+import {
+  extractAskUserQuestionResponsePayload,
+  hasAskUserQuestionResponse,
+  parseAskUserQuestions,
+  type AskUserQuestion,
+} from '../src/data/askUserQuestion.js';
 import type {
   BtwResponse,
   ClaudeStreamEvent,
@@ -83,9 +100,18 @@ type PendingPermissionRequest = {
   request: ClaudePermissionControlRequest;
 };
 
+type PendingAskUserQuestion = {
+  sessionId: string;
+  activeRun: ActiveClaudeRun;
+  toolUseId: string;
+  questions: AskUserQuestion[];
+};
+
 const activeRuns = createActiveClaudeRunRegistry<ClaudeChildProcess>();
 const pendingPermissionRequests = new Map<string, PendingPermissionRequest>();
+const pendingAskUserQuestions = new Map<string, PendingAskUserQuestion>();
 const sessionRunQueue = createSessionRunQueue();
+const sessionStopVersions = createSessionStopVersionRegistry();
 const slashCommandCache = new Map<string, { commands: string[]; expiresAt: number }>();
 const attachmentRoot = () => path.join(app.getPath('userData'), 'attachments');
 const claudeSettingsPath = () => path.join(process.env.USERPROFILE ?? app.getPath('home'), '.claude', 'settings.json');
@@ -285,6 +311,15 @@ const runBtwPrompt = async (
         }
 
         const parsed = JSON.parse(line) as Record<string, unknown>;
+        const askUserQuestionRequest = parseClaudeAskUserQuestionControlRequest(parsed);
+        if (askUserQuestionRequest) {
+          const stdin = child.stdin;
+          if (isWritableStdin(child) && stdin) {
+            stdin.write(`${buildClaudeControlResponseLine(askUserQuestionRequest, 'allow')}\n`);
+          }
+          return;
+        }
+
         const permissionControlRequest = parseClaudePermissionControlRequest(parsed);
         if (permissionControlRequest) {
           pendingPermissionRequests.set(permissionControlRequest.requestId, {
@@ -319,7 +354,10 @@ const runBtwPrompt = async (
         }
 
         if (parsed.type === 'assistant') {
-          const message = parsed.message as { model?: string; content?: Array<{ type?: string; text?: string }> };
+          const message = parsed.message as {
+            model?: string;
+            content?: Array<{ type?: string; text?: string; name?: string; id?: string; input?: unknown }>;
+          };
           if (typeof message?.model === 'string' && message.model.trim()) {
             model = message.model.trim();
           }
@@ -329,6 +367,29 @@ const runBtwPrompt = async (
             .join('');
           if (text) {
             content = text;
+          }
+
+          for (const block of message?.content ?? []) {
+            if (block.type !== 'tool_use' || block.name !== 'AskUserQuestion' || !options?.sessionId) {
+              continue;
+            }
+
+            const questions = parseAskUserQuestions(block.input);
+            if (questions.length === 0) {
+              continue;
+            }
+
+            registerAskUserQuestion(
+              options.sessionId,
+              {
+                runId: randomUUID(),
+                sessionId: options.sessionId,
+                child,
+                projectRoot: cwd,
+              },
+              String(block.id ?? randomUUID()),
+              questions,
+            );
           }
         }
 
@@ -365,6 +426,11 @@ const runBtwPrompt = async (
               pendingPermissionRequests.delete(requestId);
             }
           }
+          for (const [toolUseId, pending] of pendingAskUserQuestions) {
+            if (pending.activeRun.child === child) {
+              pendingAskUserQuestions.delete(toolUseId);
+            }
+          }
           try {
             await stdoutProcessor.flush();
           } catch (error) {
@@ -391,6 +457,7 @@ const runBtwPrompt = async (
 
 const stopSessions = (sessionIds: string[]) => {
   sessionIds.forEach((sessionId) => {
+    requestSessionStop(sessionStopVersions, sessionId);
     const runs = listActiveClaudeRunsForSession(activeRuns, sessionId);
     runs.forEach((run) => {
       if (!run.child.killed) {
@@ -401,6 +468,11 @@ const stopSessions = (sessionIds: string[]) => {
     for (const [requestId, pending] of pendingPermissionRequests) {
       if (pending.sessionId === sessionId) {
         pendingPermissionRequests.delete(requestId);
+      }
+    }
+    for (const [toolUseId, pending] of pendingAskUserQuestions) {
+      if (pending.sessionId === sessionId) {
+        pendingAskUserQuestions.delete(toolUseId);
       }
     }
   });
@@ -436,6 +508,35 @@ const emitTraceMessage = async (
     type: 'trace',
     sessionId,
     message,
+  });
+};
+
+const isWritableStdin = (child: ClaudeChildProcess) => {
+  const stdin = child.stdin;
+  return Boolean(stdin && !child.killed && !stdin.destroyed && !stdin.writableEnded);
+};
+
+const registerAskUserQuestion = (
+  sessionId: string,
+  activeRun: ActiveClaudeRun,
+  toolUseId: string,
+  questions: AskUserQuestion[],
+) => {
+  if (pendingAskUserQuestions.has(toolUseId)) {
+    return;
+  }
+
+  pendingAskUserQuestions.set(toolUseId, {
+    sessionId,
+    activeRun,
+    toolUseId,
+    questions,
+  });
+  broadcastClaudeEvent({
+    type: 'ask-user-question',
+    sessionId,
+    toolUseId,
+    questions,
   });
 };
 
@@ -637,6 +738,7 @@ type PreparedClaudeRun = {
   options?: ClaudePrintOptions;
   projects: ProjectRecord[];
   assistantWasQueued: boolean;
+  stopVersion: number;
 };
 
 const summarizeToolInput = (input: unknown) => {
@@ -977,8 +1079,20 @@ const handleClaudeLine = async (
   if (!line.trim()) {
     return;
   }
+  if (activeRun.child.killed) {
+    return;
+  }
 
   const parsed = JSON.parse(line) as Record<string, unknown>;
+  const askUserQuestionRequest = parseClaudeAskUserQuestionControlRequest(parsed);
+  if (askUserQuestionRequest) {
+    const stdin = activeRun.child.stdin;
+    if (isWritableStdin(activeRun.child) && stdin) {
+      stdin.write(`${buildClaudeControlResponseLine(askUserQuestionRequest, 'allow')}\n`);
+    }
+    return;
+  }
+
   const permissionControlRequest = parseClaudePermissionControlRequest(parsed);
   if (permissionControlRequest) {
     pendingPermissionRequests.set(permissionControlRequest.requestId, {
@@ -1047,6 +1161,15 @@ const handleClaudeLine = async (
 
     if (event?.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
       const toolId = String((event.content_block as { id?: string }).id ?? randomUUID());
+      const questions =
+        event.content_block.name === 'AskUserQuestion' ? parseAskUserQuestions(event.content_block.input) : [];
+      if (questions.length > 0) {
+        registerAskUserQuestion(sessionId, activeRun, toolId, questions);
+      }
+      const recordedDiff = buildRecordedCodeChangeDiff(
+        event.content_block.name ?? 'Tool Use',
+        event.content_block.input,
+      );
       const message: ConversationMessage = {
         id: toolId,
         role: 'system',
@@ -1054,6 +1177,7 @@ const handleClaudeLine = async (
         timestamp: nowLabel(),
         title: event.content_block.name ?? 'Tool Use',
         content: summarizeToolInput(event.content_block.input),
+        recordedDiff,
         status: 'running',
       };
       state.toolTraces.set(toolId, message);
@@ -1079,6 +1203,11 @@ const handleClaudeLine = async (
       if (block.type === 'tool_use') {
         const inputSummary = summarizeToolInput(block.input);
         const toolId = String((block as { id?: string }).id ?? randomUUID());
+        const questions = block.name === 'AskUserQuestion' ? parseAskUserQuestions(block.input) : [];
+        if (questions.length > 0) {
+          registerAskUserQuestion(sessionId, activeRun, toolId, questions);
+        }
+        const recordedDiff = buildRecordedCodeChangeDiff(block.name ?? 'Tool Use', block.input);
         const existing = state.toolTraces.get(toolId) ?? {
           id: toolId,
           role: 'system',
@@ -1086,11 +1215,15 @@ const handleClaudeLine = async (
           timestamp: nowLabel(),
           title: block.name ?? 'Tool Use',
           content: inputSummary,
+          recordedDiff,
           status: 'running',
         };
         existing.title = block.name ?? existing.title;
         if (!existing.content && inputSummary) {
           existing.content = inputSummary;
+        }
+        if (!existing.recordedDiff && recordedDiff) {
+          existing.recordedDiff = recordedDiff;
         }
         state.toolTraces.set(toolId, existing);
         await emitTraceMessage(sessionId, existing);
@@ -1127,6 +1260,19 @@ const handleClaudeLine = async (
           typeof (block as { tool_use_id?: string }).tool_use_id === 'string'
         ) {
           const toolUseId = (block as { tool_use_id: string }).tool_use_id;
+          const pendingAskUserQuestion = pendingAskUserQuestions.get(toolUseId);
+          const askUserQuestionResponse = extractAskUserQuestionResponsePayload(
+            (parsed as { toolUseResult?: unknown }).toolUseResult,
+          );
+          if (pendingAskUserQuestion && !hasAskUserQuestionResponse(askUserQuestionResponse)) {
+            requestSessionStop(sessionStopVersions, sessionId);
+            if (!pendingAskUserQuestion.activeRun.child.killed) {
+              pendingAskUserQuestion.activeRun.child.kill();
+            }
+            continue;
+          }
+
+          pendingAskUserQuestions.delete(toolUseId);
           const current = state.toolTraces.get(toolUseId);
           if (current) {
             const resultText = String((block as { content?: string }).content ?? 'Tool result returned.');
@@ -1212,6 +1358,7 @@ const prepareClaudeRun = async (
     options,
     projects,
     assistantWasQueued: assistantStatus === 'queued',
+    stopVersion: readSessionStopVersion(sessionStopVersions, sessionId),
   };
 };
 
@@ -1268,6 +1415,11 @@ const executePreparedClaudeRun = async (
           pendingPermissionRequests.delete(requestId);
         }
       }
+      for (const [toolUseId, pending] of pendingAskUserQuestions) {
+        if (pending.activeRun.runId === activeRun.runId) {
+          pendingAskUserQuestions.delete(toolUseId);
+        }
+      }
       removeActiveClaudeRun(activeRuns, activeRun.runId);
       releaseQueuedTurn();
       return true;
@@ -1302,6 +1454,21 @@ const executePreparedClaudeRun = async (
       void (async () => {
         try {
           await stdoutProcessor.flush();
+
+          if (readSessionStopVersion(sessionStopVersions, sessionId) !== prepared.stopVersion) {
+            const stopped = await stopAssistantMessage(sessionId, assistantMessageId);
+            if (stopped) {
+              broadcastClaudeEvent({
+                type: 'status',
+                sessionId,
+                messageId: assistantMessageId,
+                status: stopped.status,
+                title: stopped.title,
+                content: stopped.content,
+              });
+            }
+            return;
+          }
 
           if (code === 0) {
             if (runState.terminalError) {
@@ -1359,6 +1526,21 @@ const executePreparedClaudeRun = async (
 
       void (async () => {
         try {
+          if (readSessionStopVersion(sessionStopVersions, sessionId) !== prepared.stopVersion) {
+            const stopped = await stopAssistantMessage(sessionId, assistantMessageId);
+            if (stopped) {
+              broadcastClaudeEvent({
+                type: 'status',
+                sessionId,
+                messageId: assistantMessageId,
+                status: stopped.status,
+                title: stopped.title,
+                content: stopped.content,
+              });
+            }
+            return;
+          }
+
           await updateAssistantMessage(sessionId, assistantMessageId, (message) => {
             message.content = error.message;
             message.status = 'error';
@@ -1405,6 +1587,21 @@ const runClaudePrint = async (
     try {
       const prepared = await preparedRun;
       await scheduledRun.whenReady;
+      if (readSessionStopVersion(sessionStopVersions, sessionId) !== prepared.stopVersion) {
+        const stopped = await stopAssistantMessage(prepared.sessionId, prepared.assistantMessageId);
+        if (stopped) {
+          broadcastClaudeEvent({
+            type: 'status',
+            sessionId: prepared.sessionId,
+            messageId: prepared.assistantMessageId,
+            status: stopped.status,
+            title: stopped.title,
+            content: stopped.content,
+          });
+        }
+        scheduledRun.release();
+        return;
+      }
       await markPreparedClaudeRunStarted(prepared);
       await executePreparedClaudeRun(prepared, scheduledRun.release);
     } catch {
@@ -1438,6 +1635,24 @@ const createMainWindow = async () => {
       contextIsolation: true,
       nodeIntegration: false,
     },
+  });
+
+  window.webContents.on('will-navigate', (event, targetUrl) => {
+    if (!shouldOpenExternally({ currentUrl: window.webContents.getURL(), targetUrl })) {
+      return;
+    }
+
+    event.preventDefault();
+    void shell.openExternal(targetUrl);
+  });
+
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    if (!shouldOpenExternally({ currentUrl: window.webContents.getURL(), targetUrl: url })) {
+      return { action: 'allow' };
+    }
+
+    void shell.openExternal(url);
+    return { action: 'deny' };
   });
 
   if (app.isPackaged) {
@@ -1546,6 +1761,44 @@ app.whenReady().then(async () => {
       return { mode: 'missing' as const };
     },
   );
+  ipcMain.handle(
+    'ask-user-question:respond',
+    async (
+      _event,
+      payload: {
+        toolUseId: string;
+        answers: Record<string, string>;
+        annotations?: Record<string, { notes?: string }>;
+      },
+    ) => {
+      const pending = pendingAskUserQuestions.get(payload.toolUseId);
+      if (!pending) {
+        return { mode: 'missing' as const };
+      }
+
+      pendingAskUserQuestions.delete(payload.toolUseId);
+      if (!isWritableStdin(pending.activeRun.child)) {
+        return { mode: 'missing' as const };
+      }
+
+      const stdin = pending.activeRun.child.stdin;
+      if (!stdin) {
+        return { mode: 'missing' as const };
+      }
+
+      stdin.write(
+        `${buildClaudeAskUserQuestionToolResultLine({
+          toolUseId: pending.toolUseId,
+          questions: pending.questions,
+          response: {
+            answers: payload.answers,
+            annotations: payload.annotations ?? {},
+          },
+        })}\n`,
+      );
+      return { mode: 'interactive' as const };
+    },
+  );
   ipcMain.handle('projects:open-directory', async () => openProjectDirectory());
   ipcMain.handle('projects:close', async (_event, payload: { projectId: string }) => {
     const result = await closeProject(payload.projectId);
@@ -1603,6 +1856,32 @@ app.whenReady().then(async () => {
         effort: payload.effort,
       }),
   );
+  ipcMain.handle('claude:stop-session', async (_event, payload: { sessionId: string }) => {
+    stopSessions([payload.sessionId]);
+    const result = await stopPendingSessionMessages(payload.sessionId);
+    result.changedMessages.forEach((message) => {
+      if (message.role === 'assistant') {
+        broadcastClaudeEvent({
+          type: 'status',
+          sessionId: payload.sessionId,
+          messageId: message.id,
+          status: message.status,
+          title: message.title,
+          content: message.content,
+        });
+        return;
+      }
+
+      broadcastClaudeEvent({
+        type: 'trace',
+        sessionId: payload.sessionId,
+        message,
+      });
+    });
+    return {
+      projects: result.projects,
+    };
+  });
 
   await createMainWindow();
 

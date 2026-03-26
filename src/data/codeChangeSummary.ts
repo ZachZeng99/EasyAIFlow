@@ -1,4 +1,4 @@
-import type { ConversationMessage } from './types.js';
+import type { ConversationMessage, DiffPayload } from './types.js';
 
 export type CodeChangeSummary = {
   id: string;
@@ -7,6 +7,7 @@ export type CodeChangeSummary = {
   filePath: string;
   summary: string;
   details: string;
+  recordedDiff: DiffPayload | undefined;
 };
 
 const CHANGE_TOOL_LABELS: Record<string, string> = {
@@ -103,6 +104,7 @@ export const extractCodeChangeSummaries = (messages: ConversationMessage[]) =>
         filePath,
         summary: buildSummary(message, filePath),
         details: message.content.trim(),
+        recordedDiff: message.recordedDiff,
       } satisfies CodeChangeSummary;
     })
     .filter((item): item is CodeChangeSummary => Boolean(item));

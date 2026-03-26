@@ -19,6 +19,7 @@ type ChatComposerProps = {
   slashCommands: string[];
   attachments: ComposerAttachment[];
   isSending: boolean;
+  isResponding: boolean;
   model: string;
   effort: 'low' | 'medium' | 'high' | 'max';
   supportsPathDrop?: boolean;
@@ -31,6 +32,7 @@ type ChatComposerProps = {
   onUpdateContextReferenceMode: (referenceId: string, mode: ContextReferenceMode) => void;
   onRemoveContextReference: (referenceId: string) => void;
   onSend: () => void;
+  onStop: () => void;
 };
 
 const formatTokens = (value: number) => {
@@ -65,6 +67,7 @@ export function ChatComposer({
   slashCommands,
   attachments,
   isSending,
+  isResponding,
   model,
   effort,
   supportsPathDrop = true,
@@ -77,8 +80,10 @@ export function ChatComposer({
   onUpdateContextReferenceMode,
   onRemoveContextReference,
   onSend,
+  onStop,
 }: ChatComposerProps) {
   const canSend = draft.trim().length > 0 || attachments.length > 0;
+  const showStopAction = isSending || isResponding;
   const requestedModel = model.trim().toLowerCase();
   const actualSessionModel = sessionModel.trim().toLowerCase();
   const staleLegacyWindow =
@@ -345,8 +350,13 @@ export function ChatComposer({
             </div>
           ) : null}
         </div>
-        <button type="button" className="send-button" onClick={onSend} disabled={isSending || !canSend}>
-          {isSending ? '发送中' : '发送'}
+        <button
+          type="button"
+          className="send-button"
+          onClick={showStopAction ? onStop : onSend}
+          disabled={!showStopAction && !canSend}
+        >
+          {showStopAction ? '停止' : '发送'}
         </button>
       </div>
     </footer>

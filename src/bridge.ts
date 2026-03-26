@@ -10,6 +10,7 @@ import type {
   ProjectOpenResult,
   ProjectRecord,
   RenameEntityResult,
+  SessionStopResult,
   SessionContextUpdateResult,
   SessionCreateResult,
   SessionSummary,
@@ -69,6 +70,13 @@ export type EasyAIFlowBridge = {
   }) => Promise<{
     mode: 'interactive' | 'fallback' | 'missing';
   }>;
+  respondToAskUserQuestion: (payload: {
+    toolUseId: string;
+    answers: Record<string, string>;
+    annotations?: Record<string, { notes?: string }>;
+  }) => Promise<{
+    mode: 'interactive' | 'missing';
+  }>;
   openProjectDirectory: () => Promise<ProjectOpenResult | null>;
   closeProject: (payload: { projectId: string }) => Promise<CloseProjectResult>;
   createProject: (payload: { name: string; rootPath: string }) => Promise<ProjectCreateResult>;
@@ -114,6 +122,7 @@ export type EasyAIFlowBridge = {
       assistantMessageId: string;
     };
   }>;
+  stopSessionRun: (payload: { sessionId: string }) => Promise<SessionStopResult>;
   onClaudeEvent: (listener: (event: ClaudeStreamEvent) => void) => () => void;
 };
 
@@ -146,11 +155,16 @@ const callWebRpc = async <T>(method: string, payload?: unknown): Promise<T> => {
 };
 
 const writeClipboardText = async (value: string) => {
-  if (!navigator.clipboard?.writeText) {
-    throw new Error('Clipboard API is unavailable in this browser.');
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return;
+    } catch {
+      // Fall back to the local web runtime when the browser blocks clipboard access.
+    }
   }
 
-  await navigator.clipboard.writeText(value);
+  await callWebRpc('clipboard:write-text', { value });
 };
 
 const webBridge: EasyAIFlowBridge = {
@@ -166,6 +180,7 @@ const webBridge: EasyAIFlowBridge = {
   getProjects: () => callWebRpc('getProjects'),
   grantPathPermission: (payload) => callWebRpc('grantPathPermission', payload),
   respondToPermissionRequest: (payload) => callWebRpc('respondToPermissionRequest', payload),
+  respondToAskUserQuestion: (payload) => callWebRpc('respondToAskUserQuestion', payload),
   openProjectDirectory: async () => {
     throw new Error('Web runtime does not support the native directory picker.');
   },
@@ -180,6 +195,7 @@ const webBridge: EasyAIFlowBridge = {
   updateSessionContextReferences: (payload) => callWebRpc('updateSessionContextReferences', payload),
   renameEntity: (payload) => callWebRpc('renameEntity', payload),
   sendMessage: (payload) => callWebRpc('sendMessage', payload),
+  stopSessionRun: (payload) => callWebRpc('stopSessionRun', payload),
   onClaudeEvent: (listener) => {
     const source = new EventSource('/api/events');
     source.onmessage = (event) => {

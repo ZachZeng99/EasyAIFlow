@@ -23,6 +23,11 @@ contextBridge.exposeInMainWorld('easyAIFlow', {
     ipcRenderer.invoke('permissions:grant-path', payload),
   respondToPermissionRequest: (payload: { requestId: string; behavior: 'allow' | 'deny' }) =>
     ipcRenderer.invoke('permissions:respond', payload),
+  respondToAskUserQuestion: (payload: {
+    toolUseId: string;
+    answers: Record<string, string>;
+    annotations?: Record<string, { notes?: string }>;
+  }) => ipcRenderer.invoke('ask-user-question:respond', payload),
   openProjectDirectory: () => ipcRenderer.invoke('projects:open-directory'),
   closeProject: (payload: { projectId: string }) => ipcRenderer.invoke('projects:close', payload),
   createProject: (payload: { name: string; rootPath: string }) => ipcRenderer.invoke('projects:create', payload),
@@ -55,6 +60,7 @@ contextBridge.exposeInMainWorld('easyAIFlow', {
     effort?: 'low' | 'medium' | 'high' | 'max';
   }) =>
     ipcRenderer.invoke('claude:send-message', payload),
+  stopSessionRun: (payload: { sessionId: string }) => ipcRenderer.invoke('claude:stop-session', payload),
   onClaudeEvent: (listener: (event: import('../src/data/types.js').ClaudeStreamEvent) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: import('../src/data/types.js').ClaudeStreamEvent) =>
       listener(payload);

@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import {
+  buildClaudeAskUserQuestionToolResultLine,
   buildClaudeControlResponseLine,
   buildClaudeUserMessageLine,
+  parseClaudeAskUserQuestionControlRequest,
   parseClaudePermissionControlRequest,
 } from '../electron/claudeControlMessages.js';
 
@@ -55,6 +57,83 @@ run('parseClaudePermissionControlRequest extracts a write permission prompt', ()
     rawInput: {
       file_path: 'C:\\Users\\L\\.claude\\projects\\X--PBZ-ProjectPBZ\\memory\\feedback.md',
       content: 'readability note',
+    },
+  });
+});
+
+run('parseClaudePermissionControlRequest ignores AskUserQuestion requests', () => {
+  const request = parseClaudePermissionControlRequest({
+    type: 'control_request',
+    request_id: 'req_ask_user',
+    request: {
+      subtype: 'can_use_tool',
+      tool_name: 'AskUserQuestion',
+      input: {
+        questions: [
+          {
+            question: '你的 Jenkins 环境是怎样的？',
+            header: 'Jenkins env',
+          },
+        ],
+      },
+      tool_use_id: 'toolu_ask_user',
+    },
+  });
+
+  assert.equal(request, null);
+});
+
+run('parseClaudeAskUserQuestionControlRequest extracts interactive question payloads', () => {
+  const request = parseClaudeAskUserQuestionControlRequest({
+    type: 'control_request',
+    request_id: 'req_ask_user',
+    request: {
+      subtype: 'can_use_tool',
+      tool_name: 'AskUserQuestion',
+      input: {
+        questions: [
+          {
+            question: '你的 Jenkins 环境是怎样的？',
+            header: 'Jenkins env',
+            options: [
+              { label: '内网 Jenkins', description: '本机可以访问其 HTTP API' },
+              { label: '云端 Jenkins', description: '需要通过 VPN 或公网访问' },
+            ],
+            multiSelect: false,
+          },
+        ],
+      },
+      tool_use_id: 'toolu_ask_user',
+    },
+  });
+
+  assert.deepEqual(request, {
+    requestId: 'req_ask_user',
+    toolUseId: 'toolu_ask_user',
+    toolName: 'AskUserQuestion',
+    questions: [
+      {
+        question: '你的 Jenkins 环境是怎样的？',
+        header: 'Jenkins env',
+        options: [
+          { label: '内网 Jenkins', description: '本机可以访问其 HTTP API' },
+          { label: '云端 Jenkins', description: '需要通过 VPN 或公网访问' },
+        ],
+        multiSelect: false,
+      },
+    ],
+    rawInput: {
+      questions: [
+        {
+          question: '你的 Jenkins 环境是怎样的？',
+          header: 'Jenkins env',
+          options: [
+            { label: '内网 Jenkins', description: '本机可以访问其 HTTP API' },
+            { label: '云端 Jenkins', description: '需要通过 VPN 或公网访问' },
+          ],
+          multiSelect: false,
+        },
+      ],
     },
   });
 });
@@ -121,6 +200,69 @@ run('buildClaudeControlResponseLine denies a pending tool request with a message
       response: {
         behavior: 'deny',
         message: 'User denied this action in EasyAIFlow.',
+      },
+    },
+  });
+});
+
+run('buildClaudeAskUserQuestionToolResultLine emits a tool_result user message', () => {
+  const line = buildClaudeAskUserQuestionToolResultLine({
+    toolUseId: 'toolu_ask_user',
+    questions: [
+      {
+        question: '你的 Jenkins 环境是怎样的？',
+        header: 'Jenkins env',
+        options: [
+          { label: '内网 Jenkins', description: '本机可以访问其 HTTP API' },
+          { label: '云端 Jenkins', description: '需要通过 VPN 或公网访问' },
+        ],
+        multiSelect: false,
+      },
+    ],
+    response: {
+      answers: {
+        '你的 Jenkins 环境是怎样的？': '2',
+      },
+      annotations: {
+        '你的 Jenkins 环境是怎样的？': {
+          notes: '目前需要走 VPN',
+        },
+      },
+    },
+  });
+
+  assert.deepEqual(JSON.parse(line), {
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          content:
+            'User has answered your questions: "你的 Jenkins 环境是怎样的？"="2" user notes: 目前需要走 VPN. You can now continue with the user\'s answers in mind.',
+          tool_use_id: 'toolu_ask_user',
+        },
+      ],
+    },
+    toolUseResult: {
+      questions: [
+        {
+          question: '你的 Jenkins 环境是怎样的？',
+          header: 'Jenkins env',
+          options: [
+            { label: '内网 Jenkins', description: '本机可以访问其 HTTP API' },
+            { label: '云端 Jenkins', description: '需要通过 VPN 或公网访问' },
+          ],
+          multiSelect: false,
+        },
+      ],
+      answers: {
+        '你的 Jenkins 环境是怎样的？': '2',
+      },
+      annotations: {
+        '你的 Jenkins 环境是怎样的？': {
+          notes: '目前需要走 VPN',
+        },
       },
     },
   });

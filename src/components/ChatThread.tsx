@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { DiffContent } from './DiffContent';
-import { shouldRequestCodeChangeDiff } from '../data/codeChangeDiff';
+import { getDisplayedCodeChangeDiff, shouldRequestCodeChangeDiff } from '../data/codeChangeDiff';
 import { parsePermissionRequest, type PermissionRequest } from '../data/permissionRequest';
 import { buildDisplayItems, shouldShowTitle } from '../data/chatThreadDisplay';
 import type { ConversationMessage, DiffPayload, SessionSummary } from '../data/types';
@@ -49,9 +49,12 @@ export function ChatThread({ session, messages, onRequestPermission, onRequestDi
     setLoadingCodeChangeDiffIds({});
   }, [session.id]);
 
-  const toggleCodeChange = async (changeId: string, filePath: string) => {
+  const toggleCodeChange = async (changeId: string, filePath: string, recordedDiff?: DiffPayload) => {
     const nextOpen = !openCodeChangeIds[changeId];
-    const currentPayload = codeChangeDiffs[changeId];
+    const currentPayload = getDisplayedCodeChangeDiff({
+      recordedPayload: recordedDiff,
+      loadedPayload: codeChangeDiffs[changeId],
+    });
     const isLoadingDiff = Boolean(loadingCodeChangeDiffIds[changeId]);
     const requestDiff = onRequestDiff;
     setOpenCodeChangeIds((current) => ({
@@ -261,7 +264,10 @@ export function ChatThread({ session, messages, onRequestPermission, onRequestDi
                     <div className="code-change-list">
                       {item.codeChanges?.map((change) => {
                         const isOpen = Boolean(openCodeChangeIds[change.id]);
-                        const diffPayload = codeChangeDiffs[change.id] ?? null;
+                        const diffPayload = getDisplayedCodeChangeDiff({
+                          recordedPayload: change.recordedDiff,
+                          loadedPayload: codeChangeDiffs[change.id],
+                        });
                         const isLoadingDiff = Boolean(loadingCodeChangeDiffIds[change.id]);
 
                         return (
@@ -271,7 +277,7 @@ export function ChatThread({ session, messages, onRequestPermission, onRequestDi
                               className="code-change-toggle"
                               aria-expanded={isOpen}
                               onClick={() => {
-                                void toggleCodeChange(change.id, change.filePath);
+                                void toggleCodeChange(change.id, change.filePath, change.recordedDiff);
                               }}
                             >
                               <div className="code-change-card-copy">

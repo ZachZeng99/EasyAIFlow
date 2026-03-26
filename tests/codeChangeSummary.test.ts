@@ -19,6 +19,7 @@ const makeTrace = (overrides: Partial<ConversationMessage>): ConversationMessage
   timestamp: overrides.timestamp ?? 'now',
   title: overrides.title ?? 'Edit',
   content: overrides.content ?? 'X:\\AITool\\EasyAIFlow\\src\\components\\ChatThread.tsx\nThe file has been updated successfully.',
+  recordedDiff: overrides.recordedDiff,
   status: overrides.status ?? 'success',
 });
 
@@ -62,4 +63,20 @@ run('extractCodeChangeSummaries ignores non-edit tool traces', () => {
   ]);
 
   assert.equal(summaries.length, 0);
+});
+
+run('extractCodeChangeSummaries keeps recorded diff payloads for historical display', () => {
+  const recordedDiff = {
+    filePath: 'X:\\AITool\\EasyAIFlow\\src\\components\\ChatThread.tsx',
+    kind: 'git' as const,
+    content: '@@\n-old\n+new',
+  };
+
+  const summaries = extractCodeChangeSummaries([
+    makeTrace({
+      recordedDiff,
+    }),
+  ]);
+
+  assert.deepEqual(summaries[0]?.recordedDiff, recordedDiff);
 });

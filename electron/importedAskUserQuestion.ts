@@ -1,22 +1,6 @@
-type ImportedQuestionOption = {
-  label?: string;
-  description?: string;
-};
-
-type ImportedQuestion = {
-  question?: string;
-  header?: string;
-  options?: ImportedQuestionOption[];
-  multiSelect?: boolean;
-};
+import { parseAskUserQuestions, type AskUserQuestion } from '../src/data/askUserQuestion.js';
 
 type ImportedQuestionAnnotations = Record<string, { notes?: string }>;
-
-type ImportedToolUseResult = {
-  questions?: ImportedQuestion[];
-  answers?: Record<string, unknown>;
-  annotations?: ImportedQuestionAnnotations;
-};
 
 export type ImportedAskUserQuestionDisplay = {
   title: string;
@@ -29,35 +13,10 @@ const asRecord = (value: unknown): Record<string, unknown> | null =>
 
 const normalizeText = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
 
-const normalizeQuestions = (value: unknown): ImportedQuestion[] => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return value
-    .map((item) => asRecord(item))
-    .filter((item): item is Record<string, unknown> => Boolean(item))
-    .map((item) => ({
-      question: normalizeText(item.question),
-      header: normalizeText(item.header),
-      options: Array.isArray(item.options)
-        ? item.options
-            .map((option) => asRecord(option))
-            .filter((option): option is Record<string, unknown> => Boolean(option))
-            .map((option) => ({
-              label: normalizeText(option.label),
-              description: normalizeText(option.description),
-            }))
-        : [],
-      multiSelect: item.multiSelect === true,
-    }))
-    .filter((item) => item.question);
-};
-
-const getDisplayTitle = (question: ImportedQuestion) =>
+const getDisplayTitle = (question: AskUserQuestion) =>
   question.header?.trim() || question.question?.trim() || 'Interactive question';
 
-const getAnswerLabel = (rawAnswer: string, question: ImportedQuestion) => {
+const getAnswerLabel = (rawAnswer: string, question: AskUserQuestion) => {
   const normalizedAnswer = rawAnswer.trim();
   if (!normalizedAnswer || !question.options?.length) {
     return normalizedAnswer;
@@ -97,7 +56,7 @@ const parseFallbackAnswers = (fallbackText: string) => {
   };
 };
 
-const renderQuestionPrompt = (question: ImportedQuestion) => {
+const renderQuestionPrompt = (question: AskUserQuestion) => {
   const lines: string[] = [];
 
   if (question.header) {
@@ -120,8 +79,7 @@ const renderQuestionPrompt = (question: ImportedQuestion) => {
 };
 
 export const formatImportedAskUserQuestionPrompt = (input: unknown): ImportedAskUserQuestionDisplay | null => {
-  const record = asRecord(input);
-  const questions = normalizeQuestions(record?.questions);
+  const questions = parseAskUserQuestions(input);
   if (questions.length === 0) {
     return null;
   }
@@ -138,7 +96,7 @@ export const formatImportedAskUserQuestionAnswer = (
   fallbackText = '',
 ): ImportedAskUserQuestionDisplay | null => {
   const record = asRecord(toolUseResult);
-  const questions = normalizeQuestions(record?.questions);
+  const questions = parseAskUserQuestions(record);
   if (questions.length === 0) {
     return null;
   }

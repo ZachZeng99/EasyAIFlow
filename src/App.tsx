@@ -5,8 +5,16 @@ import { ChatHistory } from './components/ChatHistory';
 import { bridge } from './bridge';
 import { ManageDialog } from './components/ManageDialog';
 import { PermissionDialog } from './components/PermissionDialog';
+import { AskUserQuestionDialog } from './components/AskUserQuestionDialog';
 import { ChatThread } from './components/ChatThread';
 import { ContextPanel } from './components/ContextPanel';
+import { buildOptimisticSendState } from './data/optimisticSend';
+import {
+  buildAskUserQuestionFollowUpPrompt,
+  buildAskUserQuestionResponsePayload,
+  type AskUserQuestion,
+  type AskUserQuestionDraft,
+} from './data/askUserQuestion';
 import { parsePermissionRequest } from './data/permissionRequest';
 import { resolveRequestedModelArg, syncImplicitModelSelection, type ModelSelectionSource } from './data/modelSelection';
 import type {
@@ -54,7 +62,7 @@ const applyClaudeEvent = (projects: ProjectRecord[], event: ClaudeStreamEvent) =
   updateSessionInProjects(projects, event.sessionId, (session) => {
     const updatedAt = Date.now();
 
-    if (event.type === 'permission-request') {
+    if (event.type === 'permission-request' || event.type === 'ask-user-question') {
       return session;
     }
 
@@ -96,6 +104,8 @@ const applyClaudeEvent = (projects: ProjectRecord[], event: ClaudeStreamEvent) =
       return {
         ...session,
         messages,
+        preview: target.content || session.preview,
+        timeLabel: 'Just now',
         updatedAt,
       };
     }
@@ -301,6 +311,12 @@ type ActivePermissionRequest = {
   sessionId?: string;
 };
 
+type ActiveAskUserQuestion = {
+  sessionId: string;
+  toolUseId: string;
+  questions: AskUserQuestion[];
+};
+
 type MobilePanel = 'history' | 'session' | 'context';
 
 export default function App() {
@@ -319,6 +335,8 @@ export default function App() {
   const [dialogState, setDialogState] = useState<DialogState | null>(null);
   const [permissionRequest, setPermissionRequest] = useState<ActivePermissionRequest | null>(null);
   const [isGrantingPermission, setIsGrantingPermission] = useState(false);
+  const [askUserQuestion, setAskUserQuestion] = useState<ActiveAskUserQuestion | null>(null);
+  const [isSubmittingAskUserQuestion, setIsSubmittingAskUserQuestion] = useState(false);
   const [isMobileLayout, setIsMobileLayout] = useState(() =>
     globalThis.matchMedia ? globalThis.matchMedia('(max-width: 920px)').matches : false,
   );
@@ -365,6 +383,10 @@ export default function App() {
         label: resolveContextReferenceLabel(reference, projects, allSessions),
       })),
     [allSessions, projects, selectedSession],
+  );
+  const isSelectedSessionResponding = useMemo(
+    () => (selectedSession ? isAssistantPendingStatus(findLastAssistantMessage(selectedSession)?.status) : false),
+    [selectedSession],
   );
   const sessionIndicators = useMemo<Record<string, SessionIndicator>>(
     () =>
@@ -575,6 +597,13 @@ export default function App() {
             sessionId: event.sessionId,
           });
         }
+        if (event.type === 'ask-user-question') {
+          setAskUserQuestion({
+            sessionId: event.sessionId,
+            toolUseId: event.toolUseId,
+            questions: event.questions,
+          });
+        }
         if (event.type === 'trace' && event.message.status === 'error') {
           const request = parsePermissionRequest(event.message.content);
           if (request) {
@@ -614,6 +643,10 @@ export default function App() {
     const validSessionIds = new Set(allSessions.map((session) => session.id));
     setUnreadSessionIds((current) => current.filter((sessionId) => validSessionIds.has(sessionId)));
   }, [allSessions]);
+
+  useEffect(() => {
+    setIsSubmittingAskUserQuestion(false);
+  }, [askUserQuestion?.toolUseId]);
 
   useEffect(() => {
     if (!selectedSession) {
@@ -852,6 +885,16 @@ export default function App() {
       path: attachment.path,
       dataUrl: attachment.dataUrl,
     }));
+    const optimisticSend = buildOptimisticSendState({
+      projects,
+      sessionId: selectedSession.id,
+      prompt: outgoingPrompt,
+      attachments: pendingAttachments,
+      references: displayContextReferences,
+      queued: isSelectedSessionResponding,
+    });
+
+    setProjects(optimisticSend.projects);
 
     try {
       const result = await bridge.sendMessage({
@@ -867,7 +910,31 @@ export default function App() {
       if (result?.projects) {
         setProjects(result.projects);
       }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to send message.';
+      setUiError(message);
+      setProjects((current) =>
+        updateSessionInProjects(current, selectedSession.id, (session) => ({
+          ...session,
+          preview: 'Claude error',
+          timeLabel: 'Just now',
+          updatedAt: Date.now(),
+          messages: (session.messages ?? []).map((entry) =>
+            entry.id === optimisticSend.assistantMessageId
+              ? {
+                  ...entry,
+                  title: 'Claude error',
+                  content: message,
+                  status: 'error',
+                }
+              : entry,
+          ),
+        })),
+      );
+      return;
+    }
 
+    try {
       if (displayContextReferences.length > 0) {
         await bridge.updateSessionContextReferences({
           sessionId: selectedSession.id,
@@ -882,24 +949,27 @@ export default function App() {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to send message.';
       setUiError(message);
-      setProjects((current) =>
-        updateSessionInProjects(current, selectedSession.id, (session) => ({
-          ...session,
-          messages: [
-            ...(session.messages ?? []),
-            {
-              id: `local-error-${Date.now()}`,
-              role: 'assistant',
-              timestamp: new Date().toLocaleString('zh-CN'),
-              title: 'Claude error',
-              content: message,
-              status: 'error',
-            },
-          ],
-        })),
-      );
     } finally {
       setIsSending(false);
+    }
+  };
+
+  const handleStop = async () => {
+    if (!selectedSession) {
+      return;
+    }
+
+    try {
+      setUiError(null);
+      setIsSending(false);
+      const result = await bridge.stopSessionRun({
+        sessionId: selectedSession.id,
+      });
+      if (result?.projects) {
+        setProjects(result.projects);
+      }
+    } catch (error) {
+      setUiError(error instanceof Error ? error.message : 'Failed to stop Claude.');
     }
   };
 
@@ -1063,6 +1133,55 @@ export default function App() {
       setUiError(error instanceof Error ? error.message : 'Failed to deny permission.');
     } finally {
       setIsGrantingPermission(false);
+    }
+  };
+
+  const handleSubmitAskUserQuestion = async (draft?: AskUserQuestionDraft) => {
+    if (!askUserQuestion) {
+      return;
+    }
+
+    const response = draft
+      ? buildAskUserQuestionResponsePayload(askUserQuestion.questions, draft)
+      : {
+          answers: {},
+          annotations: {},
+        };
+
+    setIsSubmittingAskUserQuestion(true);
+    try {
+      const mode = await bridge.respondToAskUserQuestion({
+        toolUseId: askUserQuestion.toolUseId,
+        answers: response.answers,
+        annotations: response.annotations,
+      });
+
+      if (mode.mode !== 'interactive') {
+        const targetSession = allSessions.find((session) => session.id === askUserQuestion.sessionId);
+        if (!targetSession) {
+          throw new Error('Unable to resume the session for the answered questions.');
+        }
+
+        const result = await bridge.sendMessage({
+          sessionId: targetSession.id,
+          prompt: buildAskUserQuestionFollowUpPrompt(askUserQuestion.questions, response),
+          session: targetSession,
+          references: targetSession.contextReferences ?? [],
+          model: resolveRequestedModelArg(model, modelSelectionSource),
+          effort,
+        });
+
+        if (result?.projects) {
+          setProjects(result.projects);
+        }
+      }
+
+      setAskUserQuestion(null);
+      setUiError(null);
+    } catch (error) {
+      setUiError(error instanceof Error ? error.message : 'Failed to answer Claude question.');
+    } finally {
+      setIsSubmittingAskUserQuestion(false);
     }
   };
 
@@ -1441,6 +1560,7 @@ export default function App() {
                 slashCommands={slashCommands}
                 attachments={attachments}
                 isSending={isSending}
+                isResponding={isSelectedSessionResponding}
                 model={model}
                 effort={effort}
                 supportsPathDrop={!isWebRuntime}
@@ -1474,6 +1594,9 @@ export default function App() {
                 onRemoveAttachment={handleRemoveAttachment}
                 onSend={() => {
                   void handleSend();
+                }}
+                onStop={() => {
+                  void handleStop();
                 }}
               />
             </main>
@@ -1558,6 +1681,18 @@ export default function App() {
         }}
         onGrant={() => {
           void handleGrantPermission();
+        }}
+      />
+      <AskUserQuestionDialog
+        open={Boolean(askUserQuestion)}
+        dialogKey={askUserQuestion?.toolUseId ?? 'ask-user-question'}
+        questions={askUserQuestion?.questions ?? []}
+        busy={isSubmittingAskUserQuestion}
+        onSkip={() => {
+          void handleSubmitAskUserQuestion();
+        }}
+        onSubmit={(draft) => {
+          void handleSubmitAskUserQuestion(draft);
         }}
       />
     </div>

@@ -1,3 +1,5 @@
+import type { AskUserQuestion } from './askUserQuestion.js';
+
 export type LinkedGroup = {
   id: string;
   name: string;
@@ -112,6 +114,7 @@ export type ConversationMessage = {
   timestamp: string;
   title: string;
   content: string;
+  recordedDiff?: DiffPayload;
   status?: 'queued' | 'streaming' | 'running' | 'success' | 'complete' | 'error';
   contextReferences?: ContextReference[];
   attachments?: MessageAttachment[];
@@ -155,6 +158,10 @@ export type SessionContextUpdateResult = {
   session: SessionRecord;
 };
 
+export type SessionStopResult = {
+  projects: ProjectRecord[];
+};
+
 export type CloseProjectResult = {
   projects: ProjectRecord[];
   closedSessionIds: string[];
@@ -195,6 +202,12 @@ export type ClaudeStreamEvent =
       description?: string;
       decisionReason?: string;
       sensitive: boolean;
+    }
+  | {
+      type: 'ask-user-question';
+      sessionId: string;
+      toolUseId: string;
+      questions: AskUserQuestion[];
     }
   | {
       type: 'complete';

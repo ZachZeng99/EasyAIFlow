@@ -17,6 +17,7 @@ import { isBackgroundTaskNotificationContent } from './backgroundTaskNotificatio
 import { mergeNativeImportedSessions } from './nativeSessionMerge.js';
 import { mergeNativeSessionIntoExisting, shouldRecoverSessionFromNative } from './nativeSessionRecovery.js';
 import { hydrateProjectForOpen } from './projectOpen.js';
+import { buildRecordedCodeChangeDiff } from './recordedCodeChangeDiff.js';
 import { sortDreamsWithTemporaryFirst } from '../src/data/streamworkOrder.js';
 import { normalizeWorkspacePath, sameWorkspacePath, toClaudeProjectDirName } from './workspacePaths.js';
 import { filterVisibleProjects } from './projectVisibility.js';
@@ -175,6 +176,25 @@ const extractTextFromContent = (content: unknown): string => {
     .join('\n');
 };
 
+const extractTextFromMessageBlock = (block: unknown): string => {
+  if (typeof block === 'string') {
+    return block;
+  }
+  if (!block || typeof block !== 'object') {
+    return '';
+  }
+
+  const typedBlock = block as { type?: string; text?: unknown; content?: unknown };
+  if (typedBlock.type === 'text' && typeof typedBlock.text === 'string') {
+    return typedBlock.text;
+  }
+
+  return extractTextFromContent(typedBlock.content);
+};
+
+const shouldSkipSyntheticAssistantPlaceholder = (model: string | undefined, content: string) =>
+  model?.trim() === '<synthetic>' && content.trim() === 'No response requested.';
+
 const firstMeaningfulLine = (value: string) =>
   value
     .split(/\r?\n/)
@@ -315,9 +335,13 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
             continue;
           }
 
-          const content = extractTextFromContent(block);
+          const content = extractTextFromMessageBlock(block);
           const text = firstMeaningfulLine(content);
           if (!text) {
+            continue;
+          }
+          if (isBackgroundTaskNotificationContent(content)) {
+            backgroundTaskNotificationPending = true;
             continue;
           }
           if (!firstUserText) {
@@ -371,6 +395,9 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
         if (!text) {
           continue;
         }
+        if (shouldSkipSyntheticAssistantPlaceholder(messageObj?.model, content)) {
+          continue;
+        }
         if (backgroundTaskNotificationPending) {
           backgroundTaskNotificationPending = false;
           continue;
@@ -399,6 +426,9 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
           const content = (block as { text?: string }).text ?? '';
           const text = firstMeaningfulLine(content);
           if (!text) {
+            continue;
+          }
+          if (shouldSkipSyntheticAssistantPlaceholder(messageObj?.model, content)) {
             continue;
           }
           if (backgroundTaskNotificationPending) {
@@ -458,6 +488,7 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
             timestamp: toTimeLabel(parsed.timestamp as string | number | undefined),
             title: tool.name ?? 'Tool Use',
             content: summarizeToolInput(tool.name ?? 'Tool Use', tool.input),
+            recordedDiff: buildRecordedCodeChangeDiff(tool.name ?? 'Tool Use', tool.input),
             status: 'running',
           };
           messages.push(toolMessage);
@@ -610,7 +641,14 @@ const importNativeClaudeSessions = async (project: ProjectRecord) => {
   const importedSessions: SessionRecord[] = [];
 
   for (const file of files) {
-    const parsed = await parseNativeClaudeSessionFile(path.join(nativeDir, file));
+    let parsed:
+      | Awaited<ReturnType<typeof parseNativeClaudeSessionFile>>
+      | undefined;
+    try {
+      parsed = await parseNativeClaudeSessionFile(path.join(nativeDir, file));
+    } catch {
+      continue;
+    }
     const workspace = parsed.workspace || project.rootPath;
     if (!sameWorkspacePath(workspace, project.rootPath)) {
       continue;
@@ -816,6 +854,24 @@ const ensureStateShape = (value: unknown): AppState => {
   };
 };
 
+const hydrateLoadedState = async (state: AppState) => {
+  for (const project of state.projects) {
+    try {
+      await importNativeClaudeSessions(project);
+    } catch {
+      // Preserve the persisted project tree when auxiliary native-session import fails.
+    }
+  }
+
+  try {
+    await recoverExistingSessionsFromNativeHistory(state.projects);
+  } catch {
+    // Keep the persisted project tree even if native-history recovery cannot complete.
+  }
+
+  state.projects = normalizeProjectsFromPersistence(normalizeProjects(state.projects));
+};
+
 export const loadState = async () => {
   if (cachedState) {
     cachedState.projects = normalizeProjectsForCache(normalizeProjects(cachedState.projects));
@@ -826,17 +882,12 @@ export const loadState = async () => {
   try {
     const raw = await readFile(storePath(), 'utf8');
     cachedState = ensureStateShape(JSON.parse(raw));
-    await Promise.all(cachedState.projects.map((project) => importNativeClaudeSessions(project)));
-    await recoverExistingSessionsFromNativeHistory(cachedState.projects);
-    cachedState.projects = normalizeProjectsFromPersistence(normalizeProjects(cachedState.projects));
-    await saveState(cachedState);
   } catch {
     cachedState = { projects: buildInitialProjects() };
-    await Promise.all(cachedState.projects.map((project) => importNativeClaudeSessions(project)));
-    await recoverExistingSessionsFromNativeHistory(cachedState.projects);
-    cachedState.projects = normalizeProjectsFromPersistence(normalizeProjects(cachedState.projects));
-    await saveState(cachedState);
   }
+
+  await hydrateLoadedState(cachedState);
+  await saveState(cachedState);
 
   return cachedState;
 };

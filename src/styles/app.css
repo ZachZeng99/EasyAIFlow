@@ -820,6 +820,74 @@ p {
   font-weight: 700;
 }
 
+.ask-user-dialog {
+  width: min(100%, 640px);
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ask-user-dialog-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 12px;
+}
+
+.ask-user-dialog-actions {
+  flex: 0 0 auto;
+}
+
+.ask-user-question-block {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.ask-user-question-header {
+  margin: 0;
+  font-family: 'Cascadia Code', 'Consolas', monospace;
+  font-size: 0.72rem;
+  color: rgba(245, 239, 230, 0.6);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.ask-user-question-title {
+  margin: 0;
+  font-size: 0.98rem;
+  line-height: 1.45;
+}
+
+.ask-user-option-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ask-user-option {
+  margin: 0;
+}
+
+@media (max-width: 920px) {
+  .dialog-backdrop {
+    padding: 12px;
+  }
+
+  .ask-user-dialog {
+    max-height: calc(100vh - 24px);
+  }
+
+  .ask-user-dialog-body {
+    padding-right: 4px;
+  }
+}
+
 .chat-header {
   padding: 22px 26px 16px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);

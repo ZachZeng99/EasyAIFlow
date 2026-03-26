@@ -11,3 +11,11 @@ export const shouldRequestCodeChangeDiff = ({
   currentPayload: DiffPayload | null | undefined;
   isLoading: boolean;
 }) => nextOpen && hasRequestDiff && !isLoading && (!currentPayload || currentPayload.kind === 'missing');
+
+export const getDisplayedCodeChangeDiff = ({
+  recordedPayload,
+  loadedPayload,
+}: {
+  recordedPayload: DiffPayload | null | undefined;
+  loadedPayload: DiffPayload | null | undefined;
+}) => recordedPayload ?? loadedPayload ?? null;

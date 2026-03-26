@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { shouldRequestCodeChangeDiff } from '../src/data/codeChangeDiff.ts';
+import { getDisplayedCodeChangeDiff, shouldRequestCodeChangeDiff } from '../src/data/codeChangeDiff.ts';
 import type { DiffPayload } from '../src/data/types.ts';
 
 const run = (name: string, fn: () => void) => {
@@ -45,5 +45,21 @@ run('shouldRequestCodeChangeDiff skips reload when a usable payload already exis
       isLoading: false,
     }),
     false,
+  );
+});
+
+run('getDisplayedCodeChangeDiff prefers the recorded edit-time payload over live workspace lookup', () => {
+  const recordedPayload: DiffPayload = {
+    filePath: missingPayload.filePath,
+    kind: 'git',
+    content: '@@\n-old\n+new',
+  };
+
+  assert.deepEqual(
+    getDisplayedCodeChangeDiff({
+      recordedPayload,
+      loadedPayload: previewPayload,
+    }),
+    recordedPayload,
   );
 });
