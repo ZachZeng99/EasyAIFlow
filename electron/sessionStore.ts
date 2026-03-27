@@ -13,7 +13,10 @@ import {
   formatImportedAskUserQuestionAnswer,
   formatImportedAskUserQuestionPrompt,
 } from './importedAskUserQuestion.js';
-import { isBackgroundTaskNotificationContent } from './backgroundTaskNotification.js';
+import {
+  extractBackgroundTaskNotificationContent,
+  isBackgroundTaskNotificationContent,
+} from './backgroundTaskNotification.js';
 import { mergeNativeImportedSessions } from './nativeSessionMerge.js';
 import { mergeNativeSessionIntoExisting, shouldRecoverSessionFromNative } from './nativeSessionRecovery.js';
 import { hydrateProjectForOpen } from './projectOpen.js';
@@ -285,6 +288,13 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
     }
     if (parsed.timestamp) {
       lastTimestamp = parsed.timestamp as string | number;
+    }
+    const backgroundTaskNotification = extractBackgroundTaskNotificationContent(parsed);
+    if (backgroundTaskNotification) {
+      backgroundTaskNotificationPending = true;
+      if (parsed.type === 'queue-operation') {
+        continue;
+      }
     }
 
     if (parsed.type === 'user' && parsed.isMeta !== true) {

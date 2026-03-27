@@ -36,7 +36,7 @@ import {
   shouldCompleteClaudeRunOnClose,
   type ClaudeRunStateCompletion,
 } from '../electron/claudeRunState.js';
-import { isBackgroundTaskNotificationContent } from '../electron/backgroundTaskNotification.js';
+import { extractBackgroundTaskNotificationContent } from '../electron/backgroundTaskNotification.js';
 import {
   buildClaudeAskUserQuestionToolResultLine,
   buildClaudeControlResponseLine,
@@ -858,6 +858,13 @@ const handleClaudeLine = async (
   const parsed = JSON.parse(line) as Record<string, unknown>;
   Object.assign(state, applyParsedSessionMetadata(state, parsed));
   await syncRunSessionRuntime(sessionId, state);
+  const backgroundTaskNotification = extractBackgroundTaskNotificationContent(parsed);
+  if (backgroundTaskNotification) {
+    Object.assign(state, noteBackgroundTaskNotificationInRunState(state, backgroundTaskNotification));
+    if (parsed.type === 'queue-operation') {
+      return;
+    }
+  }
   const askUserQuestionRequest = parseClaudeAskUserQuestionControlRequest(parsed);
   if (askUserQuestionRequest) {
     const stdin = activeRun.child.stdin;
@@ -1008,11 +1015,6 @@ const handleClaudeLine = async (
 
   if (parsed.type === 'user' && parsed.isMeta !== true) {
     const content = (parsed.message as { content?: unknown })?.content;
-
-    if (typeof content === 'string' && isBackgroundTaskNotificationContent(content)) {
-      Object.assign(state, noteBackgroundTaskNotificationInRunState(state, content));
-      return;
-    }
 
     if (Array.isArray(content)) {
       for (const block of content) {

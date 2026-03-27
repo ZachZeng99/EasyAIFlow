@@ -1,3 +1,5 @@
+import { isBackgroundTaskNotificationContent } from './backgroundTaskNotification.js';
+
 export type ClaudeRunStateCompletion = {
   content: string;
   receivedResult: boolean;
@@ -43,11 +45,6 @@ export const markRunSessionRuntimePersisted = <T extends ClaudeRunSessionRuntime
   persistedClaudeSessionId: state.claudeSessionId ?? state.persistedClaudeSessionId,
   persistedModel: state.model ?? state.persistedModel,
 });
-
-const isBackgroundTaskNotificationContent = (content: string) => {
-  const normalized = content.trim();
-  return normalized.includes('<task-notification>') && normalized.includes('<task-id>');
-};
 
 export const noteBackgroundTaskNotificationInRunState = <T extends ClaudeRunStateCompletion>(
   state: T,

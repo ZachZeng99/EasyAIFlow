@@ -96,3 +96,97 @@ await run('createProject imports native user text blocks and skips synthetic no-
     },
   ]);
 });
+
+await run('createProject ignores background task cleanup follow-ups after queue notifications', async () => {
+  const tempRoot = path.join(process.cwd(), '.tmp-tests', 'imported-background-task-notification');
+  await rm(tempRoot, { recursive: true, force: true });
+
+  const appDataRoot = path.join(tempRoot, 'AppData', 'Roaming');
+  const userProfile = path.join(tempRoot, 'UserProfile');
+  process.env.APPDATA = appDataRoot;
+  process.env.USERPROFILE = userProfile;
+  process.env.HOME = userProfile;
+
+  const rootPath = 'X:\\AITool\\EasyAIFlow\\.tmp-tests\\ImportedBackgroundTaskProject';
+  const sessionId = 'native-background-task';
+  const prompt = '哪里有设置或者选项说明ps5的float有half精度的';
+  const reply = '真正的最终回答';
+  const backgroundCleanup = '后台任务清理完了。需要我帮你做什么就说。';
+
+  const { toClaudeProjectDirName } = await import('../electron/workspacePaths.ts');
+  const dirName = toClaudeProjectDirName(rootPath);
+  assert.ok(dirName);
+
+  const nativeDir = path.join(userProfile, '.claude', 'projects', dirName);
+  await mkdir(nativeDir, { recursive: true });
+  await writeFile(
+    path.join(nativeDir, `${sessionId}.jsonl`),
+    [
+      {
+        type: 'custom-title',
+        customTitle: 'Shader',
+        sessionId,
+      },
+      {
+        type: 'user',
+        timestamp: '2026-03-27T10:47:00.000Z',
+        cwd: rootPath,
+        sessionId,
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: prompt }],
+        },
+      },
+      {
+        type: 'assistant',
+        timestamp: '2026-03-27T10:59:58.483Z',
+        cwd: rootPath,
+        sessionId,
+        message: {
+          model: 'claude-opus-4-6',
+          content: [{ type: 'text', text: reply }],
+        },
+      },
+      {
+        type: 'queue-operation',
+        operation: 'enqueue',
+        timestamp: '2026-03-27T10:59:58.536Z',
+        sessionId,
+        content:
+          '<task-notification>\n<task-id>b032kya7w</task-id>\n<status>completed</status>\n</task-notification>',
+      },
+      {
+        type: 'assistant',
+        timestamp: '2026-03-27T11:00:09.447Z',
+        cwd: rootPath,
+        sessionId,
+        message: {
+          model: 'claude-opus-4-6',
+          content: [{ type: 'text', text: backgroundCleanup }],
+        },
+      },
+    ]
+      .map((line) => JSON.stringify(line))
+      .join('\n')
+      .concat('\n'),
+    'utf8',
+  );
+
+  const { createProject } = await import('../electron/sessionStore.ts');
+  const result = await createProject('Imported Background Task Project', rootPath);
+  const messages = result.session.messages.map((message) => ({
+    role: message.role,
+    content: message.content,
+  }));
+
+  assert.deepEqual(messages, [
+    {
+      role: 'user',
+      content: prompt,
+    },
+    {
+      role: 'assistant',
+      content: reply,
+    },
+  ]);
+});
