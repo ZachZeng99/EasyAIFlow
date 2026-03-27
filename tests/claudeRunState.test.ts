@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import {
   applyAssistantTextToRunState,
   createClaudeRunState,
+  getRunSessionRuntimeUpdate,
   markClaudeRunCompleted,
+  markRunSessionRuntimePersisted,
   noteBackgroundTaskNotificationInRunState,
   shouldCompleteClaudeRunOnClose,
 } from '../electron/claudeRunState.ts';
@@ -61,4 +63,36 @@ run('background task follow-up text does not overwrite the real assistant answer
   assert.equal(updated.content, '整理完毕，以下是 PS5 安装包体的完整流程');
   assert.equal(updated.completedContent, '整理完毕，以下是 PS5 安装包体的完整流程');
   assert.equal(updated.needsCompletionRefresh, false);
+});
+
+run('getRunSessionRuntimeUpdate exposes newly discovered session metadata for persistence', () => {
+  const update = getRunSessionRuntimeUpdate({
+    ...createClaudeRunState(),
+    claudeSessionId: 'session-from-control-request',
+    model: 'claude-opus-4-6',
+  });
+
+  assert.deepEqual(update, {
+    claudeSessionId: 'session-from-control-request',
+    model: 'claude-opus-4-6',
+  });
+});
+
+run('markRunSessionRuntimePersisted suppresses duplicate runtime writes until metadata changes again', () => {
+  const persisted = markRunSessionRuntimePersisted({
+    ...createClaudeRunState(),
+    claudeSessionId: 'session-1',
+    model: 'claude-opus-4-6',
+  });
+
+  assert.equal(getRunSessionRuntimeUpdate(persisted), null);
+
+  const changed = {
+    ...persisted,
+    model: 'claude-sonnet-4-5',
+  };
+
+  assert.deepEqual(getRunSessionRuntimeUpdate(changed), {
+    model: 'claude-sonnet-4-5',
+  });
 });

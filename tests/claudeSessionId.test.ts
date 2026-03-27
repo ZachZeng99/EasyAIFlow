@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { extractClaudeSessionId } from '../electron/claudeSessionId.js';
+import { applyParsedSessionMetadata, extractClaudeSessionId } from '../electron/claudeSessionId.js';
 
 const run = (name: string, fn: () => void) => {
   try {
@@ -22,4 +22,40 @@ run('extractClaudeSessionId reads camelCase session ids', () => {
 run('extractClaudeSessionId ignores missing or blank values', () => {
   assert.equal(extractClaudeSessionId({ sessionId: '   ' }), undefined);
   assert.equal(extractClaudeSessionId({}), undefined);
+});
+
+run('applyParsedSessionMetadata captures session ids from control requests before the run exits early', () => {
+  const updated = applyParsedSessionMetadata(
+    {},
+    {
+      type: 'control_request',
+      session_id: 'control-session-id',
+      request: {
+        subtype: 'can_use_tool',
+      },
+    },
+  );
+
+  assert.deepEqual(updated, {
+    claudeSessionId: 'control-session-id',
+  });
+});
+
+run('applyParsedSessionMetadata keeps the latest assistant model metadata', () => {
+  const updated = applyParsedSessionMetadata(
+    {
+      claudeSessionId: 'existing-session',
+    },
+    {
+      type: 'assistant',
+      message: {
+        model: 'claude-opus-4-6',
+      },
+    },
+  );
+
+  assert.deepEqual(updated, {
+    claudeSessionId: 'existing-session',
+    model: 'claude-opus-4-6',
+  });
 });

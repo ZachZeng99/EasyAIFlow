@@ -26,11 +26,13 @@ import {
   updateAssistantMessage,
 } from './sessionStore.js';
 import { getClaudeSyntheticApiError } from './claudeErrors.js';
-import { extractClaudeSessionId } from './claudeSessionId.js';
+import { applyParsedSessionMetadata, extractClaudeSessionId } from './claudeSessionId.js';
 import {
   applyAssistantTextToRunState,
   createClaudeRunState,
+  getRunSessionRuntimeUpdate,
   markClaudeRunCompleted,
+  markRunSessionRuntimePersisted,
   noteBackgroundTaskNotificationInRunState,
   shouldCompleteClaudeRunOnClose,
   type ClaudeRunStateCompletion,
@@ -718,6 +720,8 @@ const buildContextReferencePrompt = async (sessionId: string, overrideReferences
 type ClaudeRunState = ClaudeRunStateCompletion & {
   claudeSessionId?: string;
   model?: string;
+  persistedClaudeSessionId?: string;
+  persistedModel?: string;
   tokenUsage?: TokenUsage;
   terminalError?: string;
   toolTraces: Map<string, ConversationMessage>;
@@ -784,6 +788,16 @@ const finalizeToolTraces = async (sessionId: string, state: ClaudeRunState) => {
       await emitTraceMessage(sessionId, trace);
     }
   }
+};
+
+const syncRunSessionRuntime = async (sessionId: string, state: ClaudeRunState) => {
+  const update = getRunSessionRuntimeUpdate(state);
+  if (!update) {
+    return;
+  }
+
+  await setSessionRuntime(sessionId, update);
+  Object.assign(state, markRunSessionRuntimePersisted(state));
 };
 
 const completeAssistantRun = async (
@@ -1084,6 +1098,8 @@ const handleClaudeLine = async (
   }
 
   const parsed = JSON.parse(line) as Record<string, unknown>;
+  Object.assign(state, applyParsedSessionMetadata(state, parsed));
+  await syncRunSessionRuntime(sessionId, state);
   const askUserQuestionRequest = parseClaudeAskUserQuestionControlRequest(parsed);
   if (askUserQuestionRequest) {
     const stdin = activeRun.child.stdin;
@@ -1130,11 +1146,6 @@ const handleClaudeLine = async (
       error: syntheticApiError,
     });
     return;
-  }
-
-  const resolvedClaudeSessionId = extractClaudeSessionId(parsed);
-  if (resolvedClaudeSessionId) {
-    state.claudeSessionId = resolvedClaudeSessionId;
   }
 
   if (parsed.type === 'stream_event') {
@@ -1428,6 +1439,8 @@ const executePreparedClaudeRun = async (
       ...createClaudeRunState(),
       claudeSessionId: session.claudeSessionId,
       model: session.model,
+      persistedClaudeSessionId: session.claudeSessionId,
+      persistedModel: session.model,
       tokenUsage: session.tokenUsage,
       toolTraces: new Map<string, ConversationMessage>(),
     };
