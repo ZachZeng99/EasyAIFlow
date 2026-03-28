@@ -127,12 +127,13 @@ const normalizeHarnessState = (state: HarnessSessionState | undefined): HarnessS
     evaluatorSessionId: state.evaluatorSessionId,
     artifactDir: state.artifactDir,
     status:
-      state.status === 'running' ||
       state.status === 'completed' ||
       state.status === 'failed' ||
       state.status === 'cancelled'
         ? state.status
-        : 'ready',
+        : state.status === 'running'
+          ? 'failed'
+          : 'ready',
     currentOwner: state.currentOwner,
     currentStage: state.currentStage ?? 'idle',
     currentSprint: state.currentSprint ?? 0,
