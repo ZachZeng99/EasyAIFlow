@@ -4,7 +4,14 @@ import {
   type AskUserQuestion,
   type AskUserQuestionResponsePayload,
 } from '../src/data/askUserQuestion.js';
-import type { PlanModeAllowedPrompt } from '../src/data/types.js';
+import {
+  buildPlanModeEnteredText,
+  buildPlanModeResponseText,
+  isPlanModeToolName,
+  type PlanModeRequest,
+  type PlanModeResponsePayload,
+  type PlanModeToolName,
+} from '../src/data/planMode.js';
 
 export type ClaudePermissionBehavior = 'allow' | 'deny';
 
@@ -28,14 +35,10 @@ export type ClaudeAskUserQuestionControlRequest = {
   rawInput: Record<string, unknown>;
 };
 
-const planModeControlToolPattern = /^(Enter|Exit)PlanMode$/i;
 export type ClaudePlanModeControlRequest = {
   requestId: string;
   toolUseId?: string;
-  toolName: 'EnterPlanMode' | 'ExitPlanMode';
-  plan: string;
-  planFilePath?: string;
-  allowedPrompts: PlanModeAllowedPrompt[];
+  toolName: PlanModeToolName;
   rawInput: Record<string, unknown>;
 };
 
@@ -84,7 +87,7 @@ export const parseClaudePermissionControlRequest = (
   if (!request || !requestId || request.subtype !== 'can_use_tool' || !toolName || !rawInput) {
     return null;
   }
-  if (toolName === 'AskUserQuestion' || planModeControlToolPattern.test(toolName)) {
+  if (toolName === 'AskUserQuestion' || isPlanModeToolName(toolName)) {
     return null;
   }
 
@@ -106,10 +109,6 @@ export const parseClaudePermissionControlRequest = (
   };
 };
 
-export const isPlanModeClaudeControlRequest = (
-  request: Pick<ClaudePermissionControlRequest, 'toolName'>,
-) => planModeControlToolPattern.test(request.toolName);
-
 export const parseClaudePlanModeControlRequest = (
   parsed: Record<string, unknown>,
 ): ClaudePlanModeControlRequest | null => {
@@ -119,130 +118,19 @@ export const parseClaudePlanModeControlRequest = (
 
   const request = asObject(parsed.request);
   const requestId = getString(parsed.request_id);
-  const toolName = getString(request?.tool_name);
-  const rawInput = asObject(request?.input);
-  if (
-    !request ||
-    !requestId ||
-    request.subtype !== 'can_use_tool' ||
-    !toolName ||
-    !planModeControlToolPattern.test(toolName) ||
-    !rawInput
-  ) {
+  const toolName = request?.tool_name;
+  if (!request || !requestId || request.subtype !== 'can_use_tool' || !isPlanModeToolName(toolName)) {
     return null;
   }
-
-  const rawAllowedPrompts = Array.isArray(rawInput.allowedPrompts) ? rawInput.allowedPrompts : [];
-  const allowedPrompts = rawAllowedPrompts
-    .map((item) => {
-      const record = asObject(item);
-      const tool = getString(record?.tool);
-      const prompt = getString(record?.prompt);
-      return tool && prompt ? { tool, prompt } : null;
-    })
-    .filter((item): item is PlanModeAllowedPrompt => Boolean(item));
-  const plan = getString(rawInput.plan) ?? '';
-  const planFilePath = getString(rawInput.planFilePath);
 
   return {
     requestId,
     toolUseId: getString(request.tool_use_id),
-    toolName: toolName as 'EnterPlanMode' | 'ExitPlanMode',
-    plan,
-    planFilePath,
-    allowedPrompts,
-    rawInput,
+    toolName,
+    rawInput: asObject(request.input) ?? {},
   };
 };
 
-export const parseClaudePlanModeToolInput = (
-  toolName: string | undefined,
-  input: unknown,
-) => {
-  if (!toolName || !planModeControlToolPattern.test(toolName)) {
-    return null;
-  }
-
-  const rawInput = asObject(input);
-  if (!rawInput) {
-    return null;
-  }
-
-  const rawAllowedPrompts = Array.isArray(rawInput.allowedPrompts) ? rawInput.allowedPrompts : [];
-  const allowedPrompts = rawAllowedPrompts
-    .map((item) => {
-      const record = asObject(item);
-      const tool = getString(record?.tool);
-      const prompt = getString(record?.prompt);
-      return tool && prompt ? { tool, prompt } : null;
-    })
-    .filter((item): item is PlanModeAllowedPrompt => Boolean(item));
-
-  return {
-    toolName: toolName as 'EnterPlanMode' | 'ExitPlanMode',
-    plan: getString(rawInput.plan) ?? '',
-    planFilePath: getString(rawInput.planFilePath),
-    allowedPrompts,
-    rawInput,
-  };
-};
-
-export const buildClaudePlanModeToolResultLine = (payload: {
-  toolUseId: string;
-  approved: boolean;
-  plan: string;
-  planFilePath?: string;
-  notes?: string;
-}) => {
-  if (!payload.approved) {
-    const feedback = payload.notes?.trim() || 'Please revise the plan and try again.';
-    const content =
-      "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). To tell you how to proceed, the user said:\n" +
-      feedback;
-
-    return JSON.stringify({
-      type: 'user',
-      message: {
-        role: 'user',
-        content: [
-          {
-            type: 'tool_result',
-            content,
-            is_error: true,
-            tool_use_id: payload.toolUseId,
-          },
-        ],
-      },
-      toolUseResult: `Error: ${content}`,
-    });
-  }
-
-  const content = [
-    'User has approved your plan. You can now start coding. Start with updating your todo list if applicable',
-    payload.planFilePath ? `\n\nYour plan has been saved to: ${payload.planFilePath}` : '',
-    payload.planFilePath ? '\nYou can refer back to it if needed during implementation.' : '',
-    payload.plan ? `\n\n## Approved Plan:\n${payload.plan}` : '',
-  ].join('');
-
-  return JSON.stringify({
-    type: 'user',
-    message: {
-      role: 'user',
-      content: [
-        {
-          type: 'tool_result',
-          content,
-          tool_use_id: payload.toolUseId,
-        },
-      ],
-    },
-    toolUseResult: {
-      plan: payload.plan,
-      isAgent: false,
-      filePath: payload.planFilePath,
-    },
-  });
-};
 
 export const parseClaudeAskUserQuestionControlRequest = (
   parsed: Record<string, unknown>,
@@ -326,3 +214,35 @@ export const buildClaudeAskUserQuestionToolResultLine = (payload: {
       annotations: payload.response.annotations,
     },
   });
+
+export const buildClaudePlanModeToolResultLine = (payload: {
+  request: PlanModeRequest;
+  response?: PlanModeResponsePayload;
+}) => {
+  const resultText =
+    payload.request.toolName === 'EnterPlanMode'
+      ? buildPlanModeEnteredText()
+      : payload.response
+        ? buildPlanModeResponseText(payload.request, payload.response)
+        : 'Plan mode update acknowledged.';
+
+  return JSON.stringify({
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          content: resultText,
+          tool_use_id: payload.request.toolUseId,
+        },
+      ],
+    },
+    toolUseResult: {
+      planMode: {
+        request: payload.request,
+        response: payload.response,
+      },
+    },
+  });
+};

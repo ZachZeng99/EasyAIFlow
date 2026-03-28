@@ -35,6 +35,12 @@ contextBridge.exposeInMainWorld('easyAIFlow', {
     answers: Record<string, string>;
     annotations?: Record<string, { notes?: string }>;
   }) => ipcRenderer.invoke('ask-user-question:respond', payload),
+  respondToPlanMode: (payload: {
+    toolUseId: string;
+    mode: import('../src/data/planMode.js').PlanModeResponsePayload['mode'];
+    selectedPromptIndex?: number;
+    notes?: string;
+  }) => ipcRenderer.invoke('plan-mode:respond', payload),
   openProjectDirectory: () => ipcRenderer.invoke('projects:open-directory'),
   closeProject: (payload: { projectId: string }) => ipcRenderer.invoke('projects:close', payload),
   createProject: (payload: { name: string; rootPath: string }) => ipcRenderer.invoke('projects:create', payload),

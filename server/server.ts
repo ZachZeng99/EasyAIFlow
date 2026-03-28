@@ -45,7 +45,7 @@ import {
   buildClaudePlanModeToolResultLine,
   buildClaudeUserMessageLine,
   parseClaudeAskUserQuestionControlRequest,
-  parseClaudePlanModeToolInput,
+  parseClaudePlanModeControlRequest,
   parseClaudePermissionControlRequest,
   type ClaudePermissionControlRequest,
 } from '../electron/claudeControlMessages.js';
@@ -88,6 +88,12 @@ import {
   parseAskUserQuestions,
   type AskUserQuestion,
 } from '../src/data/askUserQuestion.js';
+import {
+  buildPlanModeTraceContent,
+  parsePlanModeRequest,
+  type PlanModeRequest,
+  type PlanModeResponsePayload,
+} from '../src/data/planMode.js';
 import type {
   BtwResponse,
   ClaudeStreamEvent,
@@ -118,22 +124,20 @@ type PendingPermissionRequest = {
   request: ClaudePermissionControlRequest;
 };
 
-type PendingPlanModeRequest = {
-  sessionId: string;
-  activeRun: ActiveClaudeRun;
-  toolUseId: string;
-  toolName: 'EnterPlanMode' | 'ExitPlanMode';
-  plan: string;
-  planFilePath?: string;
-  allowedPrompts: import('../src/data/types.js').PlanModeAllowedPrompt[];
-};
-
 type PendingAskUserQuestion = {
   sessionId: string;
   activeRun: ActiveClaudeRun;
   toolUseId: string;
   questions: AskUserQuestion[];
 };
+
+type PendingPlanModeRequest = {
+  sessionId: string;
+  activeRun: ActiveClaudeRun;
+  request: PlanModeRequest;
+};
+
+type SessionPlanApprovalPreference = 'manual' | 'accept-edits' | 'accept-edits-clear-context';
 
 type ClaudeRunState = ClaudeRunStateCompletion & {
   claudeSessionId?: string;
@@ -143,6 +147,8 @@ type ClaudeRunState = ClaudeRunStateCompletion & {
   tokenUsage?: TokenUsage;
   terminalError?: string;
   toolTraces: Map<string, ConversationMessage>;
+  toolUseBlockIds: Map<number, string>;
+  toolUseJsonBuffers: Map<string, string>;
 };
 
 type ClaudePrintOptions = {
@@ -165,9 +171,9 @@ type PreparedClaudeRun = {
 
 const activeRuns = createActiveClaudeRunRegistry<ClaudeChildProcess>();
 const pendingPermissionRequests = new Map<string, PendingPermissionRequest>();
-const pendingPlanModeRequests = new Map<string, PendingPlanModeRequest>();
 const pendingAskUserQuestions = new Map<string, PendingAskUserQuestion>();
-const sessionPlanExecutionModes = new Map<string, 'auto' | 'manual'>();
+const pendingPlanModeRequests = new Map<string, PendingPlanModeRequest>();
+const sessionPlanApprovalPreferences = new Map<string, SessionPlanApprovalPreference>();
 
 configureRuntimePaths({
   mode: 'web',
@@ -258,6 +264,88 @@ const appendTraceContent = (current: string, next: string) => {
     return normalizedNext;
   }
   return `${normalizedCurrent}\n${normalizedNext}`;
+};
+
+const looksLikePlaceholderTrace = (content: string, title: string) => {
+  const normalizedContent = content.trim();
+  const normalizedTitle = title.trim();
+  return !normalizedContent || normalizedContent === normalizedTitle || normalizedContent === `${normalizedTitle}\n${normalizedTitle}`;
+};
+
+const hydratePlanModeRequest = async (request: PlanModeRequest): Promise<PlanModeRequest> => {
+  if (request.plan || !request.planFilePath) {
+    return request;
+  }
+
+  try {
+    const plan = (await readFile(request.planFilePath, 'utf8')).trim();
+    return plan ? { ...request, plan } : request;
+  } catch {
+    return request;
+  }
+};
+
+const tryParsePartialJsonObject = (value: string) => {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return undefined;
+  }
+};
+
+const handleToolUseBlock = async (
+  sessionId: string,
+  activeRun: ActiveClaudeRun,
+  state: ClaudeRunState,
+  block: { id?: string; name?: string; input?: unknown },
+) => {
+  const toolId = String(block.id ?? randomUUID());
+  const toolName = block.name ?? 'Tool Use';
+  const inputSummary = summarizeToolInput(block.input);
+  const questions = toolName === 'AskUserQuestion' ? parseAskUserQuestions(block.input) : [];
+  if (questions.length > 0) {
+    registerAskUserQuestion(sessionId, activeRun, toolId, questions);
+  }
+
+  const parsedPlanModeRequest = parsePlanModeRequest({
+    toolName,
+    toolUseId: toolId,
+    input: block.input,
+  });
+  const planModeRequest = parsedPlanModeRequest
+    ? await hydratePlanModeRequest(parsedPlanModeRequest)
+    : null;
+  const traceContent = planModeRequest ? buildPlanModeTraceContent(planModeRequest) : inputSummary;
+  const hadExistingTrace = state.toolTraces.has(toolId);
+  const existing = state.toolTraces.get(toolId) ?? {
+    id: toolId,
+    role: 'system' as const,
+    kind: 'tool_use' as const,
+    timestamp: nowLabel(),
+    title: toolName,
+    content: traceContent,
+    status: 'running' as const,
+  };
+
+  existing.title = toolName;
+  if (traceContent && (looksLikePlaceholderTrace(existing.content, existing.title) || planModeRequest)) {
+    existing.content = traceContent;
+  }
+  state.toolTraces.set(toolId, existing);
+  await emitTraceMessage(sessionId, existing);
+
+  if (!planModeRequest) {
+    return;
+  }
+
+  if (planModeRequest.toolName === 'EnterPlanMode') {
+    if (!hadExistingTrace) {
+      respondToPlanModeRequest(activeRun, planModeRequest);
+    }
+    return;
+  }
+
+  registerPlanModeRequest(sessionId, activeRun, planModeRequest);
 };
 
 const parseGitBranchLine = (line: string) => {
@@ -792,6 +880,22 @@ const isWritableStdin = (child: ClaudeChildProcess) => {
   return Boolean(stdin && !child.killed && !stdin.destroyed && !stdin.writableEnded);
 };
 
+const isAutoApprovableEditRequest = (request: ClaudePermissionControlRequest) => {
+  const toolName = request.toolName.trim().toLowerCase();
+  if (toolName === 'write' || toolName === 'edit' || toolName === 'multiedit') {
+    return true;
+  }
+
+  if (toolName !== 'bash') {
+    return false;
+  }
+
+  const command = request.command?.trim() ?? '';
+  return /^(mkdir|md|touch|cp|copy|mv|move|ren|rename|rm|del|erase|new-item|copy-item|move-item|remove-item)\b/i.test(
+    command,
+  );
+};
+
 const registerAskUserQuestion = (
   sessionId: string,
   activeRun: ActiveClaudeRun,
@@ -819,53 +923,43 @@ const registerAskUserQuestion = (
 const registerPlanModeRequest = (
   sessionId: string,
   activeRun: ActiveClaudeRun,
-  toolUseId: string,
-  payload: NonNullable<ReturnType<typeof parseClaudePlanModeToolInput>>,
+  request: PlanModeRequest,
 ) => {
-  const existing = pendingPlanModeRequests.get(toolUseId);
-  if (existing) {
-    existing.toolName = payload.toolName;
-    existing.plan = payload.plan || existing.plan;
-    existing.planFilePath = payload.planFilePath ?? existing.planFilePath;
-    existing.allowedPrompts =
-      payload.allowedPrompts.length > 0 ? payload.allowedPrompts : existing.allowedPrompts;
-    if (!existing.plan.trim()) {
-      return;
-    }
-    broadcastClaudeEvent({
-      type: 'plan-mode-request',
-      sessionId,
-      requestId: toolUseId,
-      toolName: existing.toolName,
-      plan: existing.plan,
-      planFilePath: existing.planFilePath,
-      allowedPrompts: existing.allowedPrompts,
-    });
-    return;
-  }
-
-  pendingPlanModeRequests.set(toolUseId, {
+  pendingPlanModeRequests.set(request.toolUseId, {
     sessionId,
     activeRun,
-    toolUseId,
-    toolName: payload.toolName,
-    plan: payload.plan,
-    planFilePath: payload.planFilePath,
-    allowedPrompts: payload.allowedPrompts,
+    request,
   });
-  if (!payload.plan.trim()) {
-    return;
-  }
   broadcastClaudeEvent({
     type: 'plan-mode-request',
     sessionId,
-    requestId: toolUseId,
-    toolName: payload.toolName,
-    plan: payload.plan,
-    planFilePath: payload.planFilePath,
-    allowedPrompts: payload.allowedPrompts,
+    request,
   });
 };
+
+const respondToPlanModeRequest = (
+  activeRun: ActiveClaudeRun,
+  request: PlanModeRequest,
+  response?: PlanModeResponsePayload,
+) => {
+  if (!isWritableStdin(activeRun.child)) {
+    return false;
+  }
+
+  const stdin = activeRun.child.stdin;
+  if (!stdin) {
+    return false;
+  }
+
+  stdin.write(
+    `${buildClaudePlanModeToolResultLine({
+      request,
+      response,
+    })}\n`,
+  );
+  return true;
+};
+
 
 const finalizeToolTraces = async (sessionId: string, state: ClaudeRunState) => {
   for (const trace of state.toolTraces.values()) {
@@ -953,14 +1047,27 @@ const handleClaudeLine = async (
     return;
   }
 
+  const planModeControlRequest = parseClaudePlanModeControlRequest(parsed);
+  if (planModeControlRequest) {
+    const stdin = activeRun.child.stdin;
+    if (isWritableStdin(activeRun.child) && stdin) {
+      stdin.write(`${buildClaudeControlResponseLine(planModeControlRequest, 'allow')}\n`);
+    }
+    return;
+  }
+
   const permissionControlRequest = parseClaudePermissionControlRequest(parsed);
   if (permissionControlRequest) {
-    if (sessionPlanExecutionModes.get(sessionId) === 'auto' && !permissionControlRequest.sensitive) {
+    const approvalPreference = sessionPlanApprovalPreferences.get(sessionId);
+    if (approvalPreference && approvalPreference !== 'manual' && isAutoApprovableEditRequest(permissionControlRequest)) {
+      if (permissionControlRequest.targetPath) {
+        await grantPathPermission(activeRun.projectRoot, permissionControlRequest.targetPath);
+      }
       const stdin = activeRun.child.stdin;
       if (isWritableStdin(activeRun.child) && stdin) {
         stdin.write(`${buildClaudeControlResponseLine(permissionControlRequest, 'allow')}\n`);
+        return;
       }
-      return;
     }
 
     pendingPermissionRequests.set(permissionControlRequest.requestId, {
@@ -1002,7 +1109,8 @@ const handleClaudeLine = async (
   if (parsed.type === 'stream_event') {
     const event = parsed.event as {
       type?: string;
-      delta?: { type?: string; text?: string };
+      index?: number;
+      delta?: { type?: string; text?: string; partial_json?: string };
       content_block?: { type?: string; name?: string; input?: unknown; id?: string };
     };
 
@@ -1023,27 +1131,43 @@ const handleClaudeLine = async (
     }
 
     if (event?.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
-      const toolId = String(event.content_block.id ?? randomUUID());
-      const questions =
-        event.content_block.name === 'AskUserQuestion' ? parseAskUserQuestions(event.content_block.input) : [];
-      if (questions.length > 0) {
-        registerAskUserQuestion(sessionId, activeRun, toolId, questions);
+      if (typeof event.index === 'number' && event.content_block.id) {
+        state.toolUseBlockIds.set(event.index, event.content_block.id);
       }
-      const planModePayload = parseClaudePlanModeToolInput(event.content_block.name, event.content_block.input);
-      if (planModePayload) {
-        registerPlanModeRequest(sessionId, activeRun, toolId, planModePayload);
+      await handleToolUseBlock(sessionId, activeRun, state, {
+        id: event.content_block.id,
+        name: event.content_block.name,
+        input: event.content_block.input,
+      });
+    }
+
+    if (
+      event?.type === 'content_block_delta' &&
+      event.delta?.type === 'input_json_delta' &&
+      typeof event.delta.partial_json === 'string' &&
+      typeof event.index === 'number'
+    ) {
+      const toolUseId = state.toolUseBlockIds.get(event.index);
+      if (toolUseId) {
+        const nextJson = `${state.toolUseJsonBuffers.get(toolUseId) ?? ''}${event.delta.partial_json}`;
+        state.toolUseJsonBuffers.set(toolUseId, nextJson);
+        const parsedInput = tryParsePartialJsonObject(nextJson);
+        if (parsedInput && typeof parsedInput === 'object') {
+          const current = state.toolTraces.get(toolUseId);
+          await handleToolUseBlock(sessionId, activeRun, state, {
+            id: toolUseId,
+            name: current?.title,
+            input: parsedInput,
+          });
+        }
       }
-      const message: ConversationMessage = {
-        id: toolId,
-        role: 'system',
-        kind: 'tool_use',
-        timestamp: nowLabel(),
-        title: event.content_block.name ?? 'Tool Use',
-        content: summarizeToolInput(event.content_block.input),
-        status: 'running',
-      };
-      state.toolTraces.set(toolId, message);
-      await emitTraceMessage(sessionId, message);
+    }
+
+    if (event?.type === 'content_block_stop' && typeof event.index === 'number') {
+      const toolUseId = state.toolUseBlockIds.get(event.index);
+      if (toolUseId) {
+        state.toolUseBlockIds.delete(event.index);
+      }
     }
   }
 
@@ -1065,31 +1189,11 @@ const handleClaudeLine = async (
 
     for (const block of message?.content ?? []) {
       if (block.type === 'tool_use') {
-        const inputSummary = summarizeToolInput(block.input);
-        const toolId = String(block.id ?? randomUUID());
-        const questions = block.name === 'AskUserQuestion' ? parseAskUserQuestions(block.input) : [];
-        if (questions.length > 0) {
-          registerAskUserQuestion(sessionId, activeRun, toolId, questions);
-        }
-        const planModePayload = parseClaudePlanModeToolInput(block.name, block.input);
-        if (planModePayload) {
-          registerPlanModeRequest(sessionId, activeRun, toolId, planModePayload);
-        }
-        const existing = state.toolTraces.get(toolId) ?? {
-          id: toolId,
-          role: 'system',
-          kind: 'tool_use',
-          timestamp: nowLabel(),
-          title: block.name ?? 'Tool Use',
-          content: inputSummary,
-          status: 'running',
-        };
-        existing.title = block.name ?? existing.title;
-        if (!existing.content && inputSummary) {
-          existing.content = inputSummary;
-        }
-        state.toolTraces.set(toolId, existing);
-        await emitTraceMessage(sessionId, existing);
+        await handleToolUseBlock(sessionId, activeRun, state, {
+          id: block.id,
+          name: block.name,
+          input: block.input,
+        });
       }
     }
   }
@@ -1305,6 +1409,11 @@ const executePreparedClaudeRun = async (
           pendingAskUserQuestions.delete(toolUseId);
         }
       }
+      for (const [toolUseId, pending] of pendingPlanModeRequests) {
+        if (pending.activeRun.runId === activeRun.runId) {
+          pendingPlanModeRequests.delete(toolUseId);
+        }
+      }
       removeActiveClaudeRun(activeRuns, activeRun.runId);
       releaseQueuedTurn();
       return true;
@@ -1318,6 +1427,8 @@ const executePreparedClaudeRun = async (
       persistedModel: session.model,
       tokenUsage: session.tokenUsage,
       toolTraces: new Map<string, ConversationMessage>(),
+      toolUseBlockIds: new Map<number, string>(),
+      toolUseJsonBuffers: new Map<string, string>(),
     };
 
     const stdoutProcessor = createSequentialLineProcessor((line) =>
@@ -1671,18 +1782,26 @@ const runBtwPrompt = async (
           return;
         }
 
+        const planModeControlRequest = parseClaudePlanModeControlRequest(parsed);
+        if (planModeControlRequest) {
+          const stdin = child.stdin;
+          if (isWritableStdin(child) && stdin) {
+            stdin.write(`${buildClaudeControlResponseLine(planModeControlRequest, 'allow')}\n`);
+          }
+          return;
+        }
+
         const permissionControlRequest = parseClaudePermissionControlRequest(parsed);
         if (permissionControlRequest) {
-          if (
-            options?.sessionId &&
-            sessionPlanExecutionModes.get(options.sessionId) === 'auto' &&
-            !permissionControlRequest.sensitive
-          ) {
-            const stdin = child.stdin;
-            if (isWritableStdin(child) && stdin) {
-              stdin.write(`${buildClaudeControlResponseLine(permissionControlRequest, 'allow')}\n`);
+          if (options?.sessionId) {
+            const approvalPreference = sessionPlanApprovalPreferences.get(options.sessionId);
+            if (approvalPreference && approvalPreference !== 'manual' && !permissionControlRequest.sensitive) {
+              const stdin = child.stdin;
+              if (isWritableStdin(child) && stdin) {
+                stdin.write(`${buildClaudeControlResponseLine(permissionControlRequest, 'allow')}\n`);
+              }
+              return;
             }
-            return;
           }
 
           pendingPermissionRequests.set(permissionControlRequest.requestId, {
@@ -1734,12 +1853,17 @@ const runBtwPrompt = async (
           }
 
           for (const block of message?.content ?? []) {
-            if (block.type !== 'tool_use' || !options?.sessionId) {
+            if (block.type !== 'tool_use') {
               continue;
             }
 
-            const questions = block.name === 'AskUserQuestion' ? parseAskUserQuestions(block.input) : [];
-            if (questions.length > 0) {
+            if (block.name === 'AskUserQuestion' && options?.sessionId) {
+              const questions = parseAskUserQuestions(block.input);
+              if (questions.length === 0) {
+                continue;
+              }
+
+
               registerAskUserQuestion(
                 options.sessionId,
                 {
@@ -1754,18 +1878,26 @@ const runBtwPrompt = async (
               continue;
             }
 
-            const planModePayload = parseClaudePlanModeToolInput(block.name, block.input);
-            if (planModePayload) {
-              registerPlanModeRequest(
-                options.sessionId,
+            const planModeRequest = parsePlanModeRequest({
+              toolName: block.name,
+              toolUseId: String(block.id ?? ''),
+              input: block.input,
+            });
+            if (planModeRequest) {
+              respondToPlanModeRequest(
                 {
                   runId: randomUUID(),
-                  sessionId: options.sessionId,
+                  sessionId: options?.sessionId ?? '',
                   child,
                   projectRoot: cwd,
                 },
-                String(block.id ?? randomUUID()),
-                planModePayload,
+                planModeRequest,
+                planModeRequest.toolName === 'ExitPlanMode'
+                  ? {
+                      mode: 'revise',
+                      notes: 'Interactive plan review is unavailable in BTW mode. Summarize the plan in plain text instead of exiting directly into execution.',
+                    }
+                  : undefined,
               );
             }
           }
@@ -1814,6 +1946,11 @@ const runBtwPrompt = async (
               pendingAskUserQuestions.delete(toolUseId);
             }
           }
+          for (const [toolUseId, pending] of pendingPlanModeRequests) {
+            if (pending.activeRun.child === child) {
+              pendingPlanModeRequests.delete(toolUseId);
+            }
+          }
 
           try {
             await stdoutProcessor.flush();
@@ -1841,6 +1978,7 @@ const runBtwPrompt = async (
 
 const stopSessions = (sessionIds: string[]) => {
   sessionIds.forEach((sessionId) => {
+    sessionPlanApprovalPreferences.delete(sessionId);
     requestSessionStop(sessionStopVersions, sessionId);
     const runs = listActiveClaudeRunsForSession(activeRuns, sessionId);
     runs.forEach((run) => {
@@ -1862,6 +2000,11 @@ const stopSessions = (sessionIds: string[]) => {
     for (const [toolUseId, pending] of pendingAskUserQuestions) {
       if (pending.sessionId === sessionId) {
         pendingAskUserQuestions.delete(toolUseId);
+      }
+    }
+    for (const [toolUseId, pending] of pendingPlanModeRequests) {
+      if (pending.sessionId === sessionId) {
+        pendingPlanModeRequests.delete(toolUseId);
       }
     }
   });
@@ -1947,28 +2090,12 @@ const rpcHandlers = {
       return { mode: 'missing' as const };
     }
 
-    if (payload.behavior === 'allow') {
-      sessionPlanExecutionModes.set(
-        pending.sessionId,
-        payload.choice === 'manual' ? 'manual' : 'auto',
-      );
-    }
-    const stdin = pending.activeRun.child.stdin;
-    if (stdin && !pending.activeRun.child.killed && !stdin.destroyed && !stdin.writableEnded) {
-      stdin.write(
-        `${buildClaudePlanModeToolResultLine({
-          toolUseId: pending.toolUseId,
-          approved: payload.behavior === 'allow',
-          plan: pending.plan,
-          planFilePath: pending.planFilePath,
-          notes: payload.choice === 'revise' ? payload.notes : undefined,
-        })}\n`,
-      );
-      return { mode: 'interactive' as const };
-    }
-
     pendingPlanModeRequests.delete(payload.requestId);
-    return { mode: 'missing' as const };
+    const handled = respondToPlanModeRequest(pending.activeRun, pending.request, payload.behavior === 'allow'
+      ? { mode: payload.choice === 'manual' ? 'approve_manual' : 'approve_accept_edits' }
+      : { mode: 'revise', notes: payload.notes },
+    );
+    return { mode: handled ? ('interactive' as const) : ('missing' as const) };
   },
   respondToAskUserQuestion: async (payload: {
     toolUseId: string;
@@ -2001,6 +2128,35 @@ const rpcHandlers = {
       })}\n`,
     );
     return { mode: 'interactive' as const };
+  },
+  respondToPlanMode: async (payload: {
+    toolUseId: string;
+    mode: PlanModeResponsePayload['mode'];
+    selectedPromptIndex?: number;
+    notes?: string;
+  }) => {
+    const pending = pendingPlanModeRequests.get(payload.toolUseId);
+    if (!pending) {
+      return { mode: 'missing' as const };
+    }
+
+    if (payload.mode === 'approve_clear_context_accept_edits') {
+      sessionPlanApprovalPreferences.set(pending.sessionId, 'accept-edits-clear-context');
+    } else if (payload.mode === 'approve_accept_edits') {
+      sessionPlanApprovalPreferences.set(pending.sessionId, 'accept-edits');
+    } else {
+      sessionPlanApprovalPreferences.set(pending.sessionId, 'manual');
+    }
+
+    pendingPlanModeRequests.delete(payload.toolUseId);
+    const handled = respondToPlanModeRequest(pending.activeRun, pending.request, {
+      mode: payload.mode,
+      selectedPromptIndex: payload.selectedPromptIndex,
+      notes: payload.notes,
+    });
+    return {
+      mode: handled ? ('interactive' as const) : ('missing' as const),
+    };
   },
   createProject: async (payload: { name?: string; rootPath: string }) =>
     createProject(payload.name?.trim() || deriveProjectNameFromPath(payload.rootPath), payload.rootPath),

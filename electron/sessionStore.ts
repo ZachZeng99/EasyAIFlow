@@ -886,6 +886,8 @@ const importNativeClaudeSessions = async (project: ProjectRecord) => {
       findImportedSessionTarget(projectSessions, parsed.nativeSessionId, parsed.title, workspace) ??
       existingByClaudeSessionId.get(parsed.nativeSessionId);
     const display = resolveImportedSessionDisplay(existing, parsed);
+    const targetDreamId = existing?.dreamId ?? temporary.id;
+    const targetDreamName = existing?.dreamName ?? temporary.name;
     const importedSession: SessionRecord = {
       id: existing?.id ?? randomUUID(),
       title: display.title,
@@ -895,8 +897,8 @@ const importNativeClaudeSessions = async (project: ProjectRecord) => {
       workspace,
       projectId: project.id,
       projectName: project.name,
-      dreamId: temporary.id,
-      dreamName: temporary.name,
+      dreamId: targetDreamId,
+      dreamName: targetDreamName,
       claudeSessionId: parsed.nativeSessionId,
       updatedAt: display.updatedAt,
       sessionKind: existing?.sessionKind ?? 'standard',

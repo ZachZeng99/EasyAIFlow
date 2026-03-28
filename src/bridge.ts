@@ -19,6 +19,7 @@ import type {
   SessionSummary,
   StreamworkCreateResult,
 } from './data/types';
+import type { PlanModeResponsePayload } from './data/planMode.js';
 
 type RpcErrorShape = {
   error?: string;
@@ -85,6 +86,14 @@ export type EasyAIFlowBridge = {
     toolUseId: string;
     answers: Record<string, string>;
     annotations?: Record<string, { notes?: string }>;
+  }) => Promise<{
+    mode: 'interactive' | 'missing';
+  }>;
+  respondToPlanMode: (payload: {
+    toolUseId: string;
+    mode: PlanModeResponsePayload['mode'];
+    selectedPromptIndex?: number;
+    notes?: string;
   }) => Promise<{
     mode: 'interactive' | 'missing';
   }>;
@@ -195,6 +204,7 @@ const webBridge: EasyAIFlowBridge = {
   respondToPermissionRequest: (payload) => callWebRpc('respondToPermissionRequest', payload),
   respondToPlanModeRequest: (payload) => callWebRpc('respondToPlanModeRequest', payload),
   respondToAskUserQuestion: (payload) => callWebRpc('respondToAskUserQuestion', payload),
+  respondToPlanMode: (payload) => callWebRpc('respondToPlanMode', payload),
   openProjectDirectory: async () => {
     throw new Error('Web runtime does not support the native directory picker.');
   },

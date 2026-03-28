@@ -1,4 +1,5 @@
 import type { AskUserQuestion } from './askUserQuestion.js';
+import type { PlanModeRequest } from './planMode.js';
 
 export type LinkedGroup = {
   id: string;
@@ -286,6 +287,11 @@ export type ClaudeStreamEvent =
       sessionId: string;
       toolUseId: string;
       questions: AskUserQuestion[];
+    }
+  | {
+      type: 'plan-mode-request';
+      sessionId: string;
+      request: PlanModeRequest;
     }
   | {
       type: 'complete';

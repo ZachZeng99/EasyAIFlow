@@ -127,14 +127,6 @@ run('parseClaudePlanModeControlRequest extracts plan review payloads', () => {
     requestId: 'req_exit_plan',
     toolUseId: 'toolu_exit_plan',
     toolName: 'ExitPlanMode',
-    plan: '# Plan\n\nDo work.',
-    planFilePath: 'C:\\Users\\Lenovo\\.claude\\plans\\sample.md',
-    allowedPrompts: [
-      {
-        tool: 'Bash',
-        prompt: 'run tests',
-      },
-    ],
     rawInput: {
       plan: '# Plan\n\nDo work.',
       planFilePath: 'C:\\Users\\Lenovo\\.claude\\plans\\sample.md',
@@ -197,6 +189,42 @@ run('parseClaudeAskUserQuestionControlRequest extracts interactive question payl
             { label: '云端 Jenkins', description: '需要通过 VPN 或公网访问' },
           ],
           multiSelect: false,
+        },
+      ],
+    },
+  });
+});
+
+run('parseClaudePlanModeControlRequest extracts plan mode control prompts', () => {
+  const request = parseClaudePlanModeControlRequest({
+    type: 'control_request',
+    request_id: 'req_plan_mode',
+    request: {
+      subtype: 'can_use_tool',
+      tool_name: 'ExitPlanMode',
+      input: {
+        plan: '# Plan\n\n1. Build',
+        allowedPrompts: [
+          {
+            tool: 'Bash',
+            prompt: 'build the project',
+          },
+        ],
+      },
+      tool_use_id: 'toolu_plan_mode',
+    },
+  });
+
+  assert.deepEqual(request, {
+    requestId: 'req_plan_mode',
+    toolUseId: 'toolu_plan_mode',
+    toolName: 'ExitPlanMode',
+    rawInput: {
+      plan: '# Plan\n\n1. Build',
+      allowedPrompts: [
+        {
+          tool: 'Bash',
+          prompt: 'build the project',
         },
       ],
     },
@@ -333,12 +361,24 @@ run('buildClaudeAskUserQuestionToolResultLine emits a tool_result user message',
   });
 });
 
-run('buildClaudePlanModeToolResultLine emits the approved-plan tool_result payload', () => {
+run('buildClaudePlanModeToolResultLine emits a plan review tool_result user message', () => {
   const line = buildClaudePlanModeToolResultLine({
-    toolUseId: 'toolu_plan',
-    approved: true,
-    plan: '# Plan\n\nShip it.',
-    planFilePath: 'C:\\Users\\Lenovo\\.claude\\plans\\ship-it.md',
+    request: {
+      toolUseId: 'toolu_plan_exit',
+      toolName: 'ExitPlanMode',
+      plan: '# Plan\n\n1. Build the project',
+      allowedPrompts: [
+        {
+          tool: 'Bash',
+          prompt: 'build the project',
+        },
+      ],
+    },
+    response: {
+      mode: 'approve_manual',
+      selectedPromptIndex: 0,
+      notes: 'Use the fast path.',
+    },
   });
 
   assert.deepEqual(JSON.parse(line), {
@@ -349,15 +389,30 @@ run('buildClaudePlanModeToolResultLine emits the approved-plan tool_result paylo
         {
           type: 'tool_result',
           content:
-            'User has approved your plan. You can now start coding. Start with updating your todo list if applicable\n\nYour plan has been saved to: C:\\Users\\Lenovo\\.claude\\plans\\ship-it.md\nYou can refer back to it if needed during implementation.\n\n## Approved Plan:\n# Plan\n\nShip it.',
-          tool_use_id: 'toolu_plan',
+            'User has approved your plan. You can now start coding, but continue requesting approval before making edits. User notes: Use the fast path. Start with updating your todo list if applicable.',
+          tool_use_id: 'toolu_plan_exit',
         },
       ],
     },
     toolUseResult: {
-      plan: '# Plan\n\nShip it.',
-      isAgent: false,
-      filePath: 'C:\\Users\\Lenovo\\.claude\\plans\\ship-it.md',
+      planMode: {
+        request: {
+          toolUseId: 'toolu_plan_exit',
+          toolName: 'ExitPlanMode',
+          plan: '# Plan\n\n1. Build the project',
+          allowedPrompts: [
+            {
+              tool: 'Bash',
+              prompt: 'build the project',
+            },
+          ],
+        },
+        response: {
+          mode: 'approve_manual',
+          selectedPromptIndex: 0,
+          notes: 'Use the fast path.',
+        },
+      },
     },
   });
 });

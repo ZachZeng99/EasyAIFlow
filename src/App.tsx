@@ -6,7 +6,7 @@ import { bridge } from './bridge';
 import { ManageDialog } from './components/ManageDialog';
 import { PermissionDialog } from './components/PermissionDialog';
 import { AskUserQuestionDialog } from './components/AskUserQuestionDialog';
-import { PlanModeDialog, type PlanModeDialogChoice } from './components/PlanModeDialog';
+import { PlanModeDialog } from './components/PlanModeDialog';
 import { ChatThread } from './components/ChatThread';
 import { ContextPanel } from './components/ContextPanel';
 import { HarnessDashboard } from './components/HarnessDashboard';
@@ -17,6 +17,12 @@ import {
   type AskUserQuestion,
   type AskUserQuestionDraft,
 } from './data/askUserQuestion';
+import {
+  buildPlanModeFollowUpPrompt,
+  parsePlanModeAllowedPrompts,
+  type PlanModeRequest,
+  type PlanModeResponsePayload,
+} from './data/planMode';
 import { parsePermissionRequest } from './data/permissionRequest';
 import { resolveRequestedModelArg, syncImplicitModelSelection, type ModelSelectionSource } from './data/modelSelection';
 import type {
@@ -42,7 +48,7 @@ const flattenSessions = (projects: ProjectRecord[]) =>
 const flattenVisibleSessions = (projects: ProjectRecord[]) =>
   flattenSessions(projects).filter((session) => !session.hidden);
 
-const parsePlanModeTracePayload = (message: SessionRecord['messages'][number]) => {
+const parsePlanModeTracePayload = (message: SessionRecord['messages'][number]): PlanModeRequest | null => {
   if (
     message.role !== 'system' ||
     message.kind !== 'tool_use' ||
@@ -58,28 +64,14 @@ const parsePlanModeTracePayload = (message: SessionRecord['messages'][number]) =
       planFilePath?: unknown;
       allowedPrompts?: unknown;
     };
-    const allowedPrompts = Array.isArray(parsed.allowedPrompts)
-      ? parsed.allowedPrompts
-          .map((item) =>
-            item &&
-            typeof item === 'object' &&
-            typeof (item as { tool?: unknown }).tool === 'string' &&
-            typeof (item as { prompt?: unknown }).prompt === 'string'
-              ? {
-                  tool: (item as { tool: string }).tool,
-                  prompt: (item as { prompt: string }).prompt,
-                }
-              : null,
-          )
-          .filter((item): item is { tool: string; prompt: string } => Boolean(item))
-      : [];
+    const planFilePath = typeof parsed.planFilePath === 'string' ? parsed.planFilePath : undefined;
 
     return {
-      requestId: message.id,
-      mode: 'exit' as const,
-      planText: typeof parsed.plan === 'string' ? parsed.plan : '',
-      planFilePath: typeof parsed.planFilePath === 'string' ? parsed.planFilePath : undefined,
-      allowedPrompts,
+      toolUseId: message.id,
+      toolName: 'ExitPlanMode',
+      plan: typeof parsed.plan === 'string' ? parsed.plan : '',
+      allowedPrompts: parsePlanModeAllowedPrompts(parsed.allowedPrompts),
+      ...(planFilePath ? { planFilePath } : {}),
     };
   } catch {
     return null;
@@ -113,8 +105,8 @@ const applyClaudeEvent = (projects: ProjectRecord[], event: ClaudeStreamEvent) =
 
     if (
       event.type === 'permission-request' ||
-      event.type === 'plan-mode-request' ||
-      event.type === 'ask-user-question'
+      event.type === 'ask-user-question' ||
+      event.type === 'plan-mode-request'
     ) {
       return session;
     }
@@ -382,11 +374,7 @@ type ActiveAskUserQuestion = {
 
 type ActivePlanModeRequest = {
   sessionId: string;
-  requestId: string;
-  mode: 'enter' | 'exit';
-  planText: string;
-  planFilePath?: string;
-  allowedPrompts: import('./data/types').PlanModeAllowedPrompt[];
+  request: PlanModeRequest;
 };
 
 type MobilePanel = 'history' | 'session' | 'context';
@@ -409,10 +397,10 @@ export default function App() {
   const [dialogState, setDialogState] = useState<DialogState | null>(null);
   const [permissionRequest, setPermissionRequest] = useState<ActivePermissionRequest | null>(null);
   const [isGrantingPermission, setIsGrantingPermission] = useState(false);
-  const [planModeRequest, setPlanModeRequest] = useState<ActivePlanModeRequest | null>(null);
-  const [isRespondingToPlanMode, setIsRespondingToPlanMode] = useState(false);
   const [askUserQuestion, setAskUserQuestion] = useState<ActiveAskUserQuestion | null>(null);
   const [isSubmittingAskUserQuestion, setIsSubmittingAskUserQuestion] = useState(false);
+  const [planModeRequest, setPlanModeRequest] = useState<ActivePlanModeRequest | null>(null);
+  const [isSubmittingPlanMode, setIsSubmittingPlanMode] = useState(false);
   const [isMobileLayout, setIsMobileLayout] = useState(() =>
     globalThis.matchMedia ? globalThis.matchMedia('(max-width: 920px)').matches : false,
   );
@@ -715,21 +703,17 @@ export default function App() {
             sessionId: event.sessionId,
           });
         }
-        if (event.type === 'plan-mode-request') {
-          setPlanModeRequest({
-            sessionId: event.sessionId,
-            requestId: event.requestId,
-            mode: event.toolName === 'EnterPlanMode' ? 'enter' : 'exit',
-            planText: event.plan,
-            planFilePath: event.planFilePath,
-            allowedPrompts: event.allowedPrompts,
-          });
-        }
         if (event.type === 'ask-user-question') {
           setAskUserQuestion({
             sessionId: event.sessionId,
             toolUseId: event.toolUseId,
             questions: event.questions,
+          });
+        }
+        if (event.type === 'plan-mode-request') {
+          setPlanModeRequest({
+            sessionId: event.sessionId,
+            request: event.request,
           });
         }
         if (event.type === 'trace' && event.message.status === 'error') {
@@ -851,11 +835,7 @@ export default function App() {
 
     setPlanModeRequest({
       sessionId: selectedSession.id,
-      requestId: pendingPlanTrace.requestId,
-      mode: pendingPlanTrace.mode,
-      planText: pendingPlanTrace.planText,
-      planFilePath: pendingPlanTrace.planFilePath,
-      allowedPrompts: pendingPlanTrace.allowedPrompts,
+      request: pendingPlanTrace,
     });
   }, [planModeRequest, selectedSession]);
 
@@ -1347,56 +1327,46 @@ export default function App() {
     }
   };
 
-  const handleRespondToPlanMode = async (choice: PlanModeDialogChoice, notes?: string) => {
+  const handleSubmitPlanMode = async (payload: PlanModeResponsePayload) => {
     if (!planModeRequest) {
       return;
     }
 
-    setIsRespondingToPlanMode(true);
+    setIsSubmittingPlanMode(true);
     try {
-      if (choice === 'revise') {
-        await bridge.respondToPlanModeRequest({
-          requestId: planModeRequest.requestId,
-          behavior: 'deny',
-          choice,
-          notes,
+      const mode = await bridge.respondToPlanMode({
+        toolUseId: planModeRequest.request.toolUseId,
+        mode: payload.mode,
+        selectedPromptIndex: payload.selectedPromptIndex,
+        notes: payload.notes,
+      });
+
+      if (mode.mode !== 'interactive') {
+        const targetSession = allSessions.find((session) => session.id === planModeRequest.sessionId);
+        if (!targetSession) {
+          throw new Error('Unable to resume the session for the plan decision.');
+        }
+
+        const result = await bridge.sendMessage({
+          sessionId: targetSession.id,
+          prompt: buildPlanModeFollowUpPrompt(planModeRequest.request, payload),
+          session: targetSession,
+          references: targetSession.contextReferences ?? [],
+          model: resolveRequestedModelArg(model, modelSelectionSource),
+          effort,
         });
-      } else {
-        await bridge.respondToPlanModeRequest({
-          requestId: planModeRequest.requestId,
-          behavior: 'allow',
-          choice,
-        });
+
+        if (result?.projects) {
+          setProjects(result.projects);
+        }
       }
 
       setPlanModeRequest(null);
       setUiError(null);
     } catch (error) {
-      setUiError(error instanceof Error ? error.message : 'Failed to respond to plan mode.');
+      setUiError(error instanceof Error ? error.message : 'Failed to submit the plan decision.');
     } finally {
-      setIsRespondingToPlanMode(false);
-    }
-  };
-
-  const handleCancelPlanMode = async () => {
-    if (!planModeRequest) {
-      return;
-    }
-
-    setIsRespondingToPlanMode(true);
-    try {
-      await bridge.respondToPlanModeRequest({
-        requestId: planModeRequest.requestId,
-        behavior: 'deny',
-        choice: 'revise',
-        notes: 'User cancelled the plan review dialog.',
-      });
-      setPlanModeRequest(null);
-      setUiError(null);
-    } catch (error) {
-      setUiError(error instanceof Error ? error.message : 'Failed to cancel plan mode.');
-    } finally {
-      setIsRespondingToPlanMode(false);
+      setIsSubmittingPlanMode(false);
     }
   };
 
@@ -1993,16 +1963,10 @@ export default function App() {
       />
       <PlanModeDialog
         open={Boolean(planModeRequest)}
-        mode={planModeRequest?.mode ?? 'enter'}
-        planText={planModeRequest?.planText ?? ''}
-        planFilePath={planModeRequest?.planFilePath}
-        allowedPrompts={planModeRequest?.allowedPrompts ?? []}
-        busy={isRespondingToPlanMode}
-        onCancel={() => {
-          void handleCancelPlanMode();
-        }}
-        onSubmit={(choice, notes) => {
-          void handleRespondToPlanMode(choice, notes);
+        request={planModeRequest?.request ?? null}
+        busy={isSubmittingPlanMode}
+        onSubmit={(payload) => {
+          void handleSubmitPlanMode(payload);
         }}
       />
     </div>
