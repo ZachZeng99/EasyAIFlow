@@ -616,31 +616,15 @@ export const handleClaudeLine = async (
 
   const planModeControlRequest = parseClaudePlanModeControlRequest(parsed);
   if (planModeControlRequest) {
-    if (planModeControlRequest.toolName === 'ExitPlanMode' && planModeControlRequest.toolUseId) {
+    if (planModeControlRequest.toolName === 'ExitPlanMode') {
       // Defer the control_response for ExitPlanMode until the user decides.
       // Sending 'allow' immediately would let Claude CLI auto-approve the plan
       // before the user has a chance to review it.
-      const existing = state.pendingPlanModeRequests.get(planModeControlRequest.toolUseId);
-      if (existing) {
-        existing.controlRequestId = planModeControlRequest.requestId;
-        existing.controlRawInput = planModeControlRequest.rawInput;
-      } else {
-        // control_request arrived before the tool_use block — register from control data
-        const planRequest = parsePlanModeRequest({
-          toolName: planModeControlRequest.toolName,
-          toolUseId: planModeControlRequest.toolUseId,
-          input: planModeControlRequest.rawInput,
-        });
-        if (planRequest) {
-          const hydrated = await hydratePlanModeRequest(planRequest);
-          registerPlanModeRequest(ctx, state, sessionId, activeRun, hydrated);
-          const pending = state.pendingPlanModeRequests.get(hydrated.toolUseId);
-          if (pending) {
-            pending.controlRequestId = planModeControlRequest.requestId;
-            pending.controlRawInput = planModeControlRequest.rawInput;
-          }
-        }
-      }
+      // Store in a session-level map so it survives handleToolUseBlock re-registrations.
+      state.deferredExitPlanControlRequests.set(sessionId, {
+        requestId: planModeControlRequest.requestId,
+        rawInput: planModeControlRequest.rawInput,
+      });
       return;
     }
 
@@ -1095,6 +1079,7 @@ export const executePreparedClaudeRun = async (
             error: errorMessage,
           });
         } finally {
+          await finalizeToolTraces(ctx, sessionId, runState);
           resolve();
         }
       })();
@@ -1141,6 +1126,7 @@ export const executePreparedClaudeRun = async (
             error: error.message,
           });
         } finally {
+          await finalizeToolTraces(ctx, sessionId, runState);
           resolve();
         }
       })();
@@ -1552,6 +1538,7 @@ export const runBtwPrompt = async (
 export const stopSessions = (state: ClaudeInteractionState, sessionIds: string[]) => {
   sessionIds.forEach((sessionId) => {
     state.sessionPlanApprovalPreferences.delete(sessionId);
+    state.deferredExitPlanControlRequests.delete(sessionId);
     requestSessionStop(state.sessionStopVersions, sessionId);
     const runs = listActiveClaudeRunsForSession(state.activeRuns, sessionId);
     runs.forEach((run) => {

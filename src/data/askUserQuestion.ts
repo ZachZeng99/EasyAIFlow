@@ -199,6 +199,10 @@ export const buildAskUserQuestionResultText = (
   questions: AskUserQuestion[],
   response: AskUserQuestionResponsePayload,
 ) => {
+  if (!hasAskUserQuestionResponse(response)) {
+    return 'The user chose to skip this questionnaire. Continue the previous task using your best assumptions. Do not call AskUserQuestion again for the same missing details.';
+  }
+
   const answerPairs = questions
     .map((question) => {
       const answer = normalizeText(response.answers[question.question]);
@@ -223,7 +227,7 @@ export const buildAskUserQuestionFollowUpPrompt = (
 ) => {
   if (!hasAskUserQuestionResponse(response)) {
     return [
-      'I skipped the interactive questionnaire.',
+      'I chose not to answer your questions.',
       'Continue the previous task using your best assumptions.',
       'Do not call AskUserQuestion again for the same missing details.',
     ].join('\n');

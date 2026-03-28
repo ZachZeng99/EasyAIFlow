@@ -484,6 +484,13 @@ p {
   pointer-events: none;
 }
 
+.session-card.awaiting_reply {
+  border-color: rgba(251, 113, 133, 0.35);
+  background:
+    linear-gradient(135deg, rgba(251, 113, 133, 0.14), rgba(255, 255, 255, 0.03)),
+    rgba(255, 255, 255, 0.03);
+}
+
 .session-card.unread {
   border-color: rgba(56, 189, 248, 0.28);
   background:
@@ -597,6 +604,16 @@ p {
 
 .session-status-badge.responding::before {
   animation: session-status-pulse 1.05s ease-in-out infinite;
+}
+
+.session-status-badge.awaiting_reply {
+  color: #fb7185;
+  background: rgba(251, 113, 133, 0.14);
+  border-color: rgba(251, 113, 133, 0.24);
+}
+
+.session-status-badge.awaiting_reply::before {
+  animation: session-status-pulse 1.5s ease-in-out infinite;
 }
 
 .session-status-badge.unread {
@@ -1076,6 +1093,22 @@ p {
   background: linear-gradient(135deg, #f59e0b, #fb7185);
   color: #171311;
   font-weight: 700;
+}
+
+.inline-interaction-card {
+  width: min(980px, 100%);
+  padding: 0;
+  border-radius: 18px;
+  border: 2px solid rgba(245, 158, 11, 0.36);
+  background: linear-gradient(180deg, rgba(245, 158, 11, 0.06) 0%, rgba(251, 113, 133, 0.04) 100%);
+}
+
+.inline-interaction-card .dialog-head {
+  border-bottom: 1px solid rgba(245, 158, 11, 0.16);
+}
+
+.inline-interaction-card .dialog-actions {
+  border-top: 1px solid rgba(245, 158, 11, 0.16);
 }
 
 .ask-user-dialog {

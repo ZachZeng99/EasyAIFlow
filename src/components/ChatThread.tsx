@@ -2,9 +2,15 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { DiffContent } from './DiffContent';
+import { InlinePermissionCard } from './InlinePermissionCard';
+import { InlineAskUserQuestionCard } from './InlineAskUserQuestionCard';
+import { InlinePlanModeCard } from './InlinePlanModeCard';
 import { getDisplayedCodeChangeDiff, shouldRequestCodeChangeDiff } from '../data/codeChangeDiff';
 import { parsePermissionRequest, type PermissionRequest } from '../data/permissionRequest';
 import { buildDisplayItems, shouldShowTitle } from '../data/chatThreadDisplay';
+import type { AskUserQuestionDraft } from '../data/askUserQuestion';
+import type { PlanModeResponsePayload } from '../data/planMode';
+import type { SessionInteractionState } from '../data/sessionInteraction';
 import type { ConversationMessage, DiffPayload, SessionSummary } from '../data/types';
 
 type ChatThreadProps = {
@@ -12,9 +18,24 @@ type ChatThreadProps = {
   messages: ConversationMessage[];
   onRequestPermission?: (request: PermissionRequest) => void;
   onRequestDiff?: (filePath: string) => Promise<DiffPayload>;
+  interaction?: SessionInteractionState;
+  onGrantPermission?: () => void;
+  onDenyPermission?: () => void;
+  onSubmitAskUserQuestion?: (draft?: AskUserQuestionDraft) => void;
+  onSubmitPlanMode?: (payload: PlanModeResponsePayload) => void;
 };
 
-export function ChatThread({ session, messages, onRequestPermission, onRequestDiff }: ChatThreadProps) {
+export function ChatThread({
+  session,
+  messages,
+  onRequestPermission,
+  onRequestDiff,
+  interaction,
+  onGrantPermission,
+  onDenyPermission,
+  onSubmitAskUserQuestion,
+  onSubmitPlanMode,
+}: ChatThreadProps) {
   const displayItems = useMemo(() => buildDisplayItems(messages), [messages]);
   const [openTraceIds, setOpenTraceIds] = useState<Record<string, boolean>>({});
   const [openTraceGroupIds, setOpenTraceGroupIds] = useState<Record<string, boolean>>({});
@@ -40,7 +61,7 @@ export function ChatThread({ session, messages, onRequestPermission, onRequestDi
     }
 
     element.scrollTop = element.scrollHeight;
-  }, [displayItems]);
+  }, [displayItems, interaction]);
 
   useEffect(() => {
     setOpenCodeChangeGroupIds({});
@@ -340,6 +361,33 @@ export function ChatThread({ session, messages, onRequestPermission, onRequestDi
             </article>
           ),
         )}
+
+        {interaction?.permission ? (
+          <InlinePermissionCard
+            request={interaction.permission}
+            busy={Boolean(interaction.isGrantingPermission)}
+            onGrant={() => onGrantPermission?.()}
+            onDeny={() => onDenyPermission?.()}
+          />
+        ) : null}
+
+        {interaction?.askUserQuestion ? (
+          <InlineAskUserQuestionCard
+            toolUseId={interaction.askUserQuestion.toolUseId}
+            questions={interaction.askUserQuestion.questions}
+            busy={Boolean(interaction.isSubmittingAskUserQuestion)}
+            onSkip={() => onSubmitAskUserQuestion?.()}
+            onSubmit={(draft) => onSubmitAskUserQuestion?.(draft)}
+          />
+        ) : null}
+
+        {interaction?.planModeRequest ? (
+          <InlinePlanModeCard
+            request={interaction.planModeRequest.request}
+            busy={Boolean(interaction.isSubmittingPlanMode)}
+            onSubmit={(payload) => onSubmitPlanMode?.(payload)}
+          />
+        ) : null}
       </div>
     </section>
   );

@@ -123,7 +123,7 @@ export type SessionSummary = {
   branchSnapshot: BranchSnapshot;
 };
 
-export type SessionActivityState = 'idle' | 'responding' | 'unread';
+export type SessionActivityState = 'idle' | 'responding' | 'awaiting_reply' | 'unread';
 
 export type DreamRecord = {
   id: string;

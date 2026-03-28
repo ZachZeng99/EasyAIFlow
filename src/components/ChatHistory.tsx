@@ -530,7 +530,11 @@ function DreamSection({
                   {indicator.state !== 'idle' ? (
                     <div className="session-card-status">
                       <span className={`session-status-badge ${indicator.state}`}>
-                        {indicator.state === 'responding' ? '回复中' : '未读'}
+                        {indicator.state === 'responding'
+                          ? '工作中'
+                          : indicator.state === 'awaiting_reply'
+                            ? '待回复'
+                            : '未读'}
                       </span>
                     </div>
                   ) : null}

@@ -141,6 +141,15 @@ export const handleRespondToPlanMode = async (
   }
 
   state.pendingPlanModeRequests.delete(payload.toolUseId);
+
+  // Look up the deferred control_request (stored by session, survives pending overwrites)
+  const deferred = state.deferredExitPlanControlRequests.get(pending.sessionId);
+  const controlRequestId = pending.controlRequestId ?? deferred?.requestId;
+  const controlRawInput = pending.controlRawInput ?? deferred?.rawInput;
+  if (deferred) {
+    state.deferredExitPlanControlRequests.delete(pending.sessionId);
+  }
+
   const handled = respondToPlanModeRequest(
     pending.activeRun,
     pending.request,
@@ -149,8 +158,8 @@ export const handleRespondToPlanMode = async (
       selectedPromptIndex: payload.selectedPromptIndex,
       notes: payload.notes,
     },
-    pending.controlRequestId,
-    pending.controlRawInput,
+    controlRequestId,
+    controlRawInput,
   );
   return {
     mode: handled ? ('interactive' as const) : ('missing' as const),

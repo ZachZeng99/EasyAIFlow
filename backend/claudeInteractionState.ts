@@ -67,11 +67,17 @@ export type PreparedClaudeRun = {
   stopVersion: number;
 };
 
+export type DeferredExitPlanControl = {
+  requestId: string;
+  rawInput: Record<string, unknown>;
+};
+
 export type ClaudeInteractionState = {
   activeRuns: ReturnType<typeof createActiveClaudeRunRegistry<ClaudeChildProcess>>;
   pendingPermissionRequests: Map<string, PendingPermissionRequest>;
   pendingAskUserQuestions: Map<string, PendingAskUserQuestion>;
   pendingPlanModeRequests: Map<string, PendingPlanModeRequest>;
+  deferredExitPlanControlRequests: Map<string, DeferredExitPlanControl>;
   sessionPlanApprovalPreferences: Map<string, SessionPlanApprovalPreference>;
   sessionRunQueue: ReturnType<typeof createSessionRunQueue>;
   sessionStopVersions: ReturnType<typeof createSessionStopVersionRegistry>;
@@ -83,6 +89,7 @@ export const createClaudeInteractionState = (): ClaudeInteractionState => ({
   pendingPermissionRequests: new Map(),
   pendingAskUserQuestions: new Map(),
   pendingPlanModeRequests: new Map(),
+  deferredExitPlanControlRequests: new Map(),
   sessionPlanApprovalPreferences: new Map(),
   sessionRunQueue: createSessionRunQueue(),
   sessionStopVersions: createSessionStopVersionRegistry(),

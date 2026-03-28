@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { DiffContent } from './DiffContent';
-import type { DiffPayload, GitSnapshot, SessionSummary } from '../data/types';
+import { extractCodeChangeSummaries } from '../data/codeChangeSummary';
+import type { ConversationMessage, DiffPayload, GitSnapshot, SessionSummary } from '../data/types';
 
 type ContextPanelProps = {
   session: SessionSummary;
+  messages: ConversationMessage[];
   appVersion: string;
   gitSnapshot: GitSnapshot;
   onRequestDiff: (filePath: string) => Promise<DiffPayload>;
@@ -17,6 +19,7 @@ type ContextPanelProps = {
 
 export function ContextPanel({
   session,
+  messages,
   appVersion,
   gitSnapshot,
   onRequestDiff,
@@ -31,10 +34,29 @@ export function ContextPanel({
   const [diffPayload, setDiffPayload] = useState<DiffPayload | null>(null);
   const [isLoadingDiff, setIsLoadingDiff] = useState(false);
 
+  const sessionChangedFiles = useMemo(() => {
+    const summaries = extractCodeChangeSummaries(messages);
+    const seen = new Map<string, { operationLabel: string; count: number }>();
+    for (const s of summaries) {
+      const existing = seen.get(s.filePath);
+      if (existing) {
+        existing.count++;
+        existing.operationLabel = s.operationLabel;
+      } else {
+        seen.set(s.filePath, { operationLabel: s.operationLabel, count: 1 });
+      }
+    }
+    return Array.from(seen.entries()).map(([filePath, info]) => ({
+      filePath,
+      operationLabel: info.operationLabel,
+      count: info.count,
+    }));
+  }, [messages]);
+
   useEffect(() => {
-    setSelectedFilePath(gitSnapshot.changedFiles[0]?.path ?? '');
+    setSelectedFilePath(sessionChangedFiles[0]?.filePath ?? '');
     setDiffPayload(null);
-  }, [gitSnapshot.changedFiles, session.id]);
+  }, [sessionChangedFiles, session.id]);
 
   useEffect(() => {
     if (!selectedFilePath) {
@@ -89,30 +111,28 @@ export function ContextPanel({
       </div>
 
       <div className="context-block">
-        <p className="section-kicker">changed content</p>
+        <p className="section-kicker">session changes</p>
         <h2>当前改动</h2>
         <div className="changed-file-list">
-          {gitSnapshot.changedFiles.length > 0 ? (
-            gitSnapshot.changedFiles.map((file) => (
+          {sessionChangedFiles.length > 0 ? (
+            sessionChangedFiles.map((file) => (
               <button
-                key={file.path}
+                key={file.filePath}
                 type="button"
-                className={`changed-file-card diff-trigger${selectedFilePath === file.path ? ' selected' : ''}`}
-                onClick={() => setSelectedFilePath(file.path)}
+                className={`changed-file-card diff-trigger${selectedFilePath === file.filePath ? ' selected' : ''}`}
+                onClick={() => setSelectedFilePath(file.filePath)}
               >
                 <div className="changed-file-head">
-                  <strong>{file.path}</strong>
-                  <span>{file.status}</span>
+                  <strong>{file.filePath}</strong>
+                  <span>{file.operationLabel}</span>
                 </div>
-                <p>
-                  +{file.additions} / -{file.deletions}
-                </p>
+                {file.count > 1 ? <p>{file.count} operations</p> : null}
               </button>
             ))
           ) : (
             <div className="changed-file-card empty">
-              <strong>没有未提交改动</strong>
-              <p>当前工作树是干净的。</p>
+              <strong>本次会话暂无文件改动</strong>
+              <p>Claude 尚未在此会话中修改文件。</p>
             </div>
           )}
         </div>

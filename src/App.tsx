@@ -4,9 +4,6 @@ import { ChatComposer, type ComposerAttachment } from './components/ChatComposer
 import { ChatHistory } from './components/ChatHistory';
 import { bridge } from './bridge';
 import { ManageDialog } from './components/ManageDialog';
-import { PermissionDialog } from './components/PermissionDialog';
-import { AskUserQuestionDialog } from './components/AskUserQuestionDialog';
-import { PlanModeDialog } from './components/PlanModeDialog';
 import { ChatThread } from './components/ChatThread';
 import { ContextPanel } from './components/ContextPanel';
 import { HarnessDashboard } from './components/HarnessDashboard';
@@ -14,9 +11,9 @@ import { buildOptimisticSendState } from './data/optimisticSend';
 import {
   buildAskUserQuestionFollowUpPrompt,
   buildAskUserQuestionResponsePayload,
-  type AskUserQuestion,
   type AskUserQuestionDraft,
 } from './data/askUserQuestion';
+import type { SessionInteractionState } from './data/sessionInteraction';
 import {
   buildPlanModeFollowUpPrompt,
   parsePlanModeAllowedPrompts,
@@ -74,7 +71,13 @@ const parsePlanModeTracePayload = (message: SessionRecord['messages'][number]): 
       ...(planFilePath ? { planFilePath } : {}),
     };
   } catch {
-    return null;
+    // Content is plain text (from buildPlanModeTraceContent) — use it as the plan directly
+    return {
+      toolUseId: message.id,
+      toolName: 'ExitPlanMode',
+      plan: message.content || '',
+      allowedPrompts: [],
+    };
   }
 };
 
@@ -359,24 +362,6 @@ type SessionIndicator = {
   state: SessionActivityState;
 };
 
-type ActivePermissionRequest = {
-  path: string;
-  sensitive: boolean;
-  requestId?: string;
-  sessionId?: string;
-};
-
-type ActiveAskUserQuestion = {
-  sessionId: string;
-  toolUseId: string;
-  questions: AskUserQuestion[];
-};
-
-type ActivePlanModeRequest = {
-  sessionId: string;
-  request: PlanModeRequest;
-};
-
 type MobilePanel = 'history' | 'session' | 'context';
 
 export default function App() {
@@ -395,12 +380,26 @@ export default function App() {
   const [isRunningHarness, setIsRunningHarness] = useState(false);
   const [uiError, setUiError] = useState<string | null>(null);
   const [dialogState, setDialogState] = useState<DialogState | null>(null);
-  const [permissionRequest, setPermissionRequest] = useState<ActivePermissionRequest | null>(null);
-  const [isGrantingPermission, setIsGrantingPermission] = useState(false);
-  const [askUserQuestion, setAskUserQuestion] = useState<ActiveAskUserQuestion | null>(null);
-  const [isSubmittingAskUserQuestion, setIsSubmittingAskUserQuestion] = useState(false);
-  const [planModeRequest, setPlanModeRequest] = useState<ActivePlanModeRequest | null>(null);
-  const [isSubmittingPlanMode, setIsSubmittingPlanMode] = useState(false);
+  const [sessionInteractions, setSessionInteractions] = useState<Map<string, SessionInteractionState>>(new Map());
+
+  const updateSessionInteraction = useCallback(
+    (sessionId: string, updater: (state: SessionInteractionState) => SessionInteractionState) => {
+      setSessionInteractions((current) => {
+        const next = new Map(current);
+        next.set(sessionId, updater(next.get(sessionId) ?? {}));
+        return next;
+      });
+    },
+    [],
+  );
+
+  const clearSessionInteraction = useCallback((sessionId: string) => {
+    setSessionInteractions((current) => {
+      const next = new Map(current);
+      next.delete(sessionId);
+      return next;
+    });
+  }, []);
   const [isMobileLayout, setIsMobileLayout] = useState(() =>
     globalThis.matchMedia ? globalThis.matchMedia('(max-width: 920px)').matches : false,
   );
@@ -408,6 +407,7 @@ export default function App() {
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const attachmentsRef = useRef<ComposerAttachment[]>([]);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const submittedPlanToolUseIds = useRef(new Set<string>());
   const [slashCommands, setSlashCommands] = useState<string[]>([]);
   const [unreadSessionIds, setUnreadSessionIds] = useState<string[]>([]);
   const [btwState, setBtwState] = useState<BtwState>({
@@ -500,6 +500,14 @@ export default function App() {
                 relatedRoleSessions.some((candidate) => isAssistantPendingStatus(findLastAssistantMessage(candidate)?.status))
               : isAssistantPendingStatus(lastAssistant?.status);
           const hasUnread = unreadSessionIds.includes(session.id);
+          const interaction = sessionInteractions.get(session.id);
+          const hasBlockingInteraction = Boolean(
+            interaction?.permission || interaction?.askUserQuestion || interaction?.planModeRequest,
+          );
+
+          if (hasBlockingInteraction) {
+            return [session.id, { state: 'awaiting_reply' }];
+          }
 
           if (isResponding) {
             return [session.id, { state: 'responding' }];
@@ -512,10 +520,13 @@ export default function App() {
           return [session.id, { state: 'idle' }];
         }),
       ),
-    [allSessions, unreadSessionIds, visibleSessions],
+    [allSessions, sessionInteractions, unreadSessionIds, visibleSessions],
   );
   const isWebRuntime = bridge.runtime === 'web';
-  const hasBlockingInteraction = Boolean(permissionRequest || askUserQuestion || planModeRequest);
+  const selectedInteraction = sessionInteractions.get(selectedSession?.id ?? '');
+  const hasBlockingInteraction = Boolean(
+    selectedInteraction?.permission || selectedInteraction?.askUserQuestion || selectedInteraction?.planModeRequest,
+  );
 
   const getOriginalFilePath = (file: File) => {
     try {
@@ -696,33 +707,47 @@ export default function App() {
       unsubscribe = bridge.onClaudeEvent((event) => {
         setProjects((current) => applyClaudeEvent(current, event));
         if (event.type === 'permission-request') {
-          setPermissionRequest({
-            path: event.targetPath ?? event.command ?? event.description ?? event.toolName,
-            sensitive: event.sensitive,
-            requestId: event.requestId,
-            sessionId: event.sessionId,
-          });
+          updateSessionInteraction(event.sessionId, (state) => ({
+            ...state,
+            permission: {
+              path: event.targetPath ?? event.command ?? event.description ?? event.toolName,
+              sensitive: event.sensitive,
+              requestId: event.requestId,
+              sessionId: event.sessionId,
+            },
+          }));
         }
         if (event.type === 'ask-user-question') {
-          setAskUserQuestion({
-            sessionId: event.sessionId,
-            toolUseId: event.toolUseId,
-            questions: event.questions,
-          });
+          updateSessionInteraction(event.sessionId, (state) => ({
+            ...state,
+            askUserQuestion: {
+              sessionId: event.sessionId,
+              toolUseId: event.toolUseId,
+              questions: event.questions,
+            },
+            isSubmittingAskUserQuestion: false,
+          }));
         }
         if (event.type === 'plan-mode-request') {
-          setPlanModeRequest({
-            sessionId: event.sessionId,
-            request: event.request,
-          });
+          updateSessionInteraction(event.sessionId, (state) => ({
+            ...state,
+            planModeRequest: {
+              sessionId: event.sessionId,
+              request: event.request,
+            },
+          }));
         }
         if (event.type === 'trace' && event.message.status === 'error') {
           const request = parsePermissionRequest(event.message.content);
           if (request) {
-            setPermissionRequest({
-              path: request.targetPath,
-              sensitive: request.sensitive,
-            });
+            updateSessionInteraction(event.sessionId, (state) => ({
+              ...state,
+              permission: {
+                path: request.targetPath,
+                sensitive: request.sensitive,
+                sessionId: event.sessionId,
+              },
+            }));
           }
         }
         if (event.type === 'complete') {
@@ -755,10 +780,6 @@ export default function App() {
     const validSessionIds = new Set(allSessions.map((session) => session.id));
     setUnreadSessionIds((current) => current.filter((sessionId) => validSessionIds.has(sessionId)));
   }, [allSessions]);
-
-  useEffect(() => {
-    setIsSubmittingAskUserQuestion(false);
-  }, [askUserQuestion?.toolUseId]);
 
   useEffect(() => {
     if (!selectedSession) {
@@ -820,7 +841,12 @@ export default function App() {
   }, [attachments]);
 
   useEffect(() => {
-    if (!selectedSession || planModeRequest) {
+    if (!selectedSession) {
+      return;
+    }
+
+    const existing = sessionInteractions.get(selectedSession.id);
+    if (existing?.planModeRequest) {
       return;
     }
 
@@ -829,15 +855,18 @@ export default function App() {
       .map((message) => parsePlanModeTracePayload(message))
       .find((item) => Boolean(item));
 
-    if (!pendingPlanTrace) {
+    if (!pendingPlanTrace || submittedPlanToolUseIds.current.has(pendingPlanTrace.toolUseId)) {
       return;
     }
 
-    setPlanModeRequest({
-      sessionId: selectedSession.id,
-      request: pendingPlanTrace,
-    });
-  }, [planModeRequest, selectedSession]);
+    updateSessionInteraction(selectedSession.id, (state) => ({
+      ...state,
+      planModeRequest: {
+        sessionId: selectedSession.id,
+        request: pendingPlanTrace,
+      },
+    }));
+  }, [sessionInteractions, selectedSession, updateSessionInteraction]);
 
   useEffect(() => {
     return () => {
@@ -1226,87 +1255,94 @@ export default function App() {
     }
   };
 
-  const handleGrantPermission = async () => {
-    if (!permissionRequest) {
+  const handleGrantPermission = async (sessionId: string) => {
+    const interaction = sessionInteractions.get(sessionId);
+    const request = interaction?.permission;
+    if (!request) {
       return;
     }
 
-    setIsGrantingPermission(true);
+    updateSessionInteraction(sessionId, (s) => ({ ...s, isGrantingPermission: true }));
     try {
-      if (permissionRequest.requestId) {
+      if (request.requestId) {
         await bridge.respondToPermissionRequest({
-          requestId: permissionRequest.requestId,
+          requestId: request.requestId,
           behavior: 'allow',
         });
       } else {
-        if (!selectedProject) {
+        const project = projects.find((p) =>
+          p.dreams.some((d) => d.sessions.some((s) => s.id === sessionId)),
+        );
+        if (!project) {
           throw new Error('No active project available to persist this permission.');
         }
 
         await bridge.grantPathPermission({
-          projectRoot: selectedProject.rootPath,
-          targetPath: permissionRequest.path,
+          projectRoot: project.rootPath,
+          targetPath: request.path,
         });
       }
-      setPermissionRequest(null);
+      updateSessionInteraction(sessionId, (s) => ({ ...s, permission: undefined, isGrantingPermission: false }));
       setUiError(null);
     } catch (error) {
       setUiError(error instanceof Error ? error.message : 'Failed to grant permission.');
-    } finally {
-      setIsGrantingPermission(false);
+      updateSessionInteraction(sessionId, (s) => ({ ...s, isGrantingPermission: false }));
     }
   };
 
-  const handleCancelPermission = async () => {
-    if (!permissionRequest?.requestId) {
-      setPermissionRequest(null);
+  const handleCancelPermission = async (sessionId: string) => {
+    const interaction = sessionInteractions.get(sessionId);
+    const request = interaction?.permission;
+    if (!request?.requestId) {
+      updateSessionInteraction(sessionId, (s) => ({ ...s, permission: undefined }));
       return;
     }
 
-    setIsGrantingPermission(true);
+    updateSessionInteraction(sessionId, (s) => ({ ...s, isGrantingPermission: true }));
     try {
       await bridge.respondToPermissionRequest({
-        requestId: permissionRequest.requestId,
+        requestId: request.requestId,
         behavior: 'deny',
       });
-      setPermissionRequest(null);
+      updateSessionInteraction(sessionId, (s) => ({ ...s, permission: undefined, isGrantingPermission: false }));
       setUiError(null);
     } catch (error) {
       setUiError(error instanceof Error ? error.message : 'Failed to deny permission.');
-    } finally {
-      setIsGrantingPermission(false);
+      updateSessionInteraction(sessionId, (s) => ({ ...s, isGrantingPermission: false }));
     }
   };
 
-  const handleSubmitAskUserQuestion = async (draft?: AskUserQuestionDraft) => {
-    if (!askUserQuestion) {
+  const handleSubmitAskUserQuestion = async (sessionId: string, draft?: AskUserQuestionDraft) => {
+    const interaction = sessionInteractions.get(sessionId);
+    const askQuestion = interaction?.askUserQuestion;
+    if (!askQuestion) {
       return;
     }
 
     const response = draft
-      ? buildAskUserQuestionResponsePayload(askUserQuestion.questions, draft)
+      ? buildAskUserQuestionResponsePayload(askQuestion.questions, draft)
       : {
           answers: {},
           annotations: {},
         };
 
-    setIsSubmittingAskUserQuestion(true);
+    updateSessionInteraction(sessionId, (s) => ({ ...s, isSubmittingAskUserQuestion: true }));
     try {
       const mode = await bridge.respondToAskUserQuestion({
-        toolUseId: askUserQuestion.toolUseId,
+        toolUseId: askQuestion.toolUseId,
         answers: response.answers,
         annotations: response.annotations,
       });
 
       if (mode.mode !== 'interactive') {
-        const targetSession = allSessions.find((session) => session.id === askUserQuestion.sessionId);
+        const targetSession = allSessions.find((session) => session.id === askQuestion.sessionId);
         if (!targetSession) {
           throw new Error('Unable to resume the session for the answered questions.');
         }
 
         const result = await bridge.sendMessage({
           sessionId: targetSession.id,
-          prompt: buildAskUserQuestionFollowUpPrompt(askUserQuestion.questions, response),
+          prompt: buildAskUserQuestionFollowUpPrompt(askQuestion.questions, response),
           session: targetSession,
           references: targetSession.contextReferences ?? [],
           model: resolveRequestedModelArg(model, modelSelectionSource),
@@ -1318,38 +1354,44 @@ export default function App() {
         }
       }
 
-      setAskUserQuestion(null);
+      updateSessionInteraction(sessionId, (s) => ({
+        ...s,
+        askUserQuestion: undefined,
+        isSubmittingAskUserQuestion: false,
+      }));
       setUiError(null);
     } catch (error) {
       setUiError(error instanceof Error ? error.message : 'Failed to answer Claude question.');
-    } finally {
-      setIsSubmittingAskUserQuestion(false);
+      updateSessionInteraction(sessionId, (s) => ({ ...s, isSubmittingAskUserQuestion: false }));
     }
   };
 
-  const handleSubmitPlanMode = async (payload: PlanModeResponsePayload) => {
-    if (!planModeRequest) {
+  const handleSubmitPlanMode = async (sessionId: string, payload: PlanModeResponsePayload) => {
+    const interaction = sessionInteractions.get(sessionId);
+    const planRequest = interaction?.planModeRequest;
+    if (!planRequest) {
       return;
     }
 
-    setIsSubmittingPlanMode(true);
+    submittedPlanToolUseIds.current.add(planRequest.request.toolUseId);
+    updateSessionInteraction(sessionId, (s) => ({ ...s, isSubmittingPlanMode: true }));
     try {
       const mode = await bridge.respondToPlanMode({
-        toolUseId: planModeRequest.request.toolUseId,
+        toolUseId: planRequest.request.toolUseId,
         mode: payload.mode,
         selectedPromptIndex: payload.selectedPromptIndex,
         notes: payload.notes,
       });
 
       if (mode.mode !== 'interactive') {
-        const targetSession = allSessions.find((session) => session.id === planModeRequest.sessionId);
+        const targetSession = allSessions.find((session) => session.id === planRequest.sessionId);
         if (!targetSession) {
           throw new Error('Unable to resume the session for the plan decision.');
         }
 
         const result = await bridge.sendMessage({
           sessionId: targetSession.id,
-          prompt: buildPlanModeFollowUpPrompt(planModeRequest.request, payload),
+          prompt: buildPlanModeFollowUpPrompt(planRequest.request, payload),
           session: targetSession,
           references: targetSession.contextReferences ?? [],
           model: resolveRequestedModelArg(model, modelSelectionSource),
@@ -1361,12 +1403,15 @@ export default function App() {
         }
       }
 
-      setPlanModeRequest(null);
+      updateSessionInteraction(sessionId, (s) => ({
+        ...s,
+        planModeRequest: undefined,
+        isSubmittingPlanMode: false,
+      }));
       setUiError(null);
     } catch (error) {
       setUiError(error instanceof Error ? error.message : 'Failed to submit the plan decision.');
-    } finally {
-      setIsSubmittingPlanMode(false);
+      updateSessionInteraction(sessionId, (s) => ({ ...s, isSubmittingPlanMode: false }));
     }
   };
 
@@ -1521,6 +1566,7 @@ export default function App() {
     try {
       const result = await bridge.deleteSession({ sessionId });
       setProjects(result.projects);
+      clearSessionInteraction(sessionId);
       const nextSession = flattenVisibleSessions(result.projects)[0];
       if (nextSession) {
         setSelectedSessionId(nextSession.id);
@@ -1777,11 +1823,28 @@ export default function App() {
                   messages={selectedSession.messages ?? []}
                   onRequestDiff={handleRequestDiff}
                   onRequestPermission={(request) =>
-                    setPermissionRequest({
-                      path: request.targetPath,
-                      sensitive: request.sensitive,
-                    })
+                    updateSessionInteraction(selectedSession.id, (state) => ({
+                      ...state,
+                      permission: {
+                        path: request.targetPath,
+                        sensitive: request.sensitive,
+                        sessionId: selectedSession.id,
+                      },
+                    }))
                   }
+                  interaction={sessionInteractions.get(selectedSession.id)}
+                  onGrantPermission={() => {
+                    void handleGrantPermission(selectedSession.id);
+                  }}
+                  onDenyPermission={() => {
+                    void handleCancelPermission(selectedSession.id);
+                  }}
+                  onSubmitAskUserQuestion={(draft) => {
+                    void handleSubmitAskUserQuestion(selectedSession.id, draft);
+                  }}
+                  onSubmitPlanMode={(payload) => {
+                    void handleSubmitPlanMode(selectedSession.id, payload);
+                  }}
                 />
               )}
               {selectedSession.sessionKind !== 'harness' ? (
@@ -1861,6 +1924,7 @@ export default function App() {
           {!isMobileLayout || mobilePanel === 'context' ? (
             <ContextPanel
               session={selectedSession}
+              messages={selectedSession.messages ?? []}
               appVersion={appVersion}
               gitSnapshot={gitSnapshot}
               onRequestDiff={handleRequestDiff}
@@ -1934,39 +1998,6 @@ export default function App() {
         onCancel={() => setDialogState(null)}
         onSubmit={() => {
           void handleSubmitDialog();
-        }}
-      />
-      <PermissionDialog
-        open={Boolean(permissionRequest)}
-        path={permissionRequest?.path ?? ''}
-        sensitive={Boolean(permissionRequest?.sensitive)}
-        interactive={Boolean(permissionRequest?.requestId)}
-        busy={isGrantingPermission}
-        onCancel={() => {
-          void handleCancelPermission();
-        }}
-        onGrant={() => {
-          void handleGrantPermission();
-        }}
-      />
-      <AskUserQuestionDialog
-        open={Boolean(askUserQuestion)}
-        dialogKey={askUserQuestion?.toolUseId ?? 'ask-user-question'}
-        questions={askUserQuestion?.questions ?? []}
-        busy={isSubmittingAskUserQuestion}
-        onSkip={() => {
-          void handleSubmitAskUserQuestion();
-        }}
-        onSubmit={(draft) => {
-          void handleSubmitAskUserQuestion(draft);
-        }}
-      />
-      <PlanModeDialog
-        open={Boolean(planModeRequest)}
-        request={planModeRequest?.request ?? null}
-        busy={isSubmittingPlanMode}
-        onSubmit={(payload) => {
-          void handleSubmitPlanMode(payload);
         }}
       />
     </div>
