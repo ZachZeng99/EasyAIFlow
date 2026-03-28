@@ -296,6 +296,14 @@ app.whenReady().then(async () => {
   });
 });
 
+app.on('before-quit', () => {
+  state.activeRuns.forEach((run) => {
+    if (!run.child.killed) {
+      run.child.kill();
+    }
+  });
+});
+
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();

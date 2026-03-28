@@ -353,3 +353,20 @@ createServer(async (request, response) => {
 }).listen(port, host, () => {
   console.log(`EasyAIFlow web server listening on http://${host}:${port}`);
 });
+
+const killActiveRuns = () => {
+  state.activeRuns.forEach((run) => {
+    if (!run.child.killed) {
+      run.child.kill();
+    }
+  });
+};
+
+process.on('SIGINT', () => {
+  killActiveRuns();
+  process.exit(0);
+});
+process.on('SIGTERM', () => {
+  killActiveRuns();
+  process.exit(0);
+});
