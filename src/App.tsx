@@ -13,7 +13,12 @@ import {
   buildAskUserQuestionResponsePayload,
   type AskUserQuestionDraft,
 } from './data/askUserQuestion';
-import type { SessionInteractionState } from './data/sessionInteraction';
+import {
+  advanceSessionPermissionRequest,
+  enqueueSessionPermissionRequest,
+  getActiveSessionPermissionRequest,
+  type SessionInteractionState,
+} from './data/sessionInteraction';
 import {
   buildPlanModeFollowUpPrompt,
   parsePlanModeAllowedPrompts,
@@ -502,7 +507,9 @@ export default function App() {
           const hasUnread = unreadSessionIds.includes(session.id);
           const interaction = sessionInteractions.get(session.id);
           const hasBlockingInteraction = Boolean(
-            interaction?.permission || interaction?.askUserQuestion || interaction?.planModeRequest,
+            getActiveSessionPermissionRequest(interaction) ||
+              interaction?.askUserQuestion ||
+              interaction?.planModeRequest,
           );
 
           if (hasBlockingInteraction) {
@@ -525,7 +532,9 @@ export default function App() {
   const isWebRuntime = bridge.runtime === 'web';
   const selectedInteraction = sessionInteractions.get(selectedSession?.id ?? '');
   const hasBlockingInteraction = Boolean(
-    selectedInteraction?.permission || selectedInteraction?.askUserQuestion || selectedInteraction?.planModeRequest,
+    getActiveSessionPermissionRequest(selectedInteraction) ||
+      selectedInteraction?.askUserQuestion ||
+      selectedInteraction?.planModeRequest,
   );
 
   const getOriginalFilePath = (file: File) => {
@@ -707,15 +716,14 @@ export default function App() {
       unsubscribe = bridge.onClaudeEvent((event) => {
         setProjects((current) => applyClaudeEvent(current, event));
         if (event.type === 'permission-request') {
-          updateSessionInteraction(event.sessionId, (state) => ({
-            ...state,
-            permission: {
+          updateSessionInteraction(event.sessionId, (state) =>
+            enqueueSessionPermissionRequest(state, {
               path: event.targetPath ?? event.command ?? event.description ?? event.toolName,
               sensitive: event.sensitive,
               requestId: event.requestId,
               sessionId: event.sessionId,
-            },
-          }));
+            }),
+          );
         }
         if (event.type === 'ask-user-question') {
           updateSessionInteraction(event.sessionId, (state) => ({
@@ -740,14 +748,13 @@ export default function App() {
         if (event.type === 'trace' && event.message.status === 'error') {
           const request = parsePermissionRequest(event.message.content);
           if (request) {
-            updateSessionInteraction(event.sessionId, (state) => ({
-              ...state,
-              permission: {
+            updateSessionInteraction(event.sessionId, (state) =>
+              enqueueSessionPermissionRequest(state, {
                 path: request.targetPath,
                 sensitive: request.sensitive,
                 sessionId: event.sessionId,
-              },
-            }));
+              }),
+            );
           }
         }
         if (event.type === 'complete') {
@@ -1257,7 +1264,7 @@ export default function App() {
 
   const handleGrantPermission = async (sessionId: string) => {
     const interaction = sessionInteractions.get(sessionId);
-    const request = interaction?.permission;
+    const request = getActiveSessionPermissionRequest(interaction);
     if (!request) {
       return;
     }
@@ -1282,7 +1289,7 @@ export default function App() {
           targetPath: request.path,
         });
       }
-      updateSessionInteraction(sessionId, (s) => ({ ...s, permission: undefined, isGrantingPermission: false }));
+      updateSessionInteraction(sessionId, (state) => advanceSessionPermissionRequest(state));
       setUiError(null);
     } catch (error) {
       setUiError(error instanceof Error ? error.message : 'Failed to grant permission.');
@@ -1292,9 +1299,9 @@ export default function App() {
 
   const handleCancelPermission = async (sessionId: string) => {
     const interaction = sessionInteractions.get(sessionId);
-    const request = interaction?.permission;
+    const request = getActiveSessionPermissionRequest(interaction);
     if (!request?.requestId) {
-      updateSessionInteraction(sessionId, (s) => ({ ...s, permission: undefined }));
+      updateSessionInteraction(sessionId, (state) => advanceSessionPermissionRequest(state));
       return;
     }
 
@@ -1304,7 +1311,7 @@ export default function App() {
         requestId: request.requestId,
         behavior: 'deny',
       });
-      updateSessionInteraction(sessionId, (s) => ({ ...s, permission: undefined, isGrantingPermission: false }));
+      updateSessionInteraction(sessionId, (state) => advanceSessionPermissionRequest(state));
       setUiError(null);
     } catch (error) {
       setUiError(error instanceof Error ? error.message : 'Failed to deny permission.');
@@ -1823,14 +1830,13 @@ export default function App() {
                   messages={selectedSession.messages ?? []}
                   onRequestDiff={handleRequestDiff}
                   onRequestPermission={(request) =>
-                    updateSessionInteraction(selectedSession.id, (state) => ({
-                      ...state,
-                      permission: {
+                    updateSessionInteraction(selectedSession.id, (state) =>
+                      enqueueSessionPermissionRequest(state, {
                         path: request.targetPath,
                         sensitive: request.sensitive,
                         sessionId: selectedSession.id,
-                      },
-                    }))
+                      }),
+                    )
                   }
                   interaction={sessionInteractions.get(selectedSession.id)}
                   onGrantPermission={() => {

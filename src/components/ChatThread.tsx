@@ -10,7 +10,10 @@ import { parsePermissionRequest, type PermissionRequest } from '../data/permissi
 import { buildDisplayItems, shouldShowTitle } from '../data/chatThreadDisplay';
 import type { AskUserQuestionDraft } from '../data/askUserQuestion';
 import type { PlanModeResponsePayload } from '../data/planMode';
-import type { SessionInteractionState } from '../data/sessionInteraction';
+import {
+  getActiveSessionPermissionRequest,
+  type SessionInteractionState,
+} from '../data/sessionInteraction';
 import type { ConversationMessage, DiffPayload, SessionSummary } from '../data/types';
 
 type ChatThreadProps = {
@@ -37,6 +40,7 @@ export function ChatThread({
   onSubmitPlanMode,
 }: ChatThreadProps) {
   const displayItems = useMemo(() => buildDisplayItems(messages), [messages]);
+  const activePermissionRequest = getActiveSessionPermissionRequest(interaction);
   const [openTraceIds, setOpenTraceIds] = useState<Record<string, boolean>>({});
   const [openTraceGroupIds, setOpenTraceGroupIds] = useState<Record<string, boolean>>({});
   const [openCodeChangeGroupIds, setOpenCodeChangeGroupIds] = useState<Record<string, boolean>>({});
@@ -362,10 +366,10 @@ export function ChatThread({
           ),
         )}
 
-        {interaction?.permission ? (
+        {activePermissionRequest ? (
           <InlinePermissionCard
-            request={interaction.permission}
-            busy={Boolean(interaction.isGrantingPermission)}
+            request={activePermissionRequest}
+            busy={Boolean(interaction?.isGrantingPermission)}
             onGrant={() => onGrantPermission?.()}
             onDeny={() => onDenyPermission?.()}
           />
