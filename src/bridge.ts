@@ -5,6 +5,9 @@ import type {
   ContextReference,
   DeleteEntityResult,
   DiffPayload,
+  HarnessBootstrapResult,
+  HarnessRunOptions,
+  HarnessRunResult,
   PendingAttachment,
   ProjectCreateResult,
   ProjectOpenResult,
@@ -70,6 +73,14 @@ export type EasyAIFlowBridge = {
   }) => Promise<{
     mode: 'interactive' | 'fallback' | 'missing';
   }>;
+  respondToPlanModeRequest: (payload: {
+    requestId: string;
+    behavior: 'allow' | 'deny';
+    choice?: 'clear-auto' | 'auto' | 'manual' | 'revise';
+    notes?: string;
+  }) => Promise<{
+    mode: 'interactive' | 'missing';
+  }>;
   respondToAskUserQuestion: (payload: {
     toolUseId: string;
     answers: Record<string, string>;
@@ -92,6 +103,8 @@ export type EasyAIFlowBridge = {
     name?: string;
     includeStreamworkSummary?: boolean;
   }) => Promise<SessionCreateResult>;
+  bootstrapHarness: (payload: { sessionId: string }) => Promise<HarnessBootstrapResult>;
+  runHarness: (payload: { sessionId: string } & HarnessRunOptions) => Promise<HarnessRunResult>;
   createSession: (payload?: {
     sourceSessionId?: string;
     includeStreamworkSummary?: boolean;
@@ -180,6 +193,7 @@ const webBridge: EasyAIFlowBridge = {
   getProjects: () => callWebRpc('getProjects'),
   grantPathPermission: (payload) => callWebRpc('grantPathPermission', payload),
   respondToPermissionRequest: (payload) => callWebRpc('respondToPermissionRequest', payload),
+  respondToPlanModeRequest: (payload) => callWebRpc('respondToPlanModeRequest', payload),
   respondToAskUserQuestion: (payload) => callWebRpc('respondToAskUserQuestion', payload),
   openProjectDirectory: async () => {
     throw new Error('Web runtime does not support the native directory picker.');
@@ -190,6 +204,8 @@ const webBridge: EasyAIFlowBridge = {
   deleteStreamwork: (payload) => callWebRpc('deleteStreamwork', payload),
   reorderStreamworks: (payload) => callWebRpc('reorderStreamworks', payload),
   createSessionInStreamwork: (payload) => callWebRpc('createSessionInStreamwork', payload),
+  bootstrapHarness: (payload) => callWebRpc('bootstrapHarness', payload),
+  runHarness: (payload) => callWebRpc('runHarness', payload),
   createSession: (payload) => callWebRpc('createSession', payload),
   deleteSession: (payload) => callWebRpc('deleteSession', payload),
   updateSessionContextReferences: (payload) => callWebRpc('updateSessionContextReferences', payload),

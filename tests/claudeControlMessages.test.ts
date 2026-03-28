@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import {
   buildClaudeAskUserQuestionToolResultLine,
   buildClaudeControlResponseLine,
+  buildClaudePlanModeToolResultLine,
   buildClaudeUserMessageLine,
   parseClaudeAskUserQuestionControlRequest,
+  parseClaudePlanModeControlRequest,
   parseClaudePermissionControlRequest,
 } from '../electron/claudeControlMessages.js';
 
@@ -81,6 +83,69 @@ run('parseClaudePermissionControlRequest ignores AskUserQuestion requests', () =
   });
 
   assert.equal(request, null);
+});
+
+run('parseClaudePermissionControlRequest ignores plan mode tool requests', () => {
+  const request = parseClaudePermissionControlRequest({
+    type: 'control_request',
+    request_id: 'req_exit_plan',
+    request: {
+      subtype: 'can_use_tool',
+      tool_name: 'ExitPlanMode',
+      input: {
+        plan: '# Plan',
+      },
+      tool_use_id: 'toolu_exit_plan',
+    },
+  });
+
+  assert.equal(request, null);
+});
+
+run('parseClaudePlanModeControlRequest extracts plan review payloads', () => {
+  const request = parseClaudePlanModeControlRequest({
+    type: 'control_request',
+    request_id: 'req_exit_plan',
+    request: {
+      subtype: 'can_use_tool',
+      tool_name: 'ExitPlanMode',
+      input: {
+        plan: '# Plan\n\nDo work.',
+        planFilePath: 'C:\\Users\\Lenovo\\.claude\\plans\\sample.md',
+        allowedPrompts: [
+          {
+            tool: 'Bash',
+            prompt: 'run tests',
+          },
+        ],
+      },
+      tool_use_id: 'toolu_exit_plan',
+    },
+  });
+
+  assert.deepEqual(request, {
+    requestId: 'req_exit_plan',
+    toolUseId: 'toolu_exit_plan',
+    toolName: 'ExitPlanMode',
+    plan: '# Plan\n\nDo work.',
+    planFilePath: 'C:\\Users\\Lenovo\\.claude\\plans\\sample.md',
+    allowedPrompts: [
+      {
+        tool: 'Bash',
+        prompt: 'run tests',
+      },
+    ],
+    rawInput: {
+      plan: '# Plan\n\nDo work.',
+      planFilePath: 'C:\\Users\\Lenovo\\.claude\\plans\\sample.md',
+      allowedPrompts: [
+        {
+          tool: 'Bash',
+          prompt: 'run tests',
+        },
+      ],
+    },
+  });
 });
 
 run('parseClaudeAskUserQuestionControlRequest extracts interactive question payloads', () => {
@@ -264,6 +329,35 @@ run('buildClaudeAskUserQuestionToolResultLine emits a tool_result user message',
           notes: '目前需要走 VPN',
         },
       },
+    },
+  });
+});
+
+run('buildClaudePlanModeToolResultLine emits the approved-plan tool_result payload', () => {
+  const line = buildClaudePlanModeToolResultLine({
+    toolUseId: 'toolu_plan',
+    approved: true,
+    plan: '# Plan\n\nShip it.',
+    planFilePath: 'C:\\Users\\Lenovo\\.claude\\plans\\ship-it.md',
+  });
+
+  assert.deepEqual(JSON.parse(line), {
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          content:
+            'User has approved your plan. You can now start coding. Start with updating your todo list if applicable\n\nYour plan has been saved to: C:\\Users\\Lenovo\\.claude\\plans\\ship-it.md\nYou can refer back to it if needed during implementation.\n\n## Approved Plan:\n# Plan\n\nShip it.',
+          tool_use_id: 'toolu_plan',
+        },
+      ],
+    },
+    toolUseResult: {
+      plan: '# Plan\n\nShip it.',
+      isAgent: false,
+      filePath: 'C:\\Users\\Lenovo\\.claude\\plans\\ship-it.md',
     },
   });
 });

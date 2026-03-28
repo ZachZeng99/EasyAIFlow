@@ -139,7 +139,7 @@ export function ChatHistory({
         ...project,
         dreams: sortDreamsWithTemporaryFirst(project.dreams).map((dream) => ({
           ...dream,
-          sessions: sortSessionsByLatest(dream.sessions),
+          sessions: sortSessionsByLatest(dream.sessions.filter((session) => !(session as SessionSummary).hidden)),
         })),
       }));
     }
@@ -154,11 +154,12 @@ export function ChatHistory({
             const dreamMatch = matches(dream.name);
             const sessions = dream.sessions.filter(
               (session) =>
-                projectMatch ||
-                dreamMatch ||
-                matches(session.title) ||
-                matches(session.preview) ||
-                matches(session.workspace),
+                !(session as SessionSummary).hidden &&
+                (projectMatch ||
+                  dreamMatch ||
+                  matches(session.title) ||
+                  matches(session.preview) ||
+                  matches(session.workspace)),
             );
 
             if (!projectMatch && !dreamMatch && sessions.length === 0) {
@@ -167,7 +168,11 @@ export function ChatHistory({
 
             return {
               ...dream,
-              sessions: sortSessionsByLatest(projectMatch || dreamMatch ? dream.sessions : sessions),
+              sessions: sortSessionsByLatest(
+                (projectMatch || dreamMatch ? dream.sessions : sessions).filter(
+                  (session) => !(session as SessionSummary).hidden,
+                ),
+              ),
             };
           })
           .filter((dream): dream is DreamRecord => Boolean(dream));
@@ -178,7 +183,12 @@ export function ChatHistory({
 
         return {
           ...project,
-          dreams: sortDreamsWithTemporaryFirst(projectMatch ? project.dreams : dreams),
+          dreams: sortDreamsWithTemporaryFirst(
+            (projectMatch ? project.dreams : dreams).map((dream) => ({
+              ...dream,
+              sessions: dream.sessions.filter((session) => !(session as SessionSummary).hidden),
+            })),
+          ),
         };
       })
       .filter((project): project is ProjectRecord => Boolean(project));
@@ -455,7 +465,7 @@ function DreamSection({
                   key={session.id}
                   role="button"
                   tabIndex={0}
-                  className={`session-card${selected ? ' selected' : ''} ${indicator.state}`}
+                  className={`session-card${selected ? ' selected' : ''} ${indicator.state}${session.sessionKind === 'harness' ? ' harness' : ''}`}
                   onClick={() => onSelectSession(session)}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' || event.key === ' ') {
@@ -504,6 +514,9 @@ function DreamSection({
                           {session.title}
                         </strong>
                       )}
+                      {session.sessionKind === 'harness' ? (
+                        <span className="session-kind-badge">HARNESS</span>
+                      ) : null}
                     </div>
                     <div className="session-actions-inline">
                       <ActionButton
@@ -523,6 +536,7 @@ function DreamSection({
                   ) : null}
                   <div className="session-card-meta">
                     <span>{session.timeLabel}</span>
+                    {session.harness ? <span>{session.harness.role}</span> : null}
                     <span>{formatTokenCount(session.tokenUsage.used)} tk</span>
                   </div>
                 </div>

@@ -32,9 +32,13 @@ import type {
   ContextReference,
   DeleteEntityResult,
   DreamRecord,
+  HarnessBootstrapResult,
+  HarnessSessionState,
+  HarnessRole,
   ProjectCreateResult,
   ProjectRecord,
   SessionContextUpdateResult,
+  SessionKind,
   SessionCreateResult,
   SessionRecord,
   SessionSummary,
@@ -55,6 +59,12 @@ const nativeClaudeHistoryPath = () =>
   path.join(process.env.USERPROFILE ?? getRuntimePaths().homePath, '.claude', 'history.jsonl');
 
 const normalizeSessionModel = (model: string) => model.trim();
+
+const normalizeSessionKind = (value: SessionKind | undefined): SessionKind =>
+  value === 'harness' || value === 'harness_role' ? value : 'standard';
+
+const sanitizeHarnessFileSegment = (value: string) =>
+  value.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'session';
 
 const cloneContextReferences = (references: ContextReference[] | undefined) =>
   (references ?? []).map((reference) => ({ ...reference }));
@@ -106,6 +116,210 @@ const normalizeTokenUsage = (tokenUsage: TokenUsage | undefined, model: string):
   };
 };
 
+const normalizeHarnessState = (state: HarnessSessionState | undefined): HarnessSessionState | undefined => {
+  if (!state) {
+    return undefined;
+  }
+
+  return {
+    plannerSessionId: state.plannerSessionId,
+    generatorSessionId: state.generatorSessionId,
+    evaluatorSessionId: state.evaluatorSessionId,
+    artifactDir: state.artifactDir,
+    status:
+      state.status === 'running' ||
+      state.status === 'completed' ||
+      state.status === 'failed' ||
+      state.status === 'cancelled'
+        ? state.status
+        : 'ready',
+    currentOwner: state.currentOwner,
+    currentStage: state.currentStage ?? 'idle',
+    currentSprint: state.currentSprint ?? 0,
+    currentRound: state.currentRound ?? 0,
+    completedSprints: state.completedSprints ?? 0,
+    maxSprints: state.maxSprints ?? 0,
+    completedTurns: state.completedTurns ?? 0,
+    totalTurns: state.totalTurns ?? 0,
+    lastDecision: state.lastDecision ?? 'NOT_STARTED',
+    summary: state.summary,
+    updatedAt: state.updatedAt,
+  };
+};
+
+const buildHarnessArtifactDir = (workspace: string, rootSessionId: string) =>
+  path.join(workspace, '.easyaiflow', 'harness', sanitizeHarnessFileSegment(rootSessionId));
+
+const buildHarnessArtifactPaths = (artifactDir: string) => ({
+  spec: path.join(artifactDir, 'product-spec.md'),
+  contract: path.join(artifactDir, 'sprint-contract.md'),
+  evaluation: path.join(artifactDir, 'evaluation-report.md'),
+  handoff: path.join(artifactDir, 'handoff.md'),
+  manifest: path.join(artifactDir, 'manifest.json'),
+});
+
+const buildHarnessInstructionPrompt = (
+  role: HarnessRole,
+  artifactDir: string,
+  workspace: string,
+) => {
+  const files = buildHarnessArtifactPaths(artifactDir);
+
+  const shared = [
+    'You are part of a long-running multi-agent coding harness inside EasyAIFlow.',
+    `Workspace root: ${workspace}`,
+    `Artifact directory: ${artifactDir}`,
+    `Shared files: spec=${files.spec}, contract=${files.contract}, evaluation=${files.evaluation}, handoff=${files.handoff}`,
+    'Treat the shared files as the source of truth for handoff between sessions.',
+    'When you make progress, update the relevant shared file before you finish your turn.',
+    'Keep outputs structured, terse, and easy for the next agent to continue from.',
+  ];
+
+  if (role === 'planner') {
+    return [
+      ...shared,
+      'Role: planner.',
+      'Expand short product asks into an ambitious but still coherent product spec.',
+      'Stay at product scope and high-level technical design. Do not lock in fragile low-level implementation details too early.',
+      'Write the working spec into product-spec.md and write actionable next steps for generator and evaluator into handoff.md.',
+    ].join('\n');
+  }
+
+  if (role === 'generator') {
+    return [
+      ...shared,
+      'Role: generator.',
+      'Implement the product in small, testable sprints instead of trying to finish everything in one pass.',
+      'Before coding, refine sprint-contract.md so it states what this sprint will deliver, how done will be verified, and what is explicitly out of scope.',
+      'After coding, update handoff.md with what changed, remaining risks, and the next recommended sprint.',
+      'Prefer incremental, verifiable progress over broad but fragile scope.',
+    ].join('\n');
+  }
+
+  return [
+    ...shared,
+    'Role: evaluator.',
+    'Be skeptical. Do not praise incomplete or brittle work.',
+    'Review the current sprint against four criteria: product depth, functionality, visual design, and code quality.',
+    'If a criterion is below bar, explain the failure concretely and write the blocking issues into evaluation-report.md.',
+    'Use sprint-contract.md to verify the agreed definition of done and write precise retry guidance into handoff.md.',
+  ].join('\n');
+};
+
+const buildHarnessArtifactTemplate = (
+  type: keyof ReturnType<typeof buildHarnessArtifactPaths>,
+  session: SessionRecord,
+) => {
+  if (type === 'spec') {
+    return `# Product Spec
+
+Source session: ${session.title}
+Source session id: ${session.id}
+Workspace: ${session.workspace}
+
+## Product goal
+- Capture the user request at product level.
+
+## User journeys
+- List the primary flows the app must support.
+
+## Scope
+- Core features
+- Stretch features
+- Explicit non-goals
+
+## Technical direction
+- Architecture
+- Data/storage
+- Runtime/tooling
+
+## Risks and open questions
+- Unknowns
+- Tradeoffs
+`;
+  }
+
+  if (type === 'contract') {
+    return `# Sprint Contract
+
+## Current sprint
+- Objective:
+- Why this sprint now:
+
+## Done means
+- [ ] User-visible behavior
+- [ ] Tests/checks
+- [ ] Data/state expectations
+
+## Out of scope
+- 
+
+## Verification plan
+- Manual checks:
+- Automated checks:
+`;
+  }
+
+  if (type === 'evaluation') {
+    return `# Evaluation Report
+
+## Overall status
+- Pass/Fail:
+
+## Scorecard
+- Product depth:
+- Functionality:
+- Visual design:
+- Code quality:
+
+## Bugs and regressions
+- 
+
+## Required fixes before next pass
+- 
+`;
+  }
+
+  if (type === 'handoff') {
+    return `# Handoff
+
+## Latest state
+- 
+
+## Next recommended owner
+- Planner / Generator / Evaluator
+
+## Next action
+- 
+
+## Risks
+- 
+`;
+  }
+
+  return JSON.stringify(
+    {
+      sourceSessionId: session.id,
+      sourceSessionTitle: session.title,
+      workspace: session.workspace,
+      createdAt: new Date().toISOString(),
+    },
+    null,
+    2,
+  );
+};
+
+const ensureFileWithTemplate = async (
+  filePath: string,
+  content: string,
+) => {
+  try {
+    await readFile(filePath, 'utf8');
+  } catch {
+    await writeFile(filePath, content, 'utf8');
+  }
+};
+
 const normalizeProjects = (projects: ProjectRecord[]) =>
   projects.map((project) =>
     cleanupProjectSessions({
@@ -125,7 +339,10 @@ const normalizeDreamSessions = (dream: DreamRecord) => {
     return {
       ...current,
       model,
+      sessionKind: normalizeSessionKind(current.sessionKind),
+      hidden: Boolean(current.hidden),
       contextReferences: normalizeContextReferences(current.contextReferences),
+      harnessState: normalizeHarnessState(current.harnessState),
       tokenUsage: normalizeTokenUsage(current.tokenUsage, model),
       messages: current.messages ?? [],
       updatedAt: current.updatedAt,
@@ -682,6 +899,11 @@ const importNativeClaudeSessions = async (project: ProjectRecord) => {
       dreamName: temporary.name,
       claudeSessionId: parsed.nativeSessionId,
       updatedAt: display.updatedAt,
+      sessionKind: existing?.sessionKind ?? 'standard',
+      hidden: existing?.hidden ?? false,
+      instructionPrompt: existing?.instructionPrompt,
+      harness: existing?.harness,
+      harnessState: normalizeHarnessState(existing?.harnessState),
       groups: existing?.groups ?? [],
       contextReferences: normalizeContextReferences(existing?.contextReferences),
       tokenUsage: existing?.tokenUsage ?? {
@@ -1187,6 +1409,11 @@ export const createSession = async (
     dreamId: fallbackDream.id,
     dreamName: fallbackDream.name,
     claudeSessionId: undefined,
+    sessionKind: 'standard',
+    hidden: false,
+    instructionPrompt: undefined,
+    harness: undefined,
+    harnessState: undefined,
     groups: templateSession?.groups ?? [],
     contextReferences:
       includeStreamworkSummary && fallbackDream.sessions.length > 0
@@ -1239,6 +1466,11 @@ const createBaseSession = (
     dreamId: streamwork.id,
     dreamName: streamwork.name,
     claudeSessionId: undefined,
+    sessionKind: 'standard',
+    hidden: false,
+    instructionPrompt: undefined,
+    harness: undefined,
+    harnessState: undefined,
     groups: [],
     contextReferences: [],
     tokenUsage: {
@@ -1251,6 +1483,182 @@ const createBaseSession = (
     },
     branchSnapshot: makeEmptyBranchSnapshot(workspace),
     messages: [],
+  };
+};
+
+const ensureHarnessArtifacts = async (session: SessionRecord, artifactDir: string) => {
+  const files = buildHarnessArtifactPaths(artifactDir);
+  await mkdir(artifactDir, { recursive: true });
+  await Promise.all([
+    ensureFileWithTemplate(files.spec, buildHarnessArtifactTemplate('spec', session)),
+    ensureFileWithTemplate(files.contract, buildHarnessArtifactTemplate('contract', session)),
+    ensureFileWithTemplate(files.evaluation, buildHarnessArtifactTemplate('evaluation', session)),
+    ensureFileWithTemplate(files.handoff, buildHarnessArtifactTemplate('handoff', session)),
+    writeFile(files.manifest, buildHarnessArtifactTemplate('manifest', session), 'utf8'),
+  ]);
+};
+
+const ensureHarnessSession = (
+  project: ProjectRecord,
+  streamwork: DreamRecord,
+  rootSession: SessionRecord,
+  role: HarnessRole,
+  artifactDir: string,
+) => {
+  const existing = streamwork.sessions.find(
+    (session) =>
+      (session as SessionRecord).harness?.rootSessionId === rootSession.id &&
+      (session as SessionRecord).harness?.role === role,
+  ) as SessionRecord | undefined;
+
+  const instructionPrompt = buildHarnessInstructionPrompt(role, artifactDir, rootSession.workspace);
+  const title = `[${role}] ${rootSession.title}`;
+  const harness = {
+    role,
+    rootSessionId: rootSession.id,
+    artifactDir,
+  } as const;
+  const references = [
+    {
+      id: randomUUID(),
+      kind: 'session' as const,
+      label: rootSession.title,
+      mode: 'summary' as const,
+      sessionId: rootSession.id,
+      auto: true,
+    },
+  ];
+
+  if (existing) {
+    existing.title = title;
+    existing.workspace = rootSession.workspace;
+    existing.projectId = project.id;
+    existing.projectName = project.name;
+    existing.dreamId = streamwork.id;
+    existing.dreamName = streamwork.name;
+    existing.sessionKind = 'harness_role';
+    existing.hidden = true;
+    existing.instructionPrompt = instructionPrompt;
+    existing.harness = harness;
+    existing.harnessState = undefined;
+    existing.contextReferences = references;
+    existing.updatedAt = Date.now();
+    return existing;
+  }
+
+  const nextSession = createBaseSession(project, streamwork, title, rootSession.workspace);
+  nextSession.preview = `${role} harness session`;
+  nextSession.sessionKind = 'harness_role';
+  nextSession.hidden = true;
+  nextSession.instructionPrompt = instructionPrompt;
+  nextSession.harness = harness;
+  nextSession.harnessState = undefined;
+  nextSession.contextReferences = references;
+  streamwork.sessions.unshift(nextSession);
+  return nextSession;
+};
+
+export const bootstrapHarnessFromSession = async (sessionId: string): Promise<HarnessBootstrapResult> => {
+  const state = await loadState();
+  let sourceSession: SessionRecord | undefined;
+  let sourceProject: ProjectRecord | undefined;
+  let sourceStreamwork: DreamRecord | undefined;
+
+  state.projects.forEach((project) => {
+    project.dreams.forEach((dream) => {
+      dream.sessions.forEach((session) => {
+        const current = session as SessionRecord;
+        if (current.id === sessionId) {
+          sourceSession = current;
+          sourceProject = project;
+          sourceStreamwork = dream;
+        }
+      });
+    });
+  });
+
+  if (!sourceSession || !sourceProject || !sourceStreamwork) {
+    throw new Error('Session not found.');
+  }
+
+  const rootSessionId = sourceSession.harness?.rootSessionId ?? sourceSession.id;
+  const rootSession =
+    state.projects
+      .flatMap((project) => project.dreams.flatMap((dream) => dream.sessions as SessionRecord[]))
+      .find((session) => session.id === rootSessionId) ?? sourceSession;
+  const artifactDir = buildHarnessArtifactDir(rootSession.workspace, rootSessionId);
+  await ensureHarnessArtifacts(rootSession, artifactDir);
+
+  const planner = ensureHarnessSession(sourceProject, sourceStreamwork, rootSession, 'planner', artifactDir);
+  const generator = ensureHarnessSession(sourceProject, sourceStreamwork, rootSession, 'generator', artifactDir);
+  const evaluator = ensureHarnessSession(sourceProject, sourceStreamwork, rootSession, 'evaluator', artifactDir);
+
+  rootSession.sessionKind = 'harness';
+  rootSession.hidden = false;
+  rootSession.preview = 'Harness bootstrapped. Ready to run.';
+  rootSession.timeLabel = 'Just now';
+  rootSession.updatedAt = Date.now();
+  rootSession.harnessState = {
+    plannerSessionId: planner.id,
+    generatorSessionId: generator.id,
+    evaluatorSessionId: evaluator.id,
+    artifactDir,
+    status: 'ready',
+    currentOwner: undefined,
+    currentStage: 'ready',
+    currentSprint: 0,
+    currentRound: 0,
+    completedSprints: 0,
+    maxSprints: 0,
+    completedTurns: 0,
+    totalTurns: 0,
+    lastDecision: 'READY',
+    summary: 'Harness bootstrapped. Ready to run.',
+    updatedAt: Date.now(),
+  };
+
+  await saveState(state);
+
+  return {
+    projects: cloneVisibleProjects(state.projects),
+    rootSessionId: rootSession.id,
+    plannerSessionId: planner.id,
+    generatorSessionId: generator.id,
+    evaluatorSessionId: evaluator.id,
+    artifactDir,
+  };
+};
+
+export const updateHarnessState = async (
+  sessionId: string,
+  updater: (current: HarnessSessionState | undefined) => HarnessSessionState,
+) => {
+  const state = await loadState();
+  let updatedState: HarnessSessionState | undefined;
+
+  forEachSession(state.projects, (session) => {
+    if (session.id !== sessionId) {
+      return;
+    }
+
+    const nextState = updater(normalizeHarnessState(session.harnessState));
+    session.sessionKind = 'harness';
+    session.hidden = false;
+    session.harnessState = nextState;
+    session.preview = nextState.summary ?? session.preview;
+    session.timeLabel = 'Just now';
+    session.updatedAt = Date.now();
+    updatedState = nextState;
+  });
+
+  if (!updatedState) {
+    throw new Error('Harness root session not found.');
+  }
+
+  await saveState(state);
+  return {
+    projects: cloneVisibleProjects(state.projects),
+    state: updatedState,
   };
 };
 

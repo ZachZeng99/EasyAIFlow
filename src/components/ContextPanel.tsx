@@ -7,9 +7,26 @@ type ContextPanelProps = {
   appVersion: string;
   gitSnapshot: GitSnapshot;
   onRequestDiff: (filePath: string) => Promise<DiffPayload>;
+  onBootstrapHarness: () => void;
+  onRunHarness: () => void;
+  canBootstrapHarness?: boolean;
+  canRunHarness?: boolean;
+  isBootstrappingHarness?: boolean;
+  isRunningHarness?: boolean;
 };
 
-export function ContextPanel({ session, appVersion, gitSnapshot, onRequestDiff }: ContextPanelProps) {
+export function ContextPanel({
+  session,
+  appVersion,
+  gitSnapshot,
+  onRequestDiff,
+  onBootstrapHarness,
+  onRunHarness,
+  canBootstrapHarness = false,
+  canRunHarness = false,
+  isBootstrappingHarness = false,
+  isRunningHarness = false,
+}: ContextPanelProps) {
   const [selectedFilePath, setSelectedFilePath] = useState<string>('');
   const [diffPayload, setDiffPayload] = useState<DiffPayload | null>(null);
   const [isLoadingDiff, setIsLoadingDiff] = useState(false);
@@ -113,6 +130,42 @@ export function ContextPanel({ session, appVersion, gitSnapshot, onRequestDiff }
             )}
           </div>
         ) : null}
+      </div>
+
+      <div className="context-block">
+        <p className="section-kicker">harness</p>
+        <h2>Long-Running Harness</h2>
+        <div className="meta-list">
+          <div>
+            <span>Kind</span>
+            <strong>{session.sessionKind ?? 'standard'}</strong>
+          </div>
+          <div>
+            <span>Artifact dir</span>
+            <strong>{session.harnessState?.artifactDir ?? session.harness?.artifactDir ?? 'not bootstrapped'}</strong>
+          </div>
+        </div>
+        {session.sessionKind !== 'harness' ? canBootstrapHarness ? (
+          <button
+            type="button"
+            className="mini-action primary"
+            onClick={onBootstrapHarness}
+            disabled={isBootstrappingHarness || isRunningHarness}
+          >
+            {isBootstrappingHarness ? 'Bootstrapping...' : 'Bootstrap Harness'}
+          </button>
+        ) : (
+          <p className="harness-panel-note">Harness becomes available after this session has real task context.</p>
+        ) : (
+          <button
+            type="button"
+            className="mini-action primary"
+            onClick={onRunHarness}
+            disabled={!canRunHarness || isBootstrappingHarness || isRunningHarness}
+          >
+            {isRunningHarness ? 'Running Harness...' : 'Run Harness'}
+          </button>
+        )}
       </div>
 
       <div className="context-block">

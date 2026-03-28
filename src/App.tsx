@@ -6,8 +6,10 @@ import { bridge } from './bridge';
 import { ManageDialog } from './components/ManageDialog';
 import { PermissionDialog } from './components/PermissionDialog';
 import { AskUserQuestionDialog } from './components/AskUserQuestionDialog';
+import { PlanModeDialog, type PlanModeDialogChoice } from './components/PlanModeDialog';
 import { ChatThread } from './components/ChatThread';
 import { ContextPanel } from './components/ContextPanel';
+import { HarnessDashboard } from './components/HarnessDashboard';
 import { buildOptimisticSendState } from './data/optimisticSend';
 import {
   buildAskUserQuestionFollowUpPrompt,
@@ -37,6 +39,53 @@ const flattenSessions = (projects: ProjectRecord[]) =>
     project.dreams.flatMap((dream) => dream.sessions.map((session) => session as SessionRecord)),
   );
 
+const flattenVisibleSessions = (projects: ProjectRecord[]) =>
+  flattenSessions(projects).filter((session) => !session.hidden);
+
+const parsePlanModeTracePayload = (message: SessionRecord['messages'][number]) => {
+  if (
+    message.role !== 'system' ||
+    message.kind !== 'tool_use' ||
+    message.title !== 'ExitPlanMode' ||
+    message.status !== 'running'
+  ) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(message.content) as {
+      plan?: unknown;
+      planFilePath?: unknown;
+      allowedPrompts?: unknown;
+    };
+    const allowedPrompts = Array.isArray(parsed.allowedPrompts)
+      ? parsed.allowedPrompts
+          .map((item) =>
+            item &&
+            typeof item === 'object' &&
+            typeof (item as { tool?: unknown }).tool === 'string' &&
+            typeof (item as { prompt?: unknown }).prompt === 'string'
+              ? {
+                  tool: (item as { tool: string }).tool,
+                  prompt: (item as { prompt: string }).prompt,
+                }
+              : null,
+          )
+          .filter((item): item is { tool: string; prompt: string } => Boolean(item))
+      : [];
+
+    return {
+      requestId: message.id,
+      mode: 'exit' as const,
+      planText: typeof parsed.plan === 'string' ? parsed.plan : '',
+      planFilePath: typeof parsed.planFilePath === 'string' ? parsed.planFilePath : undefined,
+      allowedPrompts,
+    };
+  } catch {
+    return null;
+  }
+};
+
 const findLastAssistantMessage = (session: SessionRecord) =>
   [...(session.messages ?? [])].reverse().find((message) => message.role === 'assistant');
 
@@ -62,8 +111,22 @@ const applyClaudeEvent = (projects: ProjectRecord[], event: ClaudeStreamEvent) =
   updateSessionInProjects(projects, event.sessionId, (session) => {
     const updatedAt = Date.now();
 
-    if (event.type === 'permission-request' || event.type === 'ask-user-question') {
+    if (
+      event.type === 'permission-request' ||
+      event.type === 'plan-mode-request' ||
+      event.type === 'ask-user-question'
+    ) {
       return session;
+    }
+
+    if (event.type === 'harness-state') {
+      return {
+        ...session,
+        harnessState: event.state,
+        preview: event.state.summary ?? session.preview,
+        timeLabel: 'Just now',
+        updatedAt,
+      };
     }
 
     if (event.type === 'trace') {
@@ -317,6 +380,15 @@ type ActiveAskUserQuestion = {
   questions: AskUserQuestion[];
 };
 
+type ActivePlanModeRequest = {
+  sessionId: string;
+  requestId: string;
+  mode: 'enter' | 'exit';
+  planText: string;
+  planFilePath?: string;
+  allowedPrompts: import('./data/types').PlanModeAllowedPrompt[];
+};
+
 type MobilePanel = 'history' | 'session' | 'context';
 
 export default function App() {
@@ -331,10 +403,14 @@ export default function App() {
   const [isResizingPane, setIsResizingPane] = useState(false);
   const [leftPaneWidth, setLeftPaneWidth] = useState(338);
   const [isDialogBusy, setIsDialogBusy] = useState(false);
+  const [isBootstrappingHarness, setIsBootstrappingHarness] = useState(false);
+  const [isRunningHarness, setIsRunningHarness] = useState(false);
   const [uiError, setUiError] = useState<string | null>(null);
   const [dialogState, setDialogState] = useState<DialogState | null>(null);
   const [permissionRequest, setPermissionRequest] = useState<ActivePermissionRequest | null>(null);
   const [isGrantingPermission, setIsGrantingPermission] = useState(false);
+  const [planModeRequest, setPlanModeRequest] = useState<ActivePlanModeRequest | null>(null);
+  const [isRespondingToPlanMode, setIsRespondingToPlanMode] = useState(false);
   const [askUserQuestion, setAskUserQuestion] = useState<ActiveAskUserQuestion | null>(null);
   const [isSubmittingAskUserQuestion, setIsSubmittingAskUserQuestion] = useState(false);
   const [isMobileLayout, setIsMobileLayout] = useState(() =>
@@ -364,9 +440,31 @@ export default function App() {
   });
 
   const allSessions = useMemo(() => flattenSessions(projects), [projects]);
+  const visibleSessions = useMemo(() => flattenVisibleSessions(projects), [projects]);
   const selectedSession = useMemo(
-    () => allSessions.find((session) => session.id === selectedSessionId) ?? allSessions[0],
-    [allSessions, selectedSessionId],
+    () => allSessions.find((session) => session.id === selectedSessionId) ?? visibleSessions[0] ?? allSessions[0],
+    [allSessions, selectedSessionId, visibleSessions],
+  );
+  const harnessPlannerSession = useMemo(
+    () =>
+      selectedSession?.sessionKind === 'harness' && selectedSession.harnessState
+        ? allSessions.find((session) => session.id === selectedSession.harnessState?.plannerSessionId)
+        : undefined,
+    [allSessions, selectedSession],
+  );
+  const harnessGeneratorSession = useMemo(
+    () =>
+      selectedSession?.sessionKind === 'harness' && selectedSession.harnessState
+        ? allSessions.find((session) => session.id === selectedSession.harnessState?.generatorSessionId)
+        : undefined,
+    [allSessions, selectedSession],
+  );
+  const harnessEvaluatorSession = useMemo(
+    () =>
+      selectedSession?.sessionKind === 'harness' && selectedSession.harnessState
+        ? allSessions.find((session) => session.id === selectedSession.harnessState?.evaluatorSessionId)
+        : undefined,
+    [allSessions, selectedSession],
   );
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedSession?.projectId) ?? projects[0],
@@ -385,15 +483,34 @@ export default function App() {
     [allSessions, projects, selectedSession],
   );
   const isSelectedSessionResponding = useMemo(
-    () => (selectedSession ? isAssistantPendingStatus(findLastAssistantMessage(selectedSession)?.status) : false),
+    () =>
+      selectedSession
+        ? selectedSession.sessionKind === 'harness'
+          ? selectedSession.harnessState?.status === 'running'
+          : isAssistantPendingStatus(findLastAssistantMessage(selectedSession)?.status)
+        : false,
     [selectedSession],
   );
   const sessionIndicators = useMemo<Record<string, SessionIndicator>>(
     () =>
       Object.fromEntries(
-        allSessions.map((session) => {
+        visibleSessions.map((session) => {
+          const relatedRoleSessions =
+            session.sessionKind === 'harness' && session.harnessState
+              ? allSessions.filter((candidate) =>
+                  [
+                    session.harnessState?.plannerSessionId,
+                    session.harnessState?.generatorSessionId,
+                    session.harnessState?.evaluatorSessionId,
+                  ].includes(candidate.id),
+                )
+              : [];
           const lastAssistant = findLastAssistantMessage(session);
-          const isResponding = isAssistantPendingStatus(lastAssistant?.status);
+          const isResponding =
+            session.sessionKind === 'harness'
+              ? session.harnessState?.status === 'running' ||
+                relatedRoleSessions.some((candidate) => isAssistantPendingStatus(findLastAssistantMessage(candidate)?.status))
+              : isAssistantPendingStatus(lastAssistant?.status);
           const hasUnread = unreadSessionIds.includes(session.id);
 
           if (isResponding) {
@@ -407,9 +524,10 @@ export default function App() {
           return [session.id, { state: 'idle' }];
         }),
       ),
-    [allSessions, unreadSessionIds],
+    [allSessions, unreadSessionIds, visibleSessions],
   );
   const isWebRuntime = bridge.runtime === 'web';
+  const hasBlockingInteraction = Boolean(permissionRequest || askUserQuestion || planModeRequest);
 
   const getOriginalFilePath = (file: File) => {
     try {
@@ -536,23 +654,23 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (isMobileLayout && allSessions.length === 0) {
+    if (isMobileLayout && visibleSessions.length === 0) {
       setMobilePanel('history');
     }
-  }, [allSessions.length, isMobileLayout]);
+  }, [isMobileLayout, visibleSessions.length]);
 
   useEffect(() => {
-    if (allSessions.length === 0) {
+    if (visibleSessions.length === 0) {
       if (selectedSessionId) {
         setSelectedSessionId('');
       }
       return;
     }
 
-    if (!selectedSessionId || !allSessions.some((session) => session.id === selectedSessionId)) {
-      setSelectedSessionId(allSessions[0].id);
+    if (!selectedSessionId || !visibleSessions.some((session) => session.id === selectedSessionId)) {
+      setSelectedSessionId(visibleSessions[0].id);
     }
-  }, [allSessions, selectedSessionId]);
+  }, [selectedSessionId, visibleSessions]);
 
   useEffect(() => {
     const loadMeta = async () => {
@@ -569,7 +687,7 @@ export default function App() {
 
         const nextProjects = bootstrap?.projects ?? [];
         setProjects(nextProjects);
-        const firstSession = flattenSessions(nextProjects)[0];
+        const firstSession = flattenVisibleSessions(nextProjects)[0];
         if (firstSession) {
           setSelectedSessionId((current) => current || firstSession.id);
         } else {
@@ -595,6 +713,16 @@ export default function App() {
             sensitive: event.sensitive,
             requestId: event.requestId,
             sessionId: event.sessionId,
+          });
+        }
+        if (event.type === 'plan-mode-request') {
+          setPlanModeRequest({
+            sessionId: event.sessionId,
+            requestId: event.requestId,
+            mode: event.toolName === 'EnterPlanMode' ? 'enter' : 'exit',
+            planText: event.plan,
+            planFilePath: event.planFilePath,
+            allowedPrompts: event.allowedPrompts,
           });
         }
         if (event.type === 'ask-user-question') {
@@ -706,6 +834,30 @@ export default function App() {
   useEffect(() => {
     attachmentsRef.current = attachments;
   }, [attachments]);
+
+  useEffect(() => {
+    if (!selectedSession || planModeRequest) {
+      return;
+    }
+
+    const pendingPlanTrace = [...(selectedSession.messages ?? [])]
+      .reverse()
+      .map((message) => parsePlanModeTracePayload(message))
+      .find((item) => Boolean(item));
+
+    if (!pendingPlanTrace) {
+      return;
+    }
+
+    setPlanModeRequest({
+      sessionId: selectedSession.id,
+      requestId: pendingPlanTrace.requestId,
+      mode: pendingPlanTrace.mode,
+      planText: pendingPlanTrace.planText,
+      planFilePath: pendingPlanTrace.planFilePath,
+      allowedPrompts: pendingPlanTrace.allowedPrompts,
+    });
+  }, [planModeRequest, selectedSession]);
 
   useEffect(() => {
     return () => {
@@ -847,6 +999,11 @@ export default function App() {
       return;
     }
 
+    if (hasBlockingInteraction) {
+      setUiError('Resolve the current interactive Claude request before sending another message.');
+      return;
+    }
+
     const prompt = draft.trim();
     if ((!prompt && attachments.length === 0) || isSending) {
       return;
@@ -975,6 +1132,11 @@ export default function App() {
 
   const handleSendBtwMessage = async (overridePrompt?: string) => {
     if (!selectedSession) {
+      return;
+    }
+
+    if (hasBlockingInteraction) {
+      setUiError('Resolve the current interactive Claude request before sending another message.');
       return;
     }
 
@@ -1185,6 +1347,59 @@ export default function App() {
     }
   };
 
+  const handleRespondToPlanMode = async (choice: PlanModeDialogChoice, notes?: string) => {
+    if (!planModeRequest) {
+      return;
+    }
+
+    setIsRespondingToPlanMode(true);
+    try {
+      if (choice === 'revise') {
+        await bridge.respondToPlanModeRequest({
+          requestId: planModeRequest.requestId,
+          behavior: 'deny',
+          choice,
+          notes,
+        });
+      } else {
+        await bridge.respondToPlanModeRequest({
+          requestId: planModeRequest.requestId,
+          behavior: 'allow',
+          choice,
+        });
+      }
+
+      setPlanModeRequest(null);
+      setUiError(null);
+    } catch (error) {
+      setUiError(error instanceof Error ? error.message : 'Failed to respond to plan mode.');
+    } finally {
+      setIsRespondingToPlanMode(false);
+    }
+  };
+
+  const handleCancelPlanMode = async () => {
+    if (!planModeRequest) {
+      return;
+    }
+
+    setIsRespondingToPlanMode(true);
+    try {
+      await bridge.respondToPlanModeRequest({
+        requestId: planModeRequest.requestId,
+        behavior: 'deny',
+        choice: 'revise',
+        notes: 'User cancelled the plan review dialog.',
+      });
+      setPlanModeRequest(null);
+      setUiError(null);
+    } catch (error) {
+      setUiError(error instanceof Error ? error.message : 'Failed to cancel plan mode.');
+    } finally {
+      setIsRespondingToPlanMode(false);
+    }
+  };
+
   const handleCreateStreamwork = async (projectId: string, name: string) => {
     try {
       const result = await bridge.createStreamwork({
@@ -1259,11 +1474,56 @@ export default function App() {
     [selectedSession?.workspace],
   );
 
+  const handleBootstrapHarness = async () => {
+    if (!selectedSession) {
+      return;
+    }
+
+    setIsBootstrappingHarness(true);
+    try {
+      const result = await bridge.bootstrapHarness({
+        sessionId: selectedSession.id,
+      });
+      setProjects(result.projects);
+      setSelectedSessionId(result.rootSessionId);
+      setUiError(null);
+    } catch (error) {
+      setUiError(error instanceof Error ? error.message : 'Failed to bootstrap harness.');
+    } finally {
+      setIsBootstrappingHarness(false);
+    }
+  };
+
+  const handleRunHarness = async () => {
+    if (!selectedSession) {
+      return;
+    }
+
+    setIsRunningHarness(true);
+    try {
+      const result = await bridge.runHarness({
+        sessionId: selectedSession.id,
+        maxSprints: 3,
+        maxContractRounds: 2,
+        maxImplementationRounds: 2,
+        model: resolveRequestedModelArg(model, modelSelectionSource),
+        effort,
+      });
+      setProjects(result.projects);
+      setSelectedSessionId(result.rootSessionId);
+      setUiError(null);
+    } catch (error) {
+      setUiError(error instanceof Error ? error.message : 'Failed to run harness.');
+    } finally {
+      setIsRunningHarness(false);
+    }
+  };
+
   const handleCloseProject = async (projectId: string) => {
     try {
       const result = await bridge.closeProject({ projectId });
       setProjects(result.projects);
-      const nextSession = flattenSessions(result.projects)[0];
+      const nextSession = flattenVisibleSessions(result.projects)[0];
       if (nextSession) {
         setSelectedSessionId(nextSession.id);
       }
@@ -1277,7 +1537,7 @@ export default function App() {
     try {
       const result = await bridge.deleteStreamwork({ streamworkId });
       setProjects(result.projects);
-      const nextSession = flattenSessions(result.projects)[0];
+      const nextSession = flattenVisibleSessions(result.projects)[0];
       if (nextSession) {
         setSelectedSessionId(nextSession.id);
       }
@@ -1291,7 +1551,7 @@ export default function App() {
     try {
       const result = await bridge.deleteSession({ sessionId });
       setProjects(result.projects);
-      const nextSession = flattenSessions(result.projects)[0];
+      const nextSession = flattenVisibleSessions(result.projects)[0];
       if (nextSession) {
         setSelectedSessionId(nextSession.id);
       }
@@ -1434,6 +1694,19 @@ export default function App() {
       : [];
 
   const hasActiveSession = Boolean(selectedSession && selectedProject && selectedStreamwork);
+  const canBootstrapHarness = Boolean(
+    selectedSession &&
+      selectedSession.sessionKind !== 'harness' &&
+      selectedSession.sessionKind !== 'harness_role' &&
+      (selectedSession.messages ?? []).some(
+        (message) => (message.role === 'user' || message.role === 'assistant') && message.content.trim(),
+      ),
+  );
+  const canRunHarness = Boolean(
+    selectedSession?.sessionKind === 'harness' &&
+      selectedSession.harnessState &&
+      selectedSession.harnessState.status !== 'running',
+  );
   const shellStyle = isMobileLayout
     ? undefined
     : { gridTemplateColumns: `${leftPaneWidth}px 8px minmax(0, 1fr) 340px` };
@@ -1521,84 +1794,97 @@ export default function App() {
           {!isMobileLayout || mobilePanel === 'session' ? (
             <main className="conversation-layout">
               {uiError ? <div className="ui-error-banner">{uiError}</div> : null}
-              <ChatThread
-                session={selectedSession}
-                messages={selectedSession.messages ?? []}
-                onRequestDiff={handleRequestDiff}
-                onRequestPermission={(request) =>
-                  setPermissionRequest({
-                    path: request.targetPath,
-                    sensitive: request.sensitive,
-                  })
-                }
-              />
-              <BtwPanel
-                isOpen={btwState.isOpen}
-                draft={btwState.draft}
-                messages={btwState.messages}
-                isSending={btwState.isSending}
-                tokenUsage={btwState.tokenUsage}
-                inheritedContext={btwState.inheritedContext}
-                onDraftChange={(value) =>
-                  setBtwState((current) => ({
-                    ...current,
-                    draft: value,
-                  }))
-                }
-                onSend={() => {
-                  void handleSendBtwMessage();
-                }}
-                onClose={() => {
-                  void handleCloseBtw();
-                }}
-              />
-              <ChatComposer
-                draft={draft}
-                tokenUsage={selectedSession.tokenUsage}
-                sessionModel={selectedSession.model}
-                contextReferences={displayContextReferences}
-                slashCommands={slashCommands}
-                attachments={attachments}
-                isSending={isSending}
-                isResponding={isSelectedSessionResponding}
-                model={model}
-                effort={effort}
-                supportsPathDrop={!isWebRuntime}
-                onDraftChange={handleDraftChange}
-                onModelChange={(value) => {
-                  setModel(value);
-                  setModelSelectionSource('explicit');
-                }}
-                onEffortChange={setEffort}
-                onUpdateContextReferenceMode={(referenceId, mode) => {
-                  handleUpdateContextReferences(
-                    displayContextReferences.map((reference) =>
-                      reference.id === referenceId
-                        ? {
-                            ...reference,
-                            mode,
-                          }
-                        : reference,
-                    ),
-                  );
-                }}
-                onRemoveContextReference={(referenceId) => {
-                  handleUpdateContextReferences(
-                    displayContextReferences.filter((reference) => reference.id !== referenceId),
-                  );
-                }}
-                onInsertDroppedPaths={handleInsertDroppedPaths}
-                onAttachFiles={(files) => {
-                  void handleAttachFiles(files);
-                }}
-                onRemoveAttachment={handleRemoveAttachment}
-                onSend={() => {
-                  void handleSend();
-                }}
-                onStop={() => {
-                  void handleStop();
-                }}
-              />
+              {selectedSession.sessionKind === 'harness' ? (
+                <HarnessDashboard
+                  session={selectedSession}
+                  plannerSession={harnessPlannerSession}
+                  generatorSession={harnessGeneratorSession}
+                  evaluatorSession={harnessEvaluatorSession}
+                />
+              ) : (
+                <ChatThread
+                  session={selectedSession}
+                  messages={selectedSession.messages ?? []}
+                  onRequestDiff={handleRequestDiff}
+                  onRequestPermission={(request) =>
+                    setPermissionRequest({
+                      path: request.targetPath,
+                      sensitive: request.sensitive,
+                    })
+                  }
+                />
+              )}
+              {selectedSession.sessionKind !== 'harness' ? (
+                <BtwPanel
+                  isOpen={btwState.isOpen}
+                  draft={btwState.draft}
+                  messages={btwState.messages}
+                  isSending={btwState.isSending}
+                  tokenUsage={btwState.tokenUsage}
+                  inheritedContext={btwState.inheritedContext}
+                  onDraftChange={(value) =>
+                    setBtwState((current) => ({
+                      ...current,
+                      draft: value,
+                    }))
+                  }
+                  onSend={() => {
+                    void handleSendBtwMessage();
+                  }}
+                  onClose={() => {
+                    void handleCloseBtw();
+                  }}
+                />
+              ) : null}
+              {selectedSession.sessionKind !== 'harness' ? (
+                <ChatComposer
+                  draft={draft}
+                  tokenUsage={selectedSession.tokenUsage}
+                  sessionModel={selectedSession.model}
+                  contextReferences={displayContextReferences}
+                  slashCommands={slashCommands}
+                  attachments={attachments}
+                  isSending={isSending}
+                  isResponding={isSelectedSessionResponding}
+                  model={model}
+                  effort={effort}
+                  supportsPathDrop={!isWebRuntime}
+                  onDraftChange={handleDraftChange}
+                  onModelChange={(value) => {
+                    setModel(value);
+                    setModelSelectionSource('explicit');
+                  }}
+                  onEffortChange={setEffort}
+                  onUpdateContextReferenceMode={(referenceId, mode) => {
+                    handleUpdateContextReferences(
+                      displayContextReferences.map((reference) =>
+                        reference.id === referenceId
+                          ? {
+                              ...reference,
+                              mode,
+                            }
+                          : reference,
+                      ),
+                    );
+                  }}
+                  onRemoveContextReference={(referenceId) => {
+                    handleUpdateContextReferences(
+                      displayContextReferences.filter((reference) => reference.id !== referenceId),
+                    );
+                  }}
+                  onInsertDroppedPaths={handleInsertDroppedPaths}
+                  onAttachFiles={(files) => {
+                    void handleAttachFiles(files);
+                  }}
+                  onRemoveAttachment={handleRemoveAttachment}
+                  onSend={() => {
+                    void handleSend();
+                  }}
+                  onStop={() => {
+                    void handleStop();
+                  }}
+                />
+              ) : null}
             </main>
           ) : null}
 
@@ -1608,6 +1894,16 @@ export default function App() {
               appVersion={appVersion}
               gitSnapshot={gitSnapshot}
               onRequestDiff={handleRequestDiff}
+              onBootstrapHarness={() => {
+                void handleBootstrapHarness();
+              }}
+              onRunHarness={() => {
+                void handleRunHarness();
+              }}
+              canBootstrapHarness={canBootstrapHarness}
+              canRunHarness={canRunHarness}
+              isBootstrappingHarness={isBootstrappingHarness}
+              isRunningHarness={isRunningHarness}
             />
           ) : null}
         </>
@@ -1693,6 +1989,20 @@ export default function App() {
         }}
         onSubmit={(draft) => {
           void handleSubmitAskUserQuestion(draft);
+        }}
+      />
+      <PlanModeDialog
+        open={Boolean(planModeRequest)}
+        mode={planModeRequest?.mode ?? 'enter'}
+        planText={planModeRequest?.planText ?? ''}
+        planFilePath={planModeRequest?.planFilePath}
+        allowedPrompts={planModeRequest?.allowedPrompts ?? []}
+        busy={isRespondingToPlanMode}
+        onCancel={() => {
+          void handleCancelPlanMode();
+        }}
+        onSubmit={(choice, notes) => {
+          void handleRespondToPlanMode(choice, notes);
         }}
       />
     </div>

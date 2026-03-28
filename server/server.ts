@@ -8,6 +8,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import {
   appendMessagesToSession,
+  bootstrapHarnessFromSession,
   closeProject,
   createProject,
   createSession,
@@ -21,6 +22,7 @@ import {
   renameEntity,
   reorderStreamworks,
   setSessionRuntime,
+  updateHarnessState,
   updateSessionContextReferences,
   upsertSessionMessage,
   updateAssistantMessage,
@@ -40,8 +42,10 @@ import { extractBackgroundTaskNotificationContent } from '../electron/background
 import {
   buildClaudeAskUserQuestionToolResultLine,
   buildClaudeControlResponseLine,
+  buildClaudePlanModeToolResultLine,
   buildClaudeUserMessageLine,
   parseClaudeAskUserQuestionControlRequest,
+  parseClaudePlanModeToolInput,
   parseClaudePermissionControlRequest,
   type ClaudePermissionControlRequest,
 } from '../electron/claudeControlMessages.js';
@@ -69,6 +73,7 @@ import {
   getRuntimePaths,
   resolveDefaultWebUserDataPath,
 } from '../backend/runtimePaths.js';
+import { runHarnessOrchestration } from '../backend/harnessOrchestrator.js';
 import { writeTextToSystemClipboard } from '../backend/systemClipboard.js';
 import {
   createSessionStopVersionRegistry,
@@ -88,6 +93,7 @@ import type {
   ClaudeStreamEvent,
   ContextReference,
   GitSnapshot,
+  HarnessSessionState,
   MessageAttachment,
   PendingAttachment,
   ProjectRecord,
@@ -110,6 +116,16 @@ type PendingPermissionRequest = {
   sessionId: string;
   activeRun: ActiveClaudeRun;
   request: ClaudePermissionControlRequest;
+};
+
+type PendingPlanModeRequest = {
+  sessionId: string;
+  activeRun: ActiveClaudeRun;
+  toolUseId: string;
+  toolName: 'EnterPlanMode' | 'ExitPlanMode';
+  plan: string;
+  planFilePath?: string;
+  allowedPrompts: import('../src/data/types.js').PlanModeAllowedPrompt[];
 };
 
 type PendingAskUserQuestion = {
@@ -149,7 +165,9 @@ type PreparedClaudeRun = {
 
 const activeRuns = createActiveClaudeRunRegistry<ClaudeChildProcess>();
 const pendingPermissionRequests = new Map<string, PendingPermissionRequest>();
+const pendingPlanModeRequests = new Map<string, PendingPlanModeRequest>();
 const pendingAskUserQuestions = new Map<string, PendingAskUserQuestion>();
+const sessionPlanExecutionModes = new Map<string, 'auto' | 'manual'>();
 
 configureRuntimePaths({
   mode: 'web',
@@ -443,8 +461,17 @@ const buildPromptWithAttachments = (
   prompt: string,
   attachments: MessageAttachment[],
   referenceContext?: string,
+  instructionPrompt?: string,
 ) => {
   const parts: string[] = [];
+  const hostBehaviorNote =
+    'Host behavior note: some UI mode transitions, including entering or exiting plan mode, may be handled automatically by EasyAIFlow. Do not claim that the user clicked approve, denied a prompt, or interacted manually unless the conversation explicitly contains that user action.';
+
+  parts.push(hostBehaviorNote);
+
+  if (instructionPrompt?.trim()) {
+    parts.push(instructionPrompt.trim());
+  }
 
   if (referenceContext?.trim()) {
     parts.push(referenceContext.trim());
@@ -503,6 +530,7 @@ const buildSessionSummaryContext = (session: SessionRecord) => {
     `Session ID: ${session.id}`,
     `Project: ${session.projectName}`,
     `Streamwork: ${session.dreamName}`,
+    session.harness ? `Harness role: ${session.harness.role}` : '',
     `Updated: ${session.timeLabel}`,
     `Model: ${session.model}`,
     `Messages: ${userCount} user / ${assistantCount} assistant`,
@@ -788,6 +816,57 @@ const registerAskUserQuestion = (
   });
 };
 
+const registerPlanModeRequest = (
+  sessionId: string,
+  activeRun: ActiveClaudeRun,
+  toolUseId: string,
+  payload: NonNullable<ReturnType<typeof parseClaudePlanModeToolInput>>,
+) => {
+  const existing = pendingPlanModeRequests.get(toolUseId);
+  if (existing) {
+    existing.toolName = payload.toolName;
+    existing.plan = payload.plan || existing.plan;
+    existing.planFilePath = payload.planFilePath ?? existing.planFilePath;
+    existing.allowedPrompts =
+      payload.allowedPrompts.length > 0 ? payload.allowedPrompts : existing.allowedPrompts;
+    if (!existing.plan.trim()) {
+      return;
+    }
+    broadcastClaudeEvent({
+      type: 'plan-mode-request',
+      sessionId,
+      requestId: toolUseId,
+      toolName: existing.toolName,
+      plan: existing.plan,
+      planFilePath: existing.planFilePath,
+      allowedPrompts: existing.allowedPrompts,
+    });
+    return;
+  }
+
+  pendingPlanModeRequests.set(toolUseId, {
+    sessionId,
+    activeRun,
+    toolUseId,
+    toolName: payload.toolName,
+    plan: payload.plan,
+    planFilePath: payload.planFilePath,
+    allowedPrompts: payload.allowedPrompts,
+  });
+  if (!payload.plan.trim()) {
+    return;
+  }
+  broadcastClaudeEvent({
+    type: 'plan-mode-request',
+    sessionId,
+    requestId: toolUseId,
+    toolName: payload.toolName,
+    plan: payload.plan,
+    planFilePath: payload.planFilePath,
+    allowedPrompts: payload.allowedPrompts,
+  });
+};
+
 const finalizeToolTraces = async (sessionId: string, state: ClaudeRunState) => {
   for (const trace of state.toolTraces.values()) {
     if (!trace.status || trace.status === 'running' || trace.status === 'streaming') {
@@ -876,12 +955,19 @@ const handleClaudeLine = async (
 
   const permissionControlRequest = parseClaudePermissionControlRequest(parsed);
   if (permissionControlRequest) {
+    if (sessionPlanExecutionModes.get(sessionId) === 'auto' && !permissionControlRequest.sensitive) {
+      const stdin = activeRun.child.stdin;
+      if (isWritableStdin(activeRun.child) && stdin) {
+        stdin.write(`${buildClaudeControlResponseLine(permissionControlRequest, 'allow')}\n`);
+      }
+      return;
+    }
+
     pendingPermissionRequests.set(permissionControlRequest.requestId, {
       sessionId,
       activeRun,
       request: permissionControlRequest,
     });
-
     broadcastClaudeEvent({
       type: 'permission-request',
       sessionId,
@@ -943,6 +1029,10 @@ const handleClaudeLine = async (
       if (questions.length > 0) {
         registerAskUserQuestion(sessionId, activeRun, toolId, questions);
       }
+      const planModePayload = parseClaudePlanModeToolInput(event.content_block.name, event.content_block.input);
+      if (planModePayload) {
+        registerPlanModeRequest(sessionId, activeRun, toolId, planModePayload);
+      }
       const message: ConversationMessage = {
         id: toolId,
         role: 'system',
@@ -980,6 +1070,10 @@ const handleClaudeLine = async (
         const questions = block.name === 'AskUserQuestion' ? parseAskUserQuestions(block.input) : [];
         if (questions.length > 0) {
           registerAskUserQuestion(sessionId, activeRun, toolId, questions);
+        }
+        const planModePayload = parseClaudePlanModeToolInput(block.name, block.input);
+        if (planModePayload) {
+          registerPlanModeRequest(sessionId, activeRun, toolId, planModePayload);
         }
         const existing = state.toolTraces.get(toolId) ?? {
           id: toolId,
@@ -1045,6 +1139,17 @@ const handleClaudeLine = async (
             current.status = (block as { is_error?: boolean }).is_error ? 'error' : 'success';
             await emitTraceMessage(sessionId, current);
           }
+          const pendingPlanModeRequest = pendingPlanModeRequests.get(toolUseId);
+          if (pendingPlanModeRequest) {
+            pendingPlanModeRequests.delete(toolUseId);
+            const current = state.toolTraces.get(toolUseId);
+            if (current) {
+              const resultText = String((block as { content?: string }).content ?? 'Plan mode result returned.');
+              current.content = appendTraceContent(current.content, resultText);
+              current.status = (block as { is_error?: boolean }).is_error ? 'error' : 'success';
+              await emitTraceMessage(sessionId, current);
+            }
+          }
         }
       }
     }
@@ -1085,7 +1190,12 @@ const prepareClaudeRun = async (
 
   const attachments = await saveAttachments(sessionId, pendingAttachments);
   const referenceContext = await buildContextReferencePrompt(sessionId, options?.references);
-  const resolvedPrompt = buildPromptWithAttachments(prompt, attachments, referenceContext);
+  const resolvedPrompt = buildPromptWithAttachments(
+    prompt,
+    attachments,
+    referenceContext,
+    session.instructionPrompt,
+  );
 
   const userMessage: ConversationMessage = {
     id: randomUUID(),
@@ -1108,6 +1218,16 @@ const prepareClaudeRun = async (
   };
 
   const projects = await appendMessagesToSession(sessionId, [userMessage, assistantMessage], prompt, 'Just now');
+  broadcastClaudeEvent({
+    type: 'trace',
+    sessionId,
+    message: userMessage,
+  });
+  broadcastClaudeEvent({
+    type: 'trace',
+    sessionId,
+    message: assistantMessage,
+  });
 
   return {
     sessionId,
@@ -1173,6 +1293,11 @@ const executePreparedClaudeRun = async (
       for (const [requestId, pending] of pendingPermissionRequests) {
         if (pending.activeRun.runId === activeRun.runId) {
           pendingPermissionRequests.delete(requestId);
+        }
+      }
+      for (const [requestId, pending] of pendingPlanModeRequests) {
+        if (pending.activeRun.runId === activeRun.runId) {
+          pendingPlanModeRequests.delete(requestId);
         }
       }
       for (const [toolUseId, pending] of pendingAskUserQuestions) {
@@ -1385,6 +1510,113 @@ const runClaudePrint = async (
   };
 };
 
+const emitHarnessState = async (sessionId: string, state: HarnessSessionState) => {
+  await updateHarnessState(sessionId, () => state);
+  broadcastClaudeEvent({
+    type: 'harness-state',
+    sessionId,
+    state,
+  });
+};
+
+const getAssistantMessageContent = async (sessionId: string, messageId: string) => {
+  const session = await findSession(sessionId);
+  return session?.messages.find((message) => message.id === messageId)?.content ?? '';
+};
+
+const runClaudePrintAndWait = async (
+  sessionId: string,
+  prompt: string,
+  pendingAttachments: PendingAttachment[] = [],
+  fallbackSession?: SessionSummary,
+  options?: ClaudePrintOptions,
+) => {
+  const queued = hasSessionRunQueued(sessionRunQueue, sessionId);
+  const scheduledRun = enqueueSessionRun(sessionRunQueue, sessionId);
+  try {
+    const prepared = await prepareClaudeRun(
+      sessionId,
+      prompt,
+      pendingAttachments,
+      fallbackSession,
+      options,
+      queued ? 'queued' : 'streaming',
+    );
+    await scheduledRun.whenReady;
+    if (readSessionStopVersion(sessionStopVersions, sessionId) !== prepared.stopVersion) {
+      const stopped = await stopAssistantMessage(prepared.sessionId, prepared.assistantMessageId);
+      if (stopped) {
+        broadcastClaudeEvent({
+          type: 'status',
+          sessionId: prepared.sessionId,
+          messageId: prepared.assistantMessageId,
+          status: stopped.status,
+          title: stopped.title,
+          content: stopped.content,
+        });
+      }
+      scheduledRun.release();
+      return {
+        projects: await getProjects(),
+        content: await getAssistantMessageContent(sessionId, prepared.assistantMessageId),
+      };
+    }
+
+    await markPreparedClaudeRunStarted(prepared);
+    await executePreparedClaudeRun(prepared, scheduledRun.release);
+
+    return {
+      projects: await getProjects(),
+      content: await getAssistantMessageContent(sessionId, prepared.assistantMessageId),
+    };
+  } catch (error) {
+    scheduledRun.release();
+    throw error;
+  }
+};
+
+const runHarnessForSession = async (
+  sessionId: string,
+  options?: {
+    maxSprints?: number;
+    maxContractRounds?: number;
+    maxImplementationRounds?: number;
+    model?: string;
+    effort?: 'low' | 'medium' | 'high' | 'max';
+  },
+) => {
+  const result = await runHarnessOrchestration({
+    entrySessionId: sessionId,
+    options,
+    bootstrapHarness: bootstrapHarnessFromSession,
+    findSession,
+    onProgress: async (state) => {
+      await emitHarnessState(sessionId, state);
+    },
+    runRoleTurn: async ({ sessionId: roleSessionId, prompt, model, effort }) => {
+      const session = await findSession(roleSessionId);
+      if (!session) {
+        throw new Error('Harness session not found.');
+      }
+
+      const turn = await runClaudePrintAndWait(roleSessionId, prompt, [], session, {
+        references: session.contextReferences ?? [],
+        model,
+        effort,
+      });
+
+      return {
+        content: turn.content,
+      };
+    },
+  });
+
+  return {
+    ...result,
+    projects: await getProjects(),
+  };
+};
+
 const runBtwPrompt = async (
   prompt: string,
   cwd: string,
@@ -1441,16 +1673,28 @@ const runBtwPrompt = async (
 
         const permissionControlRequest = parseClaudePermissionControlRequest(parsed);
         if (permissionControlRequest) {
+          if (
+            options?.sessionId &&
+            sessionPlanExecutionModes.get(options.sessionId) === 'auto' &&
+            !permissionControlRequest.sensitive
+          ) {
+            const stdin = child.stdin;
+            if (isWritableStdin(child) && stdin) {
+              stdin.write(`${buildClaudeControlResponseLine(permissionControlRequest, 'allow')}\n`);
+            }
+            return;
+          }
+
           pendingPermissionRequests.set(permissionControlRequest.requestId, {
-            sessionId: options?.sessionId ?? '',
-            activeRun: {
-              runId: randomUUID(),
               sessionId: options?.sessionId ?? '',
-              child,
-              projectRoot: cwd,
-            },
-            request: permissionControlRequest,
-          });
+              activeRun: {
+                runId: randomUUID(),
+                sessionId: options?.sessionId ?? '',
+                child,
+                projectRoot: cwd,
+              },
+              request: permissionControlRequest,
+            });
 
           if (options?.sessionId) {
             broadcastClaudeEvent({
@@ -1490,26 +1734,40 @@ const runBtwPrompt = async (
           }
 
           for (const block of message?.content ?? []) {
-            if (block.type !== 'tool_use' || block.name !== 'AskUserQuestion' || !options?.sessionId) {
+            if (block.type !== 'tool_use' || !options?.sessionId) {
               continue;
             }
 
-            const questions = parseAskUserQuestions(block.input);
-            if (questions.length === 0) {
+            const questions = block.name === 'AskUserQuestion' ? parseAskUserQuestions(block.input) : [];
+            if (questions.length > 0) {
+              registerAskUserQuestion(
+                options.sessionId,
+                {
+                  runId: randomUUID(),
+                  sessionId: options.sessionId,
+                  child,
+                  projectRoot: cwd,
+                },
+                String(block.id ?? randomUUID()),
+                questions,
+              );
               continue;
             }
 
-            registerAskUserQuestion(
-              options.sessionId,
-              {
-                runId: randomUUID(),
-                sessionId: options.sessionId,
-                child,
-                projectRoot: cwd,
-              },
-              String(block.id ?? randomUUID()),
-              questions,
-            );
+            const planModePayload = parseClaudePlanModeToolInput(block.name, block.input);
+            if (planModePayload) {
+              registerPlanModeRequest(
+                options.sessionId,
+                {
+                  runId: randomUUID(),
+                  sessionId: options.sessionId,
+                  child,
+                  projectRoot: cwd,
+                },
+                String(block.id ?? randomUUID()),
+                planModePayload,
+              );
+            }
           }
         }
 
@@ -1544,6 +1802,11 @@ const runBtwPrompt = async (
           for (const [requestId, pending] of pendingPermissionRequests) {
             if (pending.activeRun.child === child) {
               pendingPermissionRequests.delete(requestId);
+            }
+          }
+          for (const [requestId, pending] of pendingPlanModeRequests) {
+            if (pending.activeRun.child === child) {
+              pendingPlanModeRequests.delete(requestId);
             }
           }
           for (const [toolUseId, pending] of pendingAskUserQuestions) {
@@ -1589,6 +1852,11 @@ const stopSessions = (sessionIds: string[]) => {
     for (const [requestId, pending] of pendingPermissionRequests) {
       if (pending.sessionId === sessionId) {
         pendingPermissionRequests.delete(requestId);
+      }
+    }
+    for (const [requestId, pending] of pendingPlanModeRequests) {
+      if (pending.sessionId === sessionId) {
+        pendingPlanModeRequests.delete(requestId);
       }
     }
     for (const [toolUseId, pending] of pendingAskUserQuestions) {
@@ -1668,6 +1936,40 @@ const rpcHandlers = {
 
     return { mode: 'missing' as const };
   },
+  respondToPlanModeRequest: async (payload: {
+    requestId: string;
+    behavior: 'allow' | 'deny';
+    choice?: 'clear-auto' | 'auto' | 'manual' | 'revise';
+    notes?: string;
+  }) => {
+    const pending = pendingPlanModeRequests.get(payload.requestId);
+    if (!pending) {
+      return { mode: 'missing' as const };
+    }
+
+    if (payload.behavior === 'allow') {
+      sessionPlanExecutionModes.set(
+        pending.sessionId,
+        payload.choice === 'manual' ? 'manual' : 'auto',
+      );
+    }
+    const stdin = pending.activeRun.child.stdin;
+    if (stdin && !pending.activeRun.child.killed && !stdin.destroyed && !stdin.writableEnded) {
+      stdin.write(
+        `${buildClaudePlanModeToolResultLine({
+          toolUseId: pending.toolUseId,
+          approved: payload.behavior === 'allow',
+          plan: pending.plan,
+          planFilePath: pending.planFilePath,
+          notes: payload.choice === 'revise' ? payload.notes : undefined,
+        })}\n`,
+      );
+      return { mode: 'interactive' as const };
+    }
+
+    pendingPlanModeRequests.delete(payload.requestId);
+    return { mode: 'missing' as const };
+  },
   respondToAskUserQuestion: async (payload: {
     toolUseId: string;
     answers: Record<string, string>;
@@ -1723,6 +2025,15 @@ const rpcHandlers = {
     name?: string;
     includeStreamworkSummary?: boolean;
   }) => createSessionInStreamwork(payload.streamworkId, payload.name, Boolean(payload.includeStreamworkSummary)),
+  bootstrapHarness: async (payload: { sessionId: string }) => bootstrapHarnessFromSession(payload.sessionId),
+  runHarness: async (payload: {
+    sessionId: string;
+    maxSprints?: number;
+    maxContractRounds?: number;
+    maxImplementationRounds?: number;
+    model?: string;
+    effort?: 'low' | 'medium' | 'high' | 'max';
+  }) => runHarnessForSession(payload.sessionId, payload),
   deleteSession: async (payload: { sessionId: string }) => {
     const result = await deleteSession(payload.sessionId);
     stopSessions(result.deletedSessionIds);

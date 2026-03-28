@@ -9,6 +9,41 @@ export type LinkedGroup = {
   workspace: string;
 };
 
+export type HarnessRole = 'planner' | 'generator' | 'evaluator';
+export type PlanModeAllowedPrompt = {
+  tool: string;
+  prompt: string;
+};
+
+export type HarnessMetadata = {
+  role: HarnessRole;
+  rootSessionId: string;
+  artifactDir: string;
+};
+
+export type SessionKind = 'standard' | 'harness' | 'harness_role';
+
+export type HarnessLifecycleStatus = 'ready' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+export type HarnessSessionState = {
+  plannerSessionId: string;
+  generatorSessionId: string;
+  evaluatorSessionId: string;
+  artifactDir: string;
+  status: HarnessLifecycleStatus;
+  currentOwner?: HarnessRole;
+  currentStage: string;
+  currentSprint: number;
+  currentRound: number;
+  completedSprints: number;
+  maxSprints: number;
+  completedTurns: number;
+  totalTurns: number;
+  lastDecision: string;
+  summary?: string;
+  updatedAt?: number;
+};
+
 export type TokenUsage = {
   contextWindow: number;
   used: number;
@@ -76,6 +111,11 @@ export type SessionSummary = {
   dreamId: string;
   dreamName: string;
   claudeSessionId?: string;
+  sessionKind?: SessionKind;
+  hidden?: boolean;
+  instructionPrompt?: string;
+  harness?: HarnessMetadata;
+  harnessState?: HarnessSessionState;
   groups: LinkedGroup[];
   contextReferences?: ContextReference[];
   tokenUsage: TokenUsage;
@@ -133,6 +173,35 @@ export type GitSnapshot = BranchSnapshot & {
 export type SessionCreateResult = {
   projects: ProjectRecord[];
   session: SessionRecord;
+};
+
+export type HarnessBootstrapResult = {
+  projects: ProjectRecord[];
+  rootSessionId: string;
+  plannerSessionId: string;
+  generatorSessionId: string;
+  evaluatorSessionId: string;
+  artifactDir: string;
+};
+
+export type HarnessRunOptions = {
+  maxSprints?: number;
+  maxContractRounds?: number;
+  maxImplementationRounds?: number;
+  model?: string;
+  effort?: 'low' | 'medium' | 'high' | 'max';
+};
+
+export type HarnessRunResult = {
+  projects: ProjectRecord[];
+  rootSessionId: string;
+  plannerSessionId: string;
+  generatorSessionId: string;
+  evaluatorSessionId: string;
+  artifactDir: string;
+  status: 'completed' | 'failed';
+  completedSprints: number;
+  lastDecision: string;
 };
 
 export type ProjectCreateResult = {
@@ -204,6 +273,15 @@ export type ClaudeStreamEvent =
       sensitive: boolean;
     }
   | {
+      type: 'plan-mode-request';
+      sessionId: string;
+      requestId: string;
+      toolName: 'EnterPlanMode' | 'ExitPlanMode';
+      plan: string;
+      planFilePath?: string;
+      allowedPrompts: PlanModeAllowedPrompt[];
+    }
+  | {
       type: 'ask-user-question';
       sessionId: string;
       toolUseId: string;
@@ -218,10 +296,43 @@ export type ClaudeStreamEvent =
       tokenUsage?: TokenUsage;
     }
   | {
+      type: 'harness-state';
+      sessionId: string;
+      state: HarnessSessionState;
+    }
+  | {
       type: 'error';
       sessionId: string;
       messageId: string;
       error: string;
+    };
+
+export type CliInteraction =
+  | {
+      kind: 'permission';
+      sessionId: string;
+      requestId: string;
+      toolName: string;
+      targetPath?: string;
+      command?: string;
+      description?: string;
+      decisionReason?: string;
+      sensitive: boolean;
+    }
+  | {
+      kind: 'plan';
+      sessionId: string;
+      requestId: string;
+      toolName: 'EnterPlanMode' | 'ExitPlanMode';
+      plan: string;
+      planFilePath?: string;
+      allowedPrompts: PlanModeAllowedPrompt[];
+    }
+  | {
+      kind: 'ask';
+      sessionId: string;
+      toolUseId: string;
+      questions: AskUserQuestion[];
     };
 
 export type PendingAttachment = {

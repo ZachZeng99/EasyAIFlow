@@ -23,6 +23,13 @@ contextBridge.exposeInMainWorld('easyAIFlow', {
     ipcRenderer.invoke('permissions:grant-path', payload),
   respondToPermissionRequest: (payload: { requestId: string; behavior: 'allow' | 'deny' }) =>
     ipcRenderer.invoke('permissions:respond', payload),
+  respondToPlanModeRequest: (payload: {
+    requestId: string;
+    behavior: 'allow' | 'deny';
+    choice?: 'clear-auto' | 'auto' | 'manual' | 'revise';
+    notes?: string;
+  }) =>
+    ipcRenderer.invoke('plan-mode:respond', payload),
   respondToAskUserQuestion: (payload: {
     toolUseId: string;
     answers: Record<string, string>;
@@ -41,6 +48,15 @@ contextBridge.exposeInMainWorld('easyAIFlow', {
     includeStreamworkSummary?: boolean;
   }) =>
     ipcRenderer.invoke('sessions:create-in-streamwork', payload),
+  bootstrapHarness: (payload: { sessionId: string }) => ipcRenderer.invoke('sessions:bootstrap-harness', payload),
+  runHarness: (payload: {
+    sessionId: string;
+    maxSprints?: number;
+    maxContractRounds?: number;
+    maxImplementationRounds?: number;
+    model?: string;
+    effort?: 'low' | 'medium' | 'high' | 'max';
+  }) => ipcRenderer.invoke('sessions:run-harness', payload),
   createSession: (payload?: { sourceSessionId?: string; includeStreamworkSummary?: boolean }) =>
     ipcRenderer.invoke('sessions:create', payload),
   deleteSession: (payload: { sessionId: string }) => ipcRenderer.invoke('sessions:delete', payload),
