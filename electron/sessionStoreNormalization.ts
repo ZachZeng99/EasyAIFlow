@@ -23,4 +23,8 @@ export const normalizeProjectsFromPersistence = (projects: ProjectRecord[]) =>
   mapProjects(projects, (session) => ({
     ...session,
     messages: recoverStaleSessionMessages(session.messages),
+    harnessState:
+      session.harnessState?.status === 'running'
+        ? { ...session.harnessState, status: 'failed' as const }
+        : session.harnessState,
   }));
