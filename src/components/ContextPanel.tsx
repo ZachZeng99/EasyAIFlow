@@ -53,10 +53,15 @@ export function ContextPanel({
     }));
   }, [messages]);
 
+  const hasSessionChanges = sessionChangedFiles.length > 0;
+
   useEffect(() => {
-    setSelectedFilePath(sessionChangedFiles[0]?.filePath ?? '');
+    const firstPath = hasSessionChanges
+      ? sessionChangedFiles[0]?.filePath
+      : gitSnapshot.changedFiles[0]?.path;
+    setSelectedFilePath(firstPath ?? '');
     setDiffPayload(null);
-  }, [sessionChangedFiles, session.id]);
+  }, [sessionChangedFiles, gitSnapshot.changedFiles, hasSessionChanges, session.id]);
 
   useEffect(() => {
     if (!selectedFilePath) {
@@ -111,10 +116,10 @@ export function ContextPanel({
       </div>
 
       <div className="context-block">
-        <p className="section-kicker">session changes</p>
+        <p className="section-kicker">{hasSessionChanges ? 'session changes' : 'changed content'}</p>
         <h2>当前改动</h2>
         <div className="changed-file-list">
-          {sessionChangedFiles.length > 0 ? (
+          {hasSessionChanges ? (
             sessionChangedFiles.map((file) => (
               <button
                 key={file.filePath}
@@ -129,10 +134,27 @@ export function ContextPanel({
                 {file.count > 1 ? <p>{file.count} operations</p> : null}
               </button>
             ))
+          ) : gitSnapshot.changedFiles.length > 0 ? (
+            gitSnapshot.changedFiles.map((file) => (
+              <button
+                key={file.path}
+                type="button"
+                className={`changed-file-card diff-trigger${selectedFilePath === file.path ? ' selected' : ''}`}
+                onClick={() => setSelectedFilePath(file.path)}
+              >
+                <div className="changed-file-head">
+                  <strong>{file.path}</strong>
+                  <span>{file.status}</span>
+                </div>
+                <p>
+                  +{file.additions} / -{file.deletions}
+                </p>
+              </button>
+            ))
           ) : (
             <div className="changed-file-card empty">
-              <strong>本次会话暂无文件改动</strong>
-              <p>Claude 尚未在此会话中修改文件。</p>
+              <strong>没有未提交改动</strong>
+              <p>当前工作树是干净的。</p>
             </div>
           )}
         </div>
