@@ -274,15 +274,6 @@ export type ClaudeStreamEvent =
       sensitive: boolean;
     }
   | {
-      type: 'plan-mode-request';
-      sessionId: string;
-      requestId: string;
-      toolName: 'EnterPlanMode' | 'ExitPlanMode';
-      plan: string;
-      planFilePath?: string;
-      allowedPrompts: PlanModeAllowedPrompt[];
-    }
-  | {
       type: 'ask-user-question';
       sessionId: string;
       toolUseId: string;

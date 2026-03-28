@@ -1,37 +1,31 @@
 import { useState } from 'react';
 
-import type { PlanModeAllowedPrompt } from '../data/types';
-
-export type PlanModeDialogChoice = 'clear-auto' | 'auto' | 'manual' | 'revise';
+import type { PlanModeRequest, PlanModeResponsePayload, PlanModeApprovalMode } from '../data/planMode';
 
 type PlanModeDialogProps = {
   open: boolean;
-  mode: 'enter' | 'exit';
-  planText: string;
-  planFilePath?: string;
-  allowedPrompts: PlanModeAllowedPrompt[];
+  request: PlanModeRequest | null;
   busy: boolean;
-  onCancel: () => void;
-  onSubmit: (choice: PlanModeDialogChoice, notes?: string) => void;
+  onSubmit: (payload: PlanModeResponsePayload) => void;
 };
 
 const options: Array<{
-  id: PlanModeDialogChoice;
+  id: PlanModeApprovalMode;
   title: string;
   description: string;
 }> = [
   {
-    id: 'clear-auto',
+    id: 'approve_clear_context_accept_edits',
     title: 'Yes, clear context and auto-accept edits',
     description: 'Continue with a fresh context window and proceed automatically.',
   },
   {
-    id: 'auto',
+    id: 'approve_accept_edits',
     title: 'Yes, auto-accept edits',
     description: 'Continue with the current plan and let Claude proceed directly.',
   },
   {
-    id: 'manual',
+    id: 'approve_manual',
     title: 'Yes, manually approve edits',
     description: 'Continue with the current plan but keep later file edits gated by approval.',
   },
@@ -44,25 +38,22 @@ const options: Array<{
 
 export function PlanModeDialog({
   open,
-  mode,
-  planText,
-  planFilePath,
-  allowedPrompts,
+  request,
   busy,
-  onCancel,
   onSubmit,
 }: PlanModeDialogProps) {
-  const [choice, setChoice] = useState<PlanModeDialogChoice>('auto');
+  const [mode, setMode] = useState<PlanModeApprovalMode>('approve_accept_edits');
   const [notes, setNotes] = useState('');
 
-  if (!open) {
+  if (!open || !request) {
     return null;
   }
 
-  const requiresNotes = choice === 'revise';
+  const requiresNotes = mode === 'revise';
+  const isEnter = request.toolName === 'EnterPlanMode';
 
   return (
-    <div className="dialog-backdrop" role="presentation" onClick={onCancel}>
+    <div className="dialog-backdrop" role="presentation" onClick={() => onSubmit({ mode: 'revise', notes: 'User cancelled the plan review dialog.' })}>
       <section
         className="dialog-card plan-mode-dialog"
         role="dialog"
@@ -71,20 +62,20 @@ export function PlanModeDialog({
         onClick={(event) => event.stopPropagation()}
       >
         <div className="dialog-head">
-          <h2>{mode === 'enter' ? 'Plan Mode Proposal' : 'Ready To Exit Plan Mode'}</h2>
+          <h2>{isEnter ? 'Plan Mode Proposal' : 'Ready To Exit Plan Mode'}</h2>
         </div>
         <div className="dialog-body plan-mode-body">
           <p className="dialog-description">
             Claude has prepared a plan. Review it below and choose how to proceed.
           </p>
-          {planFilePath ? (
-            <p className="dialog-description">Plan file: <code>{planFilePath}</code></p>
+          {request.planFilePath ? (
+            <p className="dialog-description">Plan file: <code>{request.planFilePath}</code></p>
           ) : null}
-          <pre className="message-body plan-mode-preview">{planText || 'Claude is preparing a plan preview.'}</pre>
-          {allowedPrompts.length > 0 ? (
+          <pre className="message-body plan-mode-preview">{request.plan || 'Claude is preparing a plan preview.'}</pre>
+          {request.allowedPrompts.length > 0 ? (
             <div className="plan-mode-allowed-list">
               <span>Allowed prompts in this execution pass</span>
-              {allowedPrompts.map((item, index) => (
+              {request.allowedPrompts.map((item, index) => (
                 <code key={`${item.tool}-${index}`}>
                   {item.tool}: {item.prompt}
                 </code>
@@ -93,12 +84,12 @@ export function PlanModeDialog({
           ) : null}
           <div className="plan-mode-options">
             {options.map((option) => (
-              <label key={option.id} className={`plan-mode-option${choice === option.id ? ' active' : ''}`}>
+              <label key={option.id} className={`plan-mode-option${mode === option.id ? ' active' : ''}`}>
                 <input
                   type="radio"
                   name="plan-mode-choice"
-                  checked={choice === option.id}
-                  onChange={() => setChoice(option.id)}
+                  checked={mode === option.id}
+                  onChange={() => setMode(option.id)}
                 />
                 <div>
                   <strong>{option.title}</strong>
@@ -120,13 +111,17 @@ export function PlanModeDialog({
           ) : null}
         </div>
         <div className="dialog-actions">
-          <button type="button" className="dialog-button secondary" onClick={onCancel}>
+          <button
+            type="button"
+            className="dialog-button secondary"
+            onClick={() => onSubmit({ mode: 'revise', notes: 'User cancelled the plan review dialog.' })}
+          >
             Cancel
           </button>
           <button
             type="button"
             className="dialog-button primary"
-            onClick={() => onSubmit(choice, notes)}
+            onClick={() => onSubmit({ mode, notes: notes.trim() || undefined })}
             disabled={busy || (requiresNotes && !notes.trim())}
           >
             {busy ? 'Applying...' : requiresNotes ? 'Send Feedback' : 'Continue'}

@@ -172,6 +172,7 @@ export const parseClaudeAskUserQuestionControlRequest = (
 export const buildClaudeControlResponseLine = (
   request: Pick<ClaudePermissionControlRequest, 'requestId' | 'rawInput'>,
   behavior: ClaudePermissionBehavior,
+  denyMessage?: string,
 ) =>
   JSON.stringify({
     type: 'control_response',
@@ -186,7 +187,7 @@ export const buildClaudeControlResponseLine = (
             }
           : {
               behavior: 'deny',
-              message: 'User denied this action in EasyAIFlow.',
+              message: denyMessage ?? 'User denied this action in EasyAIFlow.',
             },
     },
   });
