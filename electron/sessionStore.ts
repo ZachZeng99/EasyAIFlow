@@ -1591,17 +1591,19 @@ export const bootstrapHarnessFromSession = async (sessionId: string): Promise<Ha
   const artifactDir = buildHarnessArtifactDir(rootSession.workspace, rootSessionId);
   await ensureHarnessArtifacts(rootSession, artifactDir);
 
-  const planner = ensureHarnessSession(sourceProject, sourceStreamwork, rootSession, 'planner', artifactDir);
+  // Root session doubles as the planner — it already holds the full conversation,
+  // so there is no need for a separate planner session or a self-referencing context reference.
   const generator = ensureHarnessSession(sourceProject, sourceStreamwork, rootSession, 'generator', artifactDir);
   const evaluator = ensureHarnessSession(sourceProject, sourceStreamwork, rootSession, 'evaluator', artifactDir);
 
   rootSession.sessionKind = 'harness';
   rootSession.hidden = false;
+  rootSession.instructionPrompt = buildHarnessInstructionPrompt('planner', artifactDir, rootSession.workspace);
   rootSession.preview = 'Harness bootstrapped. Ready to run.';
   rootSession.timeLabel = 'Just now';
   rootSession.updatedAt = Date.now();
   rootSession.harnessState = {
-    plannerSessionId: planner.id,
+    plannerSessionId: rootSession.id,
     generatorSessionId: generator.id,
     evaluatorSessionId: evaluator.id,
     artifactDir,
@@ -1624,7 +1626,7 @@ export const bootstrapHarnessFromSession = async (sessionId: string): Promise<Ha
   return {
     projects: cloneVisibleProjects(state.projects),
     rootSessionId: rootSession.id,
-    plannerSessionId: planner.id,
+    plannerSessionId: rootSession.id,
     generatorSessionId: generator.id,
     evaluatorSessionId: evaluator.id,
     artifactDir,
@@ -1817,6 +1819,15 @@ export const renameEntity = async (
           session.title = nextName;
           if (session.claudeSessionId) {
             nativeRenameTasks.push(renameNativeClaudeSession(session.workspace, session.claudeSessionId, nextName));
+          }
+          // Sync harness role session titles when the root harness session is renamed.
+          if ((session as SessionRecord).sessionKind === 'harness') {
+            dream.sessions.forEach((sibling) => {
+              const role = (sibling as SessionRecord).harness;
+              if (role?.rootSessionId === id) {
+                sibling.title = `[${role.role}] ${nextName}`;
+              }
+            });
           }
         }
         if (kind === 'project' && session.projectId === project.id) {

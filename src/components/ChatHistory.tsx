@@ -139,7 +139,7 @@ export function ChatHistory({
         ...project,
         dreams: sortDreamsWithTemporaryFirst(project.dreams).map((dream) => ({
           ...dream,
-          sessions: sortSessionsByLatest(dream.sessions.filter((session) => !(session as SessionSummary).hidden)),
+          sessions: sortSessionsByLatest(dream.sessions.filter((session) => !(session as SessionSummary).hidden && (session as SessionSummary).sessionKind !== 'harness_role')),
         })),
       }));
     }
@@ -154,7 +154,7 @@ export function ChatHistory({
             const dreamMatch = matches(dream.name);
             const sessions = dream.sessions.filter(
               (session) =>
-                !(session as SessionSummary).hidden &&
+                !(session as SessionSummary).hidden && (session as SessionSummary).sessionKind !== 'harness_role' &&
                 (projectMatch ||
                   dreamMatch ||
                   matches(session.title) ||
@@ -170,7 +170,7 @@ export function ChatHistory({
               ...dream,
               sessions: sortSessionsByLatest(
                 (projectMatch || dreamMatch ? dream.sessions : sessions).filter(
-                  (session) => !(session as SessionSummary).hidden,
+                  (session) => !(session as SessionSummary).hidden && (session as SessionSummary).sessionKind !== 'harness_role',
                 ),
               ),
             };
@@ -186,7 +186,7 @@ export function ChatHistory({
           dreams: sortDreamsWithTemporaryFirst(
             (projectMatch ? project.dreams : dreams).map((dream) => ({
               ...dream,
-              sessions: dream.sessions.filter((session) => !(session as SessionSummary).hidden),
+              sessions: dream.sessions.filter((session) => !(session as SessionSummary).hidden && (session as SessionSummary).sessionKind !== 'harness_role'),
             })),
           ),
         };

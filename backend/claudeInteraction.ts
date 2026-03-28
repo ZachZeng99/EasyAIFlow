@@ -28,6 +28,7 @@ import {
   hydratePlanModeRequest,
   buildSessionSummaryContext,
   buildSessionTranscriptContext,
+  getConversationMessages,
   getGitSnapshot as getGitSnapshotHelper,
 } from './claudeHelpers.js';
 import {
@@ -266,10 +267,34 @@ export const buildContextReferencePrompt = async (sessionId: string, overrideRef
         return '';
       }
 
-      const detail =
+      const buildDetail = (session: SessionRecord) =>
         reference.mode === 'full'
-          ? resolvedSessions.map((session) => buildSessionTranscriptContext(session)).join('\n\n')
-          : resolvedSessions.map((session) => buildSessionSummaryContext(session)).join('\n\n');
+          ? buildSessionTranscriptContext(session)
+          : buildSessionSummaryContext(session);
+
+      const detail = resolvedSessions.map(buildDetail).join('\n\n');
+
+      // When the referenced session is a harness, also include its role sessions.
+      const harnessRoleDetails: string[] = [];
+      for (const resolved of resolvedSessions) {
+        if (resolved.sessionKind !== 'harness' || !resolved.harnessState) {
+          continue;
+        }
+        const roleIds = [
+          resolved.harnessState.generatorSessionId,
+          resolved.harnessState.evaluatorSessionId,
+        ];
+        // plannerSessionId === root session id, already included above
+        for (const roleId of roleIds) {
+          if (!roleId || roleId === resolved.id || roleId === currentSession.id) {
+            continue;
+          }
+          const roleSession = sessionById.get(roleId);
+          if (roleSession && getConversationMessages(roleSession).length > 0) {
+            harnessRoleDetails.push(buildDetail(roleSession));
+          }
+        }
+      }
 
       const title =
         reference.kind === 'session'
@@ -281,15 +306,17 @@ export const buildContextReferencePrompt = async (sessionId: string, overrideRef
           ? reference.label || resolvedSessions[0]?.title || 'Session'
           : reference.label || `${resolvedSessions[0]?.dreamName ?? 'Streamwork'} history`;
 
-      return truncateText(
-        [
-          `## ${title}`,
-          `Label: ${label}`,
-          `Entries: ${resolvedSessions.length}`,
-          detail,
-        ].join('\n'),
-        reference.mode === 'full' ? 36000 : 22000,
-      );
+      const parts = [
+        `## ${title}`,
+        `Label: ${label}`,
+        `Entries: ${resolvedSessions.length}`,
+        detail,
+      ];
+      if (harnessRoleDetails.length > 0) {
+        parts.push(`### Harness role sessions`, ...harnessRoleDetails);
+      }
+
+      return truncateText(parts.join('\n'), reference.mode === 'full' ? 36000 : 22000);
     })
     .filter(Boolean);
 
@@ -754,9 +781,21 @@ export const handleClaudeLine = async (
     const message = parsed.message as {
       model?: string;
       content?: Array<{ type?: string; text?: string; name?: string; input?: unknown }>;
+      usage?: {
+        input_tokens?: number;
+        cache_read_input_tokens?: number;
+        cache_creation_input_tokens?: number;
+      };
     };
     if (typeof message?.model === 'string' && message.model.trim()) {
       runState.model = message.model.trim();
+    }
+    if (message?.usage) {
+      runState.lastAssistantUsage = {
+        input_tokens: message.usage.input_tokens ?? 0,
+        cache_read_input_tokens: message.usage.cache_read_input_tokens ?? 0,
+        cache_creation_input_tokens: message.usage.cache_creation_input_tokens ?? 0,
+      };
     }
     const finalText = message?.content
       ?.filter((block) => block.type === 'text' && typeof block.text === 'string')
@@ -838,7 +877,7 @@ export const handleClaudeLine = async (
 
   if (parsed.type === 'result') {
     runState.receivedResult = true;
-    runState.tokenUsage = mapTokenUsage(parsed);
+    runState.tokenUsage = mapTokenUsage(parsed, runState.lastAssistantUsage);
     try {
       await completeAssistantRun(ctx, sessionId, assistantMessageId, runState, String(parsed.result ?? ''));
     } finally {
@@ -1273,36 +1312,59 @@ export const runHarnessForSession = async (
     effort?: 'low' | 'medium' | 'high' | 'max';
   },
 ) => {
-  const result = await runHarnessOrchestration({
-    entrySessionId: sessionId,
-    options,
-    bootstrapHarness: bootstrapHarnessFromSession,
-    findSession,
-    onProgress: async (harnessState) => {
-      await emitHarnessState(ctx, sessionId, harnessState);
-    },
-    runRoleTurn: async ({ sessionId: roleSessionId, prompt, model, effort }) => {
-      const session = await findSession(roleSessionId);
-      if (!session) {
-        throw new Error('Harness session not found.');
-      }
+  try {
+    const result = await runHarnessOrchestration({
+      entrySessionId: sessionId,
+      options,
+      bootstrapHarness: bootstrapHarnessFromSession,
+      findSession,
+      onProgress: async (harnessState) => {
+        await emitHarnessState(ctx, sessionId, harnessState);
+      },
+      runRoleTurn: async ({ sessionId: roleSessionId, prompt, model, effort }) => {
+        const session = await findSession(roleSessionId);
+        if (!session) {
+          throw new Error('Harness session not found.');
+        }
 
-      const turn = await runClaudePrintAndWait(ctx, state, roleSessionId, prompt, [], session, {
-        references: session.contextReferences ?? [],
-        model,
-        effort,
-      });
+        const turn = await runClaudePrintAndWait(ctx, state, roleSessionId, prompt, [], session, {
+          references: session.contextReferences ?? [],
+          model,
+          effort,
+        });
 
-      return {
-        content: turn.content,
-      };
-    },
-  });
+        return {
+          content: turn.content,
+        };
+      },
+    });
 
-  return {
-    ...result,
-    projects: await getProjects(),
-  };
+    return {
+      ...result,
+      projects: await getProjects(),
+    };
+  } catch (error) {
+    // Reset harness state to failed so the UI is not stuck at 'running'.
+    const errorMessage = error instanceof Error ? error.message : 'Harness orchestration failed.';
+    await emitHarnessState(ctx, sessionId, {
+      plannerSessionId: '',
+      generatorSessionId: '',
+      evaluatorSessionId: '',
+      artifactDir: '',
+      status: 'failed',
+      currentStage: 'error',
+      currentSprint: 0,
+      currentRound: 0,
+      completedSprints: 0,
+      maxSprints: 0,
+      completedTurns: 0,
+      totalTurns: 0,
+      lastDecision: 'ERROR',
+      summary: errorMessage,
+      updatedAt: Date.now(),
+    });
+    throw error;
+  }
 };
 
 export const runBtwPrompt = async (
@@ -1345,6 +1407,7 @@ export const runBtwPrompt = async (
       let claudeSessionId = options?.claudeSessionId;
       let model = options?.model;
       let tokenUsage: TokenUsage | undefined;
+      let btwLastAssistantUsage: import('./claudeInteractionState.js').PerCallUsage | undefined;
 
       const processLine = (line: string) => {
         if (!line.trim()) {
@@ -1418,9 +1481,21 @@ export const runBtwPrompt = async (
           const message = parsed.message as {
             model?: string;
             content?: Array<{ type?: string; text?: string; name?: string; id?: string; input?: unknown }>;
+            usage?: {
+              input_tokens?: number;
+              cache_read_input_tokens?: number;
+              cache_creation_input_tokens?: number;
+            };
           };
           if (typeof message?.model === 'string' && message.model.trim()) {
             model = message.model.trim();
+          }
+          if (message?.usage) {
+            btwLastAssistantUsage = {
+              input_tokens: message.usage.input_tokens ?? 0,
+              cache_read_input_tokens: message.usage.cache_read_input_tokens ?? 0,
+              cache_creation_input_tokens: message.usage.cache_creation_input_tokens ?? 0,
+            };
           }
           const text = message?.content
             ?.filter((block) => block.type === 'text' && typeof block.text === 'string')
@@ -1483,7 +1558,7 @@ export const runBtwPrompt = async (
         }
 
         if (parsed.type === 'result') {
-          tokenUsage = mapTokenUsage(parsed);
+          tokenUsage = mapTokenUsage(parsed, btwLastAssistantUsage);
           if (!content) {
             content = String(parsed.result ?? '');
           }

@@ -6,6 +6,8 @@
 
 ![EasyAIFlow Screenshot](./screenshot.png)
 
+![Harness Multi-Agent Orchestration / Harness 多智能体编排界面](./screenshot-harness.png)
+
 ---
 
 ## 目录 / Table of Contents
