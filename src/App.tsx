@@ -43,7 +43,7 @@ const flattenSessions = (projects: ProjectRecord[]) =>
   );
 
 const flattenVisibleSessions = (projects: ProjectRecord[]) =>
-  flattenSessions(projects).filter((session) => !session.hidden);
+  flattenSessions(projects).filter((session) => !session.hidden && session.sessionKind !== 'harness_role');
 
 const parsePlanModeTracePayload = (message: SessionRecord['messages'][number]): PlanModeRequest | null => {
   if (
@@ -842,6 +842,11 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedSession) {
+      return;
+    }
+
+    // Harness sessions manage their own orchestration flow; skip stale plan trace detection.
+    if (selectedSession.sessionKind === 'harness') {
       return;
     }
 
@@ -1720,8 +1725,7 @@ export default function App() {
   );
   const canRunHarness = Boolean(
     selectedSession?.sessionKind === 'harness' &&
-      selectedSession.harnessState &&
-      selectedSession.harnessState.status !== 'running',
+      selectedSession.harnessState,
   );
   const shellStyle = isMobileLayout
     ? undefined
@@ -1816,6 +1820,71 @@ export default function App() {
                   plannerSession={harnessPlannerSession}
                   generatorSession={harnessGeneratorSession}
                   evaluatorSession={harnessEvaluatorSession}
+                  roleInteractions={sessionInteractions}
+                  onRunHarness={() => {
+                    void handleRunHarness();
+                  }}
+                  canRunHarness={canRunHarness}
+                  isRunningHarness={isRunningHarness}
+                  model={model}
+                  effort={effort}
+                  slashCommands={slashCommands}
+                  isWebRuntime={isWebRuntime}
+                  onRequestDiff={handleRequestDiff}
+                  onRequestPermission={(sid, targetPath, sensitive) =>
+                    updateSessionInteraction(sid, (s) => ({
+                      ...s,
+                      permission: { path: targetPath, sensitive, sessionId: sid },
+                    }))
+                  }
+                  onSendRoleMessage={(sid, prompt) => {
+                    void (async () => {
+                      try {
+                        const roleSession = allSessions.find((s) => s.id === sid);
+                        if (!roleSession) {
+                          return;
+                        }
+                        const result = await bridge.sendMessage({
+                          sessionId: sid,
+                          prompt,
+                          attachments: [],
+                          session: roleSession,
+                          references: roleSession.contextReferences ?? [],
+                          model: resolveRequestedModelArg(model, modelSelectionSource),
+                          effort,
+                        });
+                        if (result?.projects) {
+                          setProjects(result.projects);
+                        }
+                      } catch (error) {
+                        setUiError(error instanceof Error ? error.message : 'Failed to send message.');
+                      }
+                    })();
+                  }}
+                  onStopRole={(sid) => {
+                    void (async () => {
+                      try {
+                        const result = await bridge.stopSessionRun({ sessionId: sid });
+                        if (result?.projects) {
+                          setProjects(result.projects);
+                        }
+                      } catch (error) {
+                        setUiError(error instanceof Error ? error.message : 'Failed to stop session.');
+                      }
+                    })();
+                  }}
+                  onGrantPermission={(sid) => {
+                    void handleGrantPermission(sid);
+                  }}
+                  onDenyPermission={(sid) => {
+                    void handleCancelPermission(sid);
+                  }}
+                  onSubmitAskUserQuestion={(sid, d) => {
+                    void handleSubmitAskUserQuestion(sid, d);
+                  }}
+                  onSubmitPlanMode={(sid, payload) => {
+                    void handleSubmitPlanMode(sid, payload);
+                  }}
                 />
               ) : (
                 <ChatThread

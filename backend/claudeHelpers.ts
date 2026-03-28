@@ -110,7 +110,14 @@ export const tryParsePartialJsonObject = (value: string) => {
 
 export const readNumber = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : undefined);
 
-export const mapTokenUsage = (payload: Record<string, unknown>): TokenUsage | undefined => {
+export const mapTokenUsage = (
+  payload: Record<string, unknown>,
+  lastAssistantUsage?: {
+    input_tokens: number;
+    cache_read_input_tokens: number;
+    cache_creation_input_tokens: number;
+  },
+): TokenUsage | undefined => {
   const resultUsage = payload.usage as
     | {
         input_tokens?: number;
@@ -127,10 +134,19 @@ export const mapTokenUsage = (payload: Record<string, unknown>): TokenUsage | un
     (payload.context_window as Record<string, unknown> | undefined) ??
     (resultPayload?.context_window as Record<string, unknown> | undefined);
 
-  const input = readNumber(contextWindowData?.total_input_tokens) ?? resultUsage?.input_tokens ?? 0;
-  const output = readNumber(contextWindowData?.total_output_tokens) ?? resultUsage?.output_tokens ?? 0;
-  const cached = (resultUsage?.cache_read_input_tokens ?? 0) + (resultUsage?.cache_creation_input_tokens ?? 0);
-  const used = input + output + cached;
+  // Per-call usage from the last assistant event gives accurate context utilization.
+  // The result event's usage is cumulative across all API calls in the run, which
+  // inflates cache_read values in multi-turn agent runs.
+  const perCall = lastAssistantUsage;
+  const input = perCall?.input_tokens ?? readNumber(contextWindowData?.total_input_tokens) ?? resultUsage?.input_tokens ?? 0;
+  const output = resultUsage?.output_tokens ?? readNumber(contextWindowData?.total_output_tokens) ?? 0;
+  const cached =
+    (perCall?.cache_read_input_tokens ?? resultUsage?.cache_read_input_tokens ?? 0) +
+    (perCall?.cache_creation_input_tokens ?? resultUsage?.cache_creation_input_tokens ?? 0);
+  // Context utilization = total input tokens (input + cached). This matches Claude Code's
+  // formula: input_tokens + cache_read_input_tokens + cache_creation_input_tokens.
+  // Output tokens have a separate budget (maxOutputTokens) and are not counted here.
+  const used = input + cached;
 
   const modelContextWindow = readNumber(modelMeta?.contextWindow);
   const explicitContextWindow =

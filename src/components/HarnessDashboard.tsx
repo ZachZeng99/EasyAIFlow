@@ -1,25 +1,38 @@
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import { buildDisplayItems } from '../data/chatThreadDisplay';
-import type { HarnessRole, SessionRecord, SessionSummary } from '../data/types';
+import { useState } from 'react';
+import type { AskUserQuestionDraft } from '../data/askUserQuestion';
+import type { PlanModeResponsePayload } from '../data/planMode';
+import type { SessionInteractionState } from '../data/sessionInteraction';
+import type { DiffPayload, HarnessRole, SessionRecord, SessionSummary, TokenUsage } from '../data/types';
+import { ChatThread } from './ChatThread';
+import { ChatComposer } from './ChatComposer';
 
 type HarnessDashboardProps = {
   session: SessionSummary;
   plannerSession?: SessionRecord;
   generatorSession?: SessionRecord;
   evaluatorSession?: SessionRecord;
+  roleInteractions?: Map<string, SessionInteractionState>;
+  onRunHarness?: () => void;
+  canRunHarness?: boolean;
+  isRunningHarness?: boolean;
+  model: string;
+  effort: 'low' | 'medium' | 'high' | 'max';
+  slashCommands: string[];
+  isWebRuntime?: boolean;
+  onSendRoleMessage?: (sessionId: string, prompt: string) => void;
+  onStopRole?: (sessionId: string) => void;
+  onRequestDiff?: (filePath: string) => Promise<DiffPayload>;
+  onRequestPermission?: (sessionId: string, targetPath: string, sensitive: boolean) => void;
+  onGrantPermission?: (sessionId: string) => void;
+  onDenyPermission?: (sessionId: string) => void;
+  onSubmitAskUserQuestion?: (sessionId: string, draft?: AskUserQuestionDraft) => void;
+  onSubmitPlanMode?: (sessionId: string, payload: PlanModeResponsePayload) => void;
 };
 
 const roleTitles: Record<HarnessRole, string> = {
   planner: 'Planner',
   generator: 'Generator',
   evaluator: 'Evaluator',
-};
-
-const roleDescriptions: Record<HarnessRole, string> = {
-  planner: 'Expand the ask into a coherent product and sprint plan.',
-  generator: 'Turn the approved sprint into concrete implementation work.',
-  evaluator: 'Review the sprint contract and validate the resulting work.',
 };
 
 const formatPercent = (value: number) => `${Math.max(0, Math.min(100, Math.round(value)))}%`;
@@ -31,16 +44,60 @@ const formatStageLabel = (value: string) =>
     .map((part) => part[0]?.toUpperCase() + part.slice(1))
     .join(' ') || 'Idle';
 
-const RolePane = ({
+const emptyTokenUsage: TokenUsage = { contextWindow: 0, used: 0, input: 0, output: 0, cached: 0 };
+
+const findLastAssistantMessage = (session: SessionRecord) =>
+  [...(session.messages ?? [])].reverse().find((message) => message.role === 'assistant');
+
+const isAssistantPending = (status: string | undefined) =>
+  status === 'queued' || status === 'streaming' || status === 'running';
+
+const RoleChatPane = ({
   role,
   session,
   active,
+  interaction,
+  model,
+  effort,
+  slashCommands,
+  isWebRuntime,
+  onSendMessage,
+  onStop,
+  onRequestDiff,
+  onRequestPermission,
+  onGrantPermission,
+  onDenyPermission,
+  onSubmitAskUserQuestion,
+  onSubmitPlanMode,
 }: {
   role: HarnessRole;
   session?: SessionRecord;
   active: boolean;
+  interaction?: SessionInteractionState;
+  model: string;
+  effort: 'low' | 'medium' | 'high' | 'max';
+  slashCommands: string[];
+  isWebRuntime?: boolean;
+  onSendMessage?: (sessionId: string, prompt: string) => void;
+  onStop?: (sessionId: string) => void;
+  onRequestDiff?: (filePath: string) => Promise<DiffPayload>;
+  onRequestPermission?: (sessionId: string, targetPath: string, sensitive: boolean) => void;
+  onGrantPermission?: (sessionId: string) => void;
+  onDenyPermission?: (sessionId: string) => void;
+  onSubmitAskUserQuestion?: (sessionId: string, draft?: AskUserQuestionDraft) => void;
+  onSubmitPlanMode?: (sessionId: string, payload: PlanModeResponsePayload) => void;
 }) => {
-  const displayItems = buildDisplayItems(session?.messages ?? []);
+  const [draft, setDraft] = useState('');
+  const sessionId = session?.id;
+  const isResponding = session ? isAssistantPending(findLastAssistantMessage(session)?.status) : false;
+
+  const handleSend = () => {
+    if (!sessionId || !draft.trim()) {
+      return;
+    }
+    onSendMessage?.(sessionId, draft.trim());
+    setDraft('');
+  };
 
   return (
     <article className={`harness-role-pane ${role}${active ? ' active' : ''}`}>
@@ -51,54 +108,55 @@ const RolePane = ({
         </div>
         <span className={`harness-role-badge ${active ? 'active' : ''}`}>{active ? 'Working' : 'Standby'}</span>
       </header>
-      <p className="harness-role-copy">{roleDescriptions[role]}</p>
-      <div className="harness-role-stream">
-        {displayItems.length > 0 ? (
-          displayItems.map((item) =>
-            item.type === 'trace-group' ? (
-              <section key={item.id} className="harness-trace-group">
-                <div className="harness-trace-head">
-                  <strong>Process</strong>
-                  <span>{item.items.length} steps</span>
-                </div>
-                <div className="harness-trace-list">
-                  {item.items.map((message) => (
-                    <article key={message.id} className={`harness-trace-row ${message.kind ?? 'trace'}`}>
-                      <div className="harness-trace-meta">
-                        <span className={`trace-dot ${message.status ?? 'running'}`} />
-                        <span>{message.timestamp}</span>
-                        <span>{message.kind ?? 'trace'}</span>
-                      </div>
-                      <strong>{message.title}</strong>
-                    </article>
-                  ))}
-                </div>
-              </section>
-            ) : (
-              <article key={item.message.id} className={`harness-message-card ${item.message.role}`}>
-                <div className="message-meta">
-                  <span className={`message-role ${item.message.role}`}>
-                    {item.message.role === 'user' ? 'You' : 'Claude'}
-                  </span>
-                  <span>{item.message.timestamp}</span>
-                  {item.message.status ? (
-                    <span className={`message-status ${item.message.status}`}>{item.message.status}</span>
-                  ) : null}
-                </div>
-                {item.message.role === 'assistant' ? (
-                  <div className="markdown-body harness-markdown">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.message.content}</ReactMarkdown>
-                  </div>
-                ) : (
-                  <pre className="message-body">{item.message.content}</pre>
-                )}
-              </article>
-            ),
-          )
-        ) : (
-          <div className="harness-empty-state">No activity yet.</div>
-        )}
-      </div>
+
+      {session ? (
+        <>
+          <ChatThread
+            session={session}
+            messages={session.messages ?? []}
+            onRequestDiff={onRequestDiff}
+            onRequestPermission={
+              sessionId
+                ? (request) => onRequestPermission?.(sessionId, request.targetPath, request.sensitive)
+                : undefined
+            }
+            interaction={interaction}
+            onGrantPermission={sessionId ? () => onGrantPermission?.(sessionId) : undefined}
+            onDenyPermission={sessionId ? () => onDenyPermission?.(sessionId) : undefined}
+            onSubmitAskUserQuestion={sessionId ? (d) => onSubmitAskUserQuestion?.(sessionId, d) : undefined}
+            onSubmitPlanMode={sessionId ? (payload) => onSubmitPlanMode?.(sessionId, payload) : undefined}
+          />
+          <ChatComposer
+            draft={draft}
+            tokenUsage={session.tokenUsage ?? emptyTokenUsage}
+            sessionModel={session.model ?? ''}
+            contextReferences={session.contextReferences ?? []}
+            slashCommands={slashCommands}
+            attachments={[]}
+            isSending={false}
+            isResponding={isResponding}
+            model={model}
+            effort={effort}
+            supportsPathDrop={!isWebRuntime}
+            onDraftChange={setDraft}
+            onModelChange={() => {}}
+            onEffortChange={() => {}}
+            onUpdateContextReferenceMode={() => {}}
+            onRemoveContextReference={() => {}}
+            onInsertDroppedPaths={() => {}}
+            onAttachFiles={() => {}}
+            onRemoveAttachment={() => {}}
+            onSend={handleSend}
+            onStop={() => {
+              if (sessionId) {
+                onStop?.(sessionId);
+              }
+            }}
+          />
+        </>
+      ) : (
+        <div className="harness-empty-state">Session not created yet.</div>
+      )}
     </article>
   );
 };
@@ -108,10 +166,44 @@ export function HarnessDashboard({
   plannerSession,
   generatorSession,
   evaluatorSession,
+  roleInteractions,
+  onRunHarness,
+  canRunHarness = false,
+  isRunningHarness = false,
+  model,
+  effort,
+  slashCommands,
+  isWebRuntime,
+  onSendRoleMessage,
+  onStopRole,
+  onRequestDiff,
+  onRequestPermission,
+  onGrantPermission,
+  onDenyPermission,
+  onSubmitAskUserQuestion,
+  onSubmitPlanMode,
 }: HarnessDashboardProps) {
   const state = session.harnessState;
   const progressPercent =
     state && state.totalTurns > 0 ? (state.completedTurns / state.totalTurns) * 100 : state?.status === 'ready' ? 0 : 0;
+
+  const getInteraction = (roleSession?: SessionRecord) =>
+    roleSession ? roleInteractions?.get(roleSession.id) : undefined;
+
+  const sharedProps = {
+    model,
+    effort,
+    slashCommands,
+    isWebRuntime,
+    onSendMessage: onSendRoleMessage,
+    onStop: onStopRole,
+    onRequestDiff,
+    onRequestPermission,
+    onGrantPermission,
+    onDenyPermission,
+    onSubmitAskUserQuestion,
+    onSubmitPlanMode,
+  } as const;
 
   return (
     <section className="harness-dashboard">
@@ -120,6 +212,16 @@ export function HarnessDashboard({
           <p className="section-kicker">Harness Session</p>
           <h1>{session.title}</h1>
           <p>{state?.summary ?? 'This harness is ready to run.'}</p>
+          {canRunHarness ? (
+            <button
+              type="button"
+              className="mini-action primary"
+              onClick={onRunHarness}
+              disabled={isRunningHarness}
+            >
+              {isRunningHarness ? 'Running...' : 'Run Harness'}
+            </button>
+          ) : null}
         </div>
         <div className="harness-banner-meta">
           <div className="harness-meta-chip">
@@ -160,9 +262,27 @@ export function HarnessDashboard({
       </header>
 
       <div className="harness-role-grid">
-        <RolePane role="planner" session={plannerSession} active={state?.currentOwner === 'planner'} />
-        <RolePane role="generator" session={generatorSession} active={state?.currentOwner === 'generator'} />
-        <RolePane role="evaluator" session={evaluatorSession} active={state?.currentOwner === 'evaluator'} />
+        <RoleChatPane
+          role="planner"
+          session={plannerSession}
+          active={state?.currentOwner === 'planner'}
+          interaction={getInteraction(plannerSession)}
+          {...sharedProps}
+        />
+        <RoleChatPane
+          role="generator"
+          session={generatorSession}
+          active={state?.currentOwner === 'generator'}
+          interaction={getInteraction(generatorSession)}
+          {...sharedProps}
+        />
+        <RoleChatPane
+          role="evaluator"
+          session={evaluatorSession}
+          active={state?.currentOwner === 'evaluator'}
+          interaction={getInteraction(evaluatorSession)}
+          {...sharedProps}
+        />
       </div>
     </section>
   );

@@ -37,12 +37,19 @@ export type PendingPlanModeRequest = {
 
 export type SessionPlanApprovalPreference = 'manual' | 'accept-edits' | 'accept-edits-clear-context';
 
+export type PerCallUsage = {
+  input_tokens: number;
+  cache_read_input_tokens: number;
+  cache_creation_input_tokens: number;
+};
+
 export type ClaudeRunState = ClaudeRunStateCompletion & {
   claudeSessionId?: string;
   model?: string;
   persistedClaudeSessionId?: string;
   persistedModel?: string;
   tokenUsage?: TokenUsage;
+  lastAssistantUsage?: PerCallUsage;
   terminalError?: string;
   toolTraces: Map<string, ConversationMessage>;
   toolUseBlockIds: Map<number, string>;
