@@ -331,6 +331,14 @@ export const buildPromptWithAttachments = (
   referenceContext?: string,
   instructionPrompt?: string,
 ) => {
+  const trimmedPrompt = prompt.trim();
+  // Claude slash commands must be sent as the raw prompt token. If we prepend
+  // host notes or injected context, Claude treats them as normal text instead
+  // of dispatching the slash command.
+  if (/^\/\S+/.test(trimmedPrompt)) {
+    return trimmedPrompt;
+  }
+
   const parts: string[] = [];
   const hostBehaviorNote =
     'Host behavior note: some UI mode transitions, including entering or exiting plan mode, may be handled automatically by EasyAIFlow. Do not claim that the user clicked approve, denied a prompt, or interacted manually unless the conversation explicitly contains that user action.';

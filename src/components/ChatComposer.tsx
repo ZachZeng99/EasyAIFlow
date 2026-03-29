@@ -107,7 +107,9 @@ export function ChatComposer({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const slashItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const slashState = useMemo(() => {
-    const match = draft.match(/^\/([^\s]*)/);
+    // Keep slash completion active only while the draft is a single slash token.
+    // Once the user adds whitespace, Enter should send instead of re-applying the command.
+    const match = draft.match(/^\/([^\s]*)$/);
     if (!match) {
       return null;
     }
