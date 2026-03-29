@@ -13,12 +13,7 @@ import {
   buildAskUserQuestionResponsePayload,
   type AskUserQuestionDraft,
 } from './data/askUserQuestion';
-import {
-  advanceSessionPermissionRequest,
-  enqueueSessionPermissionRequest,
-  getActiveSessionPermissionRequest,
-  type SessionInteractionState,
-} from './data/sessionInteraction';
+import type { SessionInteractionState } from './data/sessionInteraction';
 import {
   buildPlanModeFollowUpPrompt,
   parsePlanModeAllowedPrompts,
@@ -507,9 +502,7 @@ export default function App() {
           const hasUnread = unreadSessionIds.includes(session.id);
           const interaction = sessionInteractions.get(session.id);
           const hasBlockingInteraction = Boolean(
-            getActiveSessionPermissionRequest(interaction) ||
-              interaction?.askUserQuestion ||
-              interaction?.planModeRequest,
+            interaction?.permission || interaction?.askUserQuestion || interaction?.planModeRequest,
           );
 
           if (hasBlockingInteraction) {
@@ -532,9 +525,7 @@ export default function App() {
   const isWebRuntime = bridge.runtime === 'web';
   const selectedInteraction = sessionInteractions.get(selectedSession?.id ?? '');
   const hasBlockingInteraction = Boolean(
-    getActiveSessionPermissionRequest(selectedInteraction) ||
-      selectedInteraction?.askUserQuestion ||
-      selectedInteraction?.planModeRequest,
+    selectedInteraction?.permission || selectedInteraction?.askUserQuestion || selectedInteraction?.planModeRequest,
   );
 
   const getOriginalFilePath = (file: File) => {
@@ -712,65 +703,105 @@ export default function App() {
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
 
+    const EVENT_THROTTLE_MS = 33; // ~30 fps
+    let pendingDeltas: ClaudeStreamEvent[] = [];
+    let deltaTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const flushDeltas = () => {
+      if (pendingDeltas.length === 0) {
+        return;
+      }
+      const batch = pendingDeltas;
+      pendingDeltas = [];
+      setProjects((current) => batch.reduce(applyClaudeEvent, current));
+    };
+
+    const processEvent = (event: ClaudeStreamEvent) => {
+      if (event.type === 'permission-request') {
+        updateSessionInteraction(event.sessionId, (state) => ({
+          ...state,
+          permission: {
+            path: event.targetPath ?? event.command ?? event.description ?? event.toolName,
+            sensitive: event.sensitive,
+            requestId: event.requestId,
+            sessionId: event.sessionId,
+          },
+        }));
+      }
+      if (event.type === 'ask-user-question') {
+        updateSessionInteraction(event.sessionId, (state) => ({
+          ...state,
+          askUserQuestion: {
+            sessionId: event.sessionId,
+            toolUseId: event.toolUseId,
+            questions: event.questions,
+          },
+          isSubmittingAskUserQuestion: false,
+        }));
+      }
+      if (event.type === 'plan-mode-request') {
+        updateSessionInteraction(event.sessionId, (state) => ({
+          ...state,
+          planModeRequest: {
+            sessionId: event.sessionId,
+            request: event.request,
+          },
+        }));
+      }
+      if (event.type === 'trace' && event.message.status === 'error') {
+        const request = parsePermissionRequest(event.message.content);
+        if (request) {
+          updateSessionInteraction(event.sessionId, (state) => ({
+            ...state,
+            permission: {
+              path: request.targetPath,
+              sensitive: request.sensitive,
+              sessionId: event.sessionId,
+            },
+          }));
+        }
+      }
+      if (event.type === 'complete') {
+        playReplyCompleteTone();
+      }
+      if (event.sessionId !== selectedSessionId && (event.type === 'complete' || event.type === 'error')) {
+        setUnreadSessionIds((current) =>
+          current.includes(event.sessionId) ? current : [...current, event.sessionId],
+        );
+      }
+    };
+
     try {
       unsubscribe = bridge.onClaudeEvent((event) => {
-        setProjects((current) => applyClaudeEvent(current, event));
-        if (event.type === 'permission-request') {
-          updateSessionInteraction(event.sessionId, (state) =>
-            enqueueSessionPermissionRequest(state, {
-              path: event.targetPath ?? event.command ?? event.description ?? event.toolName,
-              sensitive: event.sensitive,
-              requestId: event.requestId,
-              sessionId: event.sessionId,
-            }),
-          );
-        }
-        if (event.type === 'ask-user-question') {
-          updateSessionInteraction(event.sessionId, (state) => ({
-            ...state,
-            askUserQuestion: {
-              sessionId: event.sessionId,
-              toolUseId: event.toolUseId,
-              questions: event.questions,
-            },
-            isSubmittingAskUserQuestion: false,
-          }));
-        }
-        if (event.type === 'plan-mode-request') {
-          updateSessionInteraction(event.sessionId, (state) => ({
-            ...state,
-            planModeRequest: {
-              sessionId: event.sessionId,
-              request: event.request,
-            },
-          }));
-        }
-        if (event.type === 'trace' && event.message.status === 'error') {
-          const request = parsePermissionRequest(event.message.content);
-          if (request) {
-            updateSessionInteraction(event.sessionId, (state) =>
-              enqueueSessionPermissionRequest(state, {
-                path: request.targetPath,
-                sensitive: request.sensitive,
-                sessionId: event.sessionId,
-              }),
-            );
+        if (event.type === 'delta') {
+          pendingDeltas.push(event);
+          if (!deltaTimer) {
+            deltaTimer = setTimeout(() => {
+              deltaTimer = null;
+              flushDeltas();
+            }, EVENT_THROTTLE_MS);
           }
+          return;
         }
-        if (event.type === 'complete') {
-          playReplyCompleteTone();
+
+        // Non-delta event: flush pending deltas first to maintain ordering, then apply immediately.
+        if (deltaTimer) {
+          clearTimeout(deltaTimer);
+          deltaTimer = null;
         }
-        if (event.sessionId !== selectedSessionId && (event.type === 'complete' || event.type === 'error')) {
-          setUnreadSessionIds((current) =>
-            current.includes(event.sessionId) ? current : [...current, event.sessionId],
-          );
-        }
+        flushDeltas();
+        setProjects((current) => applyClaudeEvent(current, event));
+        processEvent(event);
       });
     } catch {
       unsubscribe = undefined;
     }
 
     return () => {
+      if (deltaTimer) {
+        clearTimeout(deltaTimer);
+      }
+      flushDeltas();
       unsubscribe?.();
     };
   }, [playReplyCompleteTone, selectedSessionId]);
@@ -1269,7 +1300,7 @@ export default function App() {
 
   const handleGrantPermission = async (sessionId: string) => {
     const interaction = sessionInteractions.get(sessionId);
-    const request = getActiveSessionPermissionRequest(interaction);
+    const request = interaction?.permission;
     if (!request) {
       return;
     }
@@ -1294,7 +1325,7 @@ export default function App() {
           targetPath: request.path,
         });
       }
-      updateSessionInteraction(sessionId, (state) => advanceSessionPermissionRequest(state));
+      updateSessionInteraction(sessionId, (s) => ({ ...s, permission: undefined, isGrantingPermission: false }));
       setUiError(null);
     } catch (error) {
       setUiError(error instanceof Error ? error.message : 'Failed to grant permission.');
@@ -1304,9 +1335,9 @@ export default function App() {
 
   const handleCancelPermission = async (sessionId: string) => {
     const interaction = sessionInteractions.get(sessionId);
-    const request = getActiveSessionPermissionRequest(interaction);
+    const request = interaction?.permission;
     if (!request?.requestId) {
-      updateSessionInteraction(sessionId, (state) => advanceSessionPermissionRequest(state));
+      updateSessionInteraction(sessionId, (s) => ({ ...s, permission: undefined }));
       return;
     }
 
@@ -1316,7 +1347,7 @@ export default function App() {
         requestId: request.requestId,
         behavior: 'deny',
       });
-      updateSessionInteraction(sessionId, (state) => advanceSessionPermissionRequest(state));
+      updateSessionInteraction(sessionId, (s) => ({ ...s, permission: undefined, isGrantingPermission: false }));
       setUiError(null);
     } catch (error) {
       setUiError(error instanceof Error ? error.message : 'Failed to deny permission.');
@@ -1899,13 +1930,14 @@ export default function App() {
                   messages={selectedSession.messages ?? []}
                   onRequestDiff={handleRequestDiff}
                   onRequestPermission={(request) =>
-                    updateSessionInteraction(selectedSession.id, (state) =>
-                      enqueueSessionPermissionRequest(state, {
+                    updateSessionInteraction(selectedSession.id, (state) => ({
+                      ...state,
+                      permission: {
                         path: request.targetPath,
                         sensitive: request.sensitive,
                         sessionId: selectedSession.id,
-                      }),
-                    )
+                      },
+                    }))
                   }
                   interaction={sessionInteractions.get(selectedSession.id)}
                   onGrantPermission={() => {

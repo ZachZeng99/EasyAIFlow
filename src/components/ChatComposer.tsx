@@ -96,13 +96,14 @@ export function ChatComposer({
     Number.isFinite(tokenUsage.contextWindow) &&
     tokenUsage.contextWindow > 0 &&
     !staleLegacyWindow;
+  const usageRatio = hasKnownContextWindow && tokenUsage.contextWindow > 0
+    ? tokenUsage.used / tokenUsage.contextWindow
+    : 0;
+  const usagePercentNum = hasKnownContextWindow ? Math.round(usageRatio * 100) : 0;
+  const usageEmoji = usagePercentNum >= 80 ? '\u{1F631}' : usagePercentNum >= 40 ? '\u{1F60A}' : '\u{1F60B}';
   const usageSummary = hasKnownContextWindow
     ? `${formatTokens(tokenUsage.used)} / ${formatTokens(tokenUsage.contextWindow)}`
     : `${formatTokens(tokenUsage.used)} / --`;
-  const usagePercent =
-    typeof tokenUsage.usedPercentage === 'number' && Number.isFinite(tokenUsage.usedPercentage)
-      ? `${Math.round(tokenUsage.usedPercentage)}%`
-      : null;
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const slashItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const slashState = useMemo(() => {
@@ -177,11 +178,17 @@ export function ChatComposer({
           </select>
         </label>
         <div className="composer-usage" aria-label="Token usage">
+          {hasKnownContextWindow ? <span className="usage-emoji">{usageEmoji}</span> : null}
           <strong>{usageSummary}</strong>
-          <span>in {formatTokens(tokenUsage.input)}</span>
-          <span>out {formatTokens(tokenUsage.output)}</span>
-          <span>cache {formatTokens(tokenUsage.cached)}</span>
-          {usagePercent ? <span>ctx {usagePercent}</span> : null}
+          {hasKnownContextWindow ? (
+            <div className="usage-bar">
+              <div
+                className={`usage-bar-fill${usagePercentNum >= 80 ? ' critical' : usagePercentNum >= 40 ? ' warning' : ''}`}
+                style={{ width: `${Math.min(100, usagePercentNum)}%` }}
+              />
+            </div>
+          ) : null}
+          {hasKnownContextWindow ? <span>{usagePercentNum}%</span> : null}
         </div>
       </div>
 

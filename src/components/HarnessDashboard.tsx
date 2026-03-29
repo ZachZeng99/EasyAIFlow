@@ -185,7 +185,11 @@ export function HarnessDashboard({
 }: HarnessDashboardProps) {
   const state = session.harnessState;
   const progressPercent =
-    state && state.totalTurns > 0 ? (state.completedTurns / state.totalTurns) * 100 : state?.status === 'ready' ? 0 : 0;
+    state?.status === 'completed' || state?.status === 'failed'
+      ? 100
+      : state && state.totalTurns > 0
+        ? (state.completedTurns / state.totalTurns) * 100
+        : 0;
 
   const getInteraction = (roleSession?: SessionRecord) =>
     roleSession ? roleInteractions?.get(roleSession.id) : undefined;
@@ -249,7 +253,9 @@ export function HarnessDashboard({
           </div>
           <div className="harness-progress-meta">
             <span>
-              Progress {state?.completedTurns ?? 0} / {state?.totalTurns ?? 0}
+              {state?.status === 'completed' || state?.status === 'failed'
+                ? `${state.completedTurns} turns completed`
+                : `Progress ${state?.completedTurns ?? 0} / ${state?.totalTurns ?? 0}`}
             </span>
             <strong>{formatPercent(progressPercent)}</strong>
           </div>

@@ -95,9 +95,11 @@ const appendTimeline = (
   manifest.lastDecision = entry.decision;
 };
 
+// Estimate based on the ideal path (one round per phase, no retries).
+// Retries may cause completedTurns to exceed this — the UI caps at 100%.
 const countTotalTurns = (
   settings: HarnessManifest['settings'],
-) => 1 + settings.maxSprints * ((settings.maxContractRounds * 2) + (settings.maxImplementationRounds * 2));
+) => 1 + settings.maxSprints * 4; // planner + (contract proposal + contract review + implementation + QA) per sprint
 
 const toHarnessSessionState = (
   manifest: HarnessManifest,

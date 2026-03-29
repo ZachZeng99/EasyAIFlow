@@ -38,6 +38,7 @@ import {
   renameEntity,
   reorderStreamworks,
   updateSessionContextReferences,
+  flushPendingSave,
 } from '../electron/sessionStore.js';
 import { getFileDiff } from '../electron/fileDiff.js';
 import type {
@@ -363,10 +364,12 @@ const killActiveRuns = () => {
 };
 
 process.on('SIGINT', () => {
+  void flushPendingSave();
   killActiveRuns();
   process.exit(0);
 });
 process.on('SIGTERM', () => {
+  void flushPendingSave();
   killActiveRuns();
   process.exit(0);
 });

@@ -143,10 +143,7 @@ export const mapTokenUsage = (
   const cached =
     (perCall?.cache_read_input_tokens ?? resultUsage?.cache_read_input_tokens ?? 0) +
     (perCall?.cache_creation_input_tokens ?? resultUsage?.cache_creation_input_tokens ?? 0);
-  // Context utilization = total input tokens (input + cached). This matches Claude Code's
-  // formula: input_tokens + cache_read_input_tokens + cache_creation_input_tokens.
-  // Output tokens have a separate budget (maxOutputTokens) and are not counted here.
-  const used = input + cached;
+  const used = input + output + cached;
 
   const modelContextWindow = readNumber(modelMeta?.contextWindow);
   const explicitContextWindow =

@@ -1126,13 +1126,38 @@ export const loadState = async () => {
   return cachedState;
 };
 
+let pendingSaveTimer: ReturnType<typeof setTimeout> | null = null;
+const SAVE_DEBOUNCE_MS = 800;
+
+const writeToDisk = async () => {
+  if (!cachedState) {
+    return;
+  }
+  await mkdir(path.dirname(storePath()), { recursive: true });
+  await writeFile(storePath(), JSON.stringify(cachedState, null, 2), 'utf8');
+};
+
 export const saveState = async (state: AppState) => {
   cachedState = {
     projects: normalizeProjectsForCache(normalizeProjects(cloneProjects(state.projects))),
   };
 
-  await mkdir(path.dirname(storePath()), { recursive: true });
-  await writeFile(storePath(), JSON.stringify(cachedState, null, 2), 'utf8');
+  if (pendingSaveTimer) {
+    clearTimeout(pendingSaveTimer);
+  }
+  pendingSaveTimer = setTimeout(() => {
+    pendingSaveTimer = null;
+    void writeToDisk();
+  }, SAVE_DEBOUNCE_MS);
+};
+
+/** Flush any pending debounced write immediately. Call before app exit. */
+export const flushPendingSave = async () => {
+  if (pendingSaveTimer) {
+    clearTimeout(pendingSaveTimer);
+    pendingSaveTimer = null;
+  }
+  await writeToDisk();
 };
 
 export const getProjects = async () => {

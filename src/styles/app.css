@@ -1972,6 +1972,12 @@ p {
   color: #f5efe6;
 }
 
+.usage-emoji {
+  font-size: 1.4rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
 .composer-usage {
   margin-left: auto;
   display: flex;
@@ -1998,6 +2004,35 @@ p {
 .composer-usage span {
   font-size: 0.72rem;
   color: rgba(245, 239, 230, 0.72);
+}
+
+.composer-usage .usage-emoji {
+  font-size: 1.4rem;
+  line-height: 1;
+}
+
+.usage-bar {
+  width: 80px;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.usage-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: #22c55e;
+  transition: width 0.3s ease;
+}
+
+.usage-bar-fill.warning {
+  background: #f59e0b;
+}
+
+.usage-bar-fill.critical {
+  background: #ef4444;
 }
 
 .attachment-strip {

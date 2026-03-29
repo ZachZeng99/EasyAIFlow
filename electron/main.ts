@@ -35,6 +35,7 @@ import {
   renameEntity,
   reorderStreamworks,
   updateSessionContextReferences,
+  flushPendingSave,
 } from './sessionStore.js';
 import { getFileDiff } from './fileDiff.js';
 import { shouldOpenExternally } from './externalNavigation.js';
@@ -297,6 +298,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('before-quit', () => {
+  void flushPendingSave();
   state.activeRuns.forEach((run) => {
     if (!run.child.killed) {
       run.child.kill();
