@@ -797,10 +797,13 @@ export const handleClaudeLine = async (
         cache_creation_input_tokens: message.usage.cache_creation_input_tokens ?? 0,
       };
     }
-    const finalText = message?.content
+    const turnText = message?.content
       ?.filter((block) => block.type === 'text' && typeof block.text === 'string')
       .map((block) => block.text)
-      .join('') ?? runState.content;
+      .join('');
+    // Prefer accumulated content (includes all prior turns) to avoid losing
+    // earlier text when the assistant event carries only the current turn.
+    const finalText = runState.content || turnText || '';
     Object.assign(runState, applyAssistantTextToRunState(runState, finalText));
 
     for (const block of message?.content ?? []) {
