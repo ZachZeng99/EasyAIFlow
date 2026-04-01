@@ -352,7 +352,6 @@ type BtwState = {
   isOpen: boolean;
   draft: string;
   isSending: boolean;
-  claudeSessionId?: string;
   tokenUsage?: BtwResponse['tokenUsage'];
   inheritedContext: boolean;
   messages: BtwMessage[];
@@ -1220,8 +1219,7 @@ export default function App() {
         prompt,
         model: resolveRequestedModelArg(model, modelSelectionSource),
         effort,
-        claudeSessionId: btwState.claudeSessionId,
-        baseClaudeSessionId: btwState.claudeSessionId ? undefined : selectedSession.claudeSessionId,
+        baseClaudeSessionId: selectedSession.claudeSessionId,
       });
 
       const assistantMessage: BtwMessage = {
@@ -1236,7 +1234,6 @@ export default function App() {
         ...current,
         isSending: false,
         isOpen: true,
-        claudeSessionId: result.claudeSessionId ?? current.claudeSessionId,
         tokenUsage: result.tokenUsage ?? current.tokenUsage,
         inheritedContext: result.inheritedContext,
         messages: [...current.messages, assistantMessage],
@@ -1259,13 +1256,7 @@ export default function App() {
     }
   };
 
-  const handleCloseBtw = async () => {
-    if (!selectedSession) {
-      return;
-    }
-
-    const claudeSessionId = btwState.claudeSessionId;
-    const cwd = selectedSession.workspace;
+  const handleCloseBtw = () => {
     setBtwState({
       isOpen: false,
       draft: '',
@@ -1273,11 +1264,6 @@ export default function App() {
       inheritedContext: false,
       messages: [],
     });
-    try {
-      await bridge.discardBtwSession({ cwd, claudeSessionId });
-    } catch {
-      // Ignore cleanup failures for ephemeral BTW sessions.
-    }
   };
 
   const handleOpenProject = async () => {

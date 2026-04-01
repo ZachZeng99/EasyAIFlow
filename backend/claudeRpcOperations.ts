@@ -244,7 +244,6 @@ export const handleBtwMessage = async (
     prompt: string;
     model?: string;
     effort?: 'low' | 'medium' | 'high' | 'max';
-    claudeSessionId?: string;
     baseClaudeSessionId?: string;
   },
 ) => runBtwPrompt(ctx, state, payload.prompt, payload.cwd, payload);

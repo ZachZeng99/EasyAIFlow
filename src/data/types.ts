@@ -342,7 +342,6 @@ export type PendingAttachment = {
 };
 
 export type BtwResponse = {
-  claudeSessionId?: string;
   model?: string;
   content: string;
   tokenUsage?: TokenUsage;

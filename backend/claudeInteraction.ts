@@ -44,7 +44,7 @@ import {
   upsertSessionMessage,
 } from '../electron/sessionStore.js';
 import { getClaudeSyntheticApiError } from '../electron/claudeErrors.js';
-import { applyParsedSessionMetadata, extractClaudeSessionId } from '../electron/claudeSessionId.js';
+import { applyParsedSessionMetadata } from '../electron/claudeSessionId.js';
 import {
   applyAssistantTextToRunState,
   createClaudeRunState,
@@ -1379,35 +1379,101 @@ export const runBtwPrompt = async (
     sessionId?: string;
     model?: string;
     effort?: 'low' | 'medium' | 'high' | 'max';
-    claudeSessionId?: string;
     baseClaudeSessionId?: string;
   },
 ): Promise<BtwResponse> =>
   new Promise((resolve, reject) => {
     void (async () => {
+      const stripPendingAssistantFromSession = (session: SessionRecord): SessionRecord => {
+        const messages = [...(session.messages ?? [])];
+        const lastMessage = messages.at(-1);
+        if (
+          lastMessage?.role === 'assistant' &&
+          (lastMessage.status === 'queued' || lastMessage.status === 'streaming' || lastMessage.status === 'running')
+        ) {
+          return {
+            ...session,
+            messages: messages.slice(0, -1),
+          };
+        }
+
+        return session;
+      };
+
+      const buildBtwFallbackContext = async (sessionId: string | undefined) => {
+        if (!sessionId) {
+          return '';
+        }
+
+        const session = await findSession(sessionId);
+        if (!session) {
+          return '';
+        }
+
+        const normalizedSession = stripPendingAssistantFromSession(session);
+        const primaryContext =
+          getConversationMessages(normalizedSession).length > 0
+            ? buildSessionTranscriptContext(normalizedSession)
+            : buildSessionSummaryContext(normalizedSession);
+        const referenceContext = await buildContextReferencePrompt(sessionId);
+
+        return [
+          'Current main session context is provided below.',
+          'Use it only as supporting context for this BTW side question.',
+          'Do not claim any file inspection, command execution, or other actions unless they are explicitly present in the provided context.',
+          '',
+          primaryContext,
+          referenceContext,
+        ]
+          .filter(Boolean)
+          .join('\n\n');
+      };
+
+      const buildBtwPrompt = (question: string, sessionContext?: string) =>
+        [
+          `<system-reminder>This is a BTW side question from the user. Answer it directly and keep the response grounded in the conversation context you already have.
+
+IMPORTANT CONTEXT:
+- This BTW exchange is separate from the user's main conversation
+- The main conversation may still be active elsewhere
+- If supporting session context is provided below, use it carefully as background context
+
+CRITICAL CONSTRAINTS:
+- Do not use tools, request permissions, or ask the host to execute anything
+- Do not say you will inspect files, run commands, search, or take follow-up actions
+- If the answer is uncertain from the available context, say so plainly
+- Prefer a direct answer over a plan or an execution-oriented response</system-reminder>`,
+          sessionContext,
+          question.trim(),
+        ]
+          .filter(Boolean)
+          .join('\n\n');
+
       let inheritedContext = false;
+      let fallbackContext = '';
       const sessionArgs: string[] = [];
 
-      if (options?.claudeSessionId) {
-        sessionArgs.push('--resume', options.claudeSessionId);
-        inheritedContext = true;
-      } else if (options?.baseClaudeSessionId) {
+      if (options?.baseClaudeSessionId) {
         sessionArgs.push('--resume', options.baseClaudeSessionId, '--fork-session');
         inheritedContext = true;
       } else {
         sessionArgs.push('-n', 'BTW');
+        fallbackContext = await buildBtwFallbackContext(options?.sessionId);
+        inheritedContext = Boolean(fallbackContext);
       }
 
       const args = buildClaudePrintArgs({
         model: options?.model,
         effort: options?.effort,
         sessionArgs,
+        tools: '',
+        permissionMode: 'dontAsk',
+        noSessionPersistence: true,
       });
       const child = spawn('claude', args, getClaudeSpawnOptions(cwd));
 
       let stderrBuffer = '';
       let content = '';
-      let claudeSessionId = options?.claudeSessionId;
       let model = options?.model;
       let tokenUsage: TokenUsage | undefined;
       let btwLastAssistantUsage: import('./claudeInteractionState.js').PerCallUsage | undefined;
@@ -1475,11 +1541,6 @@ export const runBtwPrompt = async (
           }
           return;
         }
-        const resolvedClaudeSessionId = extractClaudeSessionId(parsed);
-        if (resolvedClaudeSessionId) {
-          claudeSessionId = resolvedClaudeSessionId;
-        }
-
         if (parsed.type === 'assistant') {
           const message = parsed.message as {
             model?: string;
@@ -1580,7 +1641,7 @@ export const runBtwPrompt = async (
         stderrBuffer += chunk.toString();
       });
 
-      child.stdin.write(`${buildClaudeUserMessageLine(prompt)}\n`);
+      child.stdin.write(`${buildClaudeUserMessageLine(buildBtwPrompt(prompt, fallbackContext))}\n`);
 
       child.on('error', (error) => {
         reject(error);
@@ -1602,7 +1663,6 @@ export const runBtwPrompt = async (
           }
 
           resolve({
-            claudeSessionId,
             model,
             content,
             tokenUsage,

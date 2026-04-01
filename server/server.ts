@@ -113,7 +113,6 @@ const rpcHandlers = {
     prompt: string;
     model?: string;
     effort?: 'low' | 'medium' | 'high' | 'max';
-    claudeSessionId?: string;
     baseClaudeSessionId?: string;
   }) => handleBtwMessage(ctx, state, payload),
   discardBtwSession: async (payload: { cwd: string; claudeSessionId?: string }) => {

@@ -162,7 +162,6 @@ app.whenReady().then(async () => {
         prompt: string;
         model?: string;
         effort?: 'low' | 'medium' | 'high' | 'max';
-        claudeSessionId?: string;
         baseClaudeSessionId?: string;
       },
     ) => handleBtwMessage(ctx, state, payload),

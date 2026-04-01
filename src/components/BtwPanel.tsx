@@ -52,7 +52,9 @@ export function BtwPanel({
           <p className="section-kicker">temporary q&a</p>
           <h2>BTW</h2>
           <p className="btw-context-note">
-            {inheritedContext ? '继承当前正式会话上下文' : '未继承正式会话上下文，仅使用当前工作区环境'}
+            {inheritedContext
+              ? '每次提问都会重新基于当前正式会话上下文派生，不延续 BTW 子会话'
+              : '当前未拿到正式会话上下文，本次 BTW 仅依据当前工作区和可用摘要回答'}
           </p>
         </div>
         <div className="btw-panel-actions">
@@ -80,7 +82,7 @@ export function BtwPanel({
             </article>
           ))
         ) : (
-          <div className="btw-empty">输入 `/btw 你的问题`，或者直接在这里追问。</div>
+          <div className="btw-empty">输入 `/btw 你的问题`。每次 BTW 都是独立的一次性 side question。</div>
         )}
       </div>
 
@@ -94,7 +96,7 @@ export function BtwPanel({
               onSend();
             }
           }}
-          placeholder="临时问一句，不进入正式 session。"
+          placeholder="临时问一句。每次发送都会重新从主会话上下文派生。"
           rows={3}
         />
         <button type="button" className="send-button" onClick={onSend} disabled={isSending || !draft.trim()}>

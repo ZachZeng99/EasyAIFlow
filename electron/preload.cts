@@ -12,7 +12,6 @@ contextBridge.exposeInMainWorld('easyAIFlow', {
     prompt: string;
     model?: string;
     effort?: 'low' | 'medium' | 'high' | 'max';
-    claudeSessionId?: string;
     baseClaudeSessionId?: string;
   }) => ipcRenderer.invoke('claude:btw-message', payload),
   discardBtwSession: (payload: { cwd: string; claudeSessionId?: string }) => ipcRenderer.invoke('claude:btw-discard', payload),

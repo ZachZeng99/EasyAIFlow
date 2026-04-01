@@ -58,7 +58,6 @@ export type EasyAIFlowBridge = {
     prompt: string;
     model?: string;
     effort?: 'low' | 'medium' | 'high' | 'max';
-    claudeSessionId?: string;
     baseClaudeSessionId?: string;
   }) => Promise<BtwResponse>;
   discardBtwSession: (payload: { cwd: string; claudeSessionId?: string }) => Promise<void>;
