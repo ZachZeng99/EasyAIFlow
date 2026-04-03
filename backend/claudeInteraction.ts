@@ -684,6 +684,25 @@ const deriveResidentRuntimePhase = (
   return 'idle';
 };
 
+export const syncResidentRuntimeState = (
+  ctx: ClaudeInteractionContext,
+  state: ClaudeInteractionState,
+  sessionId: string,
+  resident: ResidentClaudeSession,
+) => {
+  const processActive =
+    !resident.child.killed &&
+    resident.child.exitCode === null &&
+    resident.child.signalCode === null;
+
+  emitRuntimeState(
+    ctx,
+    sessionId,
+    processActive ? deriveResidentRuntimePhase(state, sessionId, resident) : 'inactive',
+    processActive,
+  );
+};
+
 export const getSessionInteractionSnapshots = (
   state: ClaudeInteractionState,
 ): Record<string, SessionInteractionState> => {
@@ -1689,8 +1708,8 @@ const ensureResidentClaudeSession = async (
           (parsed.subtype === 'task_notification' ||
             (parsed.subtype === 'session_state_changed' && parsed.state === 'idle'))
         ) {
-          emitRuntimeState(ctx, session.id, 'idle', true);
           await finalizeBackgroundOwnersIfSettled(ctx, session.id, currentResident);
+          syncResidentRuntimeState(ctx, state, session.id, currentResident);
         }
         return;
       }
@@ -1746,6 +1765,7 @@ const ensureResidentClaudeSession = async (
           (parsed.subtype === 'session_state_changed' && parsed.state === 'idle'))
       ) {
         await finalizeBackgroundOwnersIfSettled(ctx, session.id, currentResident);
+        syncResidentRuntimeState(ctx, state, session.id, currentResident);
       }
     }),
   };
