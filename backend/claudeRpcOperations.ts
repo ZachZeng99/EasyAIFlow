@@ -2,8 +2,11 @@ import type { ClaudeInteractionContext } from './claudeInteractionContext.js';
 import type { ClaudeInteractionState } from './claudeInteractionState.js';
 import {
   grantPathPermission,
+  getSessionInteractionSnapshots,
   runClaudePrint,
   stopSessions,
+  interruptSessionTurn,
+  disconnectSession,
   respondToPlanModeRequest,
   runBtwPrompt,
   deleteNativeClaudeSession,
@@ -171,8 +174,18 @@ export const handleStopSession = async (
   state: ClaudeInteractionState,
   payload: { sessionId: string },
 ) => {
-  stopSessions(state, [payload.sessionId]);
-  const result = await stopPendingSessionMessages(payload.sessionId);
+  const result = await interruptSessionTurn(ctx, state, payload.sessionId);
+  return {
+    projects: result.projects,
+  };
+};
+
+export const handleDisconnectSession = async (
+  ctx: ClaudeInteractionContext,
+  state: ClaudeInteractionState,
+  payload: { sessionId: string },
+) => {
+  const result = await disconnectSession(ctx, state, payload.sessionId);
   result.changedMessages.forEach((message) => {
     if (message.role === 'assistant') {
       ctx.broadcastEvent({
@@ -267,11 +280,18 @@ export const handleGetAppMeta = async (
 });
 
 export const handleGetSlashCommands = async (
-  _ctx: ClaudeInteractionContext,
+  ctx: ClaudeInteractionContext,
   state: ClaudeInteractionState,
   payload: { cwd: string; model?: string },
 ) => ({
-  commands: await getSlashCommands(state, payload.cwd, payload.model),
+  commands: await getSlashCommands(ctx, state, payload.cwd, payload.model),
+});
+
+export const handleBootstrapSessions = async (
+  state: ClaudeInteractionState,
+) => ({
+  projects: await getProjects(),
+  interactions: getSessionInteractionSnapshots(state),
 });
 
 export const handleCloseProject = async (

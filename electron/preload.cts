@@ -82,6 +82,7 @@ contextBridge.exposeInMainWorld('easyAIFlow', {
   }) =>
     ipcRenderer.invoke('claude:send-message', payload),
   stopSessionRun: (payload: { sessionId: string }) => ipcRenderer.invoke('claude:stop-session', payload),
+  disconnectSession: (payload: { sessionId: string }) => ipcRenderer.invoke('claude:disconnect-session', payload),
   onClaudeEvent: (listener: (event: import('../src/data/types.js').ClaudeStreamEvent) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: import('../src/data/types.js').ClaudeStreamEvent) =>
       listener(payload);

@@ -90,4 +90,4 @@ export const markClaudeRunCompleted = <T extends ClaudeRunStateCompletion>(
 });
 
 export const shouldCompleteClaudeRunOnClose = (state: ClaudeRunStateCompletion) =>
-  !state.receivedResult || state.needsCompletionRefresh;
+  state.completedContent === undefined || state.needsCompletionRefresh;

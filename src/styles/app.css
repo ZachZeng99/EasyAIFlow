@@ -467,6 +467,13 @@ p {
     rgba(255, 255, 255, 0.03);
 }
 
+.session-card.background {
+  border-color: rgba(244, 114, 182, 0.32);
+  background:
+    linear-gradient(135deg, rgba(244, 114, 182, 0.14), rgba(255, 255, 255, 0.03)),
+    rgba(255, 255, 255, 0.03);
+}
+
 .session-card.harness {
   border-color: rgba(245, 158, 11, 0.18);
   background:
@@ -481,6 +488,16 @@ p {
   background: linear-gradient(110deg, transparent 18%, rgba(251, 191, 36, 0.16) 48%, transparent 78%);
   transform: translateX(-100%);
   animation: session-card-scan 1.8s linear infinite;
+  pointer-events: none;
+}
+
+.session-card.background::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(110deg, transparent 18%, rgba(244, 114, 182, 0.16) 48%, transparent 78%);
+  transform: translateX(-100%);
+  animation: session-card-scan 2.4s linear infinite;
   pointer-events: none;
 }
 
@@ -602,8 +619,24 @@ p {
   border-color: rgba(245, 158, 11, 0.24);
 }
 
+.session-status-badge.background {
+  color: #f9a8d4;
+  background: rgba(244, 114, 182, 0.14);
+  border-color: rgba(244, 114, 182, 0.28);
+}
+
 .session-status-badge.responding::before {
   animation: session-status-pulse 1.05s ease-in-out infinite;
+}
+
+.session-status-badge.background::before {
+  animation: session-status-pulse 1.35s ease-in-out infinite;
+}
+
+.session-status-badge.online {
+  color: #4ade80;
+  background: rgba(34, 197, 94, 0.14);
+  border-color: rgba(34, 197, 94, 0.24);
 }
 
 .session-status-badge.awaiting_reply {
@@ -1364,6 +1397,10 @@ p {
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
+.chat-header-main {
+  min-width: 0;
+}
+
 .chat-header h1 {
   font-size: 1.6rem;
   margin-bottom: 12px;
@@ -1393,15 +1430,70 @@ p {
 }
 
 .session-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   padding: 6px 10px;
   border: 1px solid;
   border-radius: 999px;
   font-size: 0.76rem;
 }
 
+.cli-status {
+  border-color: rgba(34, 197, 94, 0.24);
+  background: rgba(34, 197, 94, 0.12);
+  color: #bbf7d0;
+}
+
+.cli-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #22c55e;
+  box-shadow: 0 0 12px rgba(34, 197, 94, 0.75);
+  animation: session-status-pulse 1.2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
 .process-tag {
   border-color: rgba(255, 255, 255, 0.12);
   color: rgba(245, 239, 230, 0.64);
+}
+
+.disconnect-button {
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  padding: 0;
+  border: 1px solid rgba(251, 113, 133, 0.22);
+  background: rgba(251, 113, 133, 0.12);
+  color: #fecdd3;
+  display: inline-grid;
+  place-items: center;
+  cursor: pointer;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.18);
+  transition:
+    transform 140ms ease,
+    background 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.disconnect-button:hover {
+  transform: translateY(-1px);
+  background: rgba(251, 113, 133, 0.18);
+  border-color: rgba(251, 113, 133, 0.34);
+  box-shadow: 0 16px 30px rgba(0, 0, 0, 0.22);
+}
+
+.disconnect-button:focus-visible {
+  outline: 2px solid rgba(251, 113, 133, 0.5);
+  outline-offset: 2px;
+}
+
+.disconnect-button span {
+  font-size: 1.1rem;
+  line-height: 1;
 }
 
 .message-stream {
@@ -1472,6 +1564,10 @@ p {
 .message-status.streaming,
 .message-status.running {
   color: #facc15;
+}
+
+.message-status.background {
+  color: #f9a8d4;
 }
 
 .message-status.complete {
@@ -2190,6 +2286,12 @@ p {
   align-items: flex-end;
 }
 
+.composer-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
 .composer-input-wrap {
   position: relative;
   flex: 1;
@@ -2277,6 +2379,12 @@ p {
   border: 0;
   color: #171311;
   font-weight: 700;
+}
+
+.send-button.secondary {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #f5efe6;
 }
 
 .send-button:disabled {
@@ -2417,6 +2525,96 @@ p {
   color: rgba(245, 239, 230, 0.86);
 }
 
+.background-task-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.background-task-card {
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.background-task-card.status-running {
+  border-color: rgba(244, 114, 182, 0.28);
+  background:
+    linear-gradient(135deg, rgba(244, 114, 182, 0.08), rgba(255, 255, 255, 0.03)),
+    rgba(255, 255, 255, 0.03);
+}
+
+.background-task-card.status-completed {
+  border-color: rgba(34, 197, 94, 0.24);
+}
+
+.background-task-card.status-failed,
+.background-task-card.status-stopped {
+  border-color: rgba(248, 113, 113, 0.22);
+}
+
+.background-task-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.background-task-head strong {
+  font-size: 0.88rem;
+}
+
+.background-task-status {
+  flex-shrink: 0;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  font-family: 'Cascadia Code', 'Consolas', monospace;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+}
+
+.background-task-status.status-running {
+  color: #f9a8d4;
+}
+
+.background-task-status.status-completed {
+  color: #78e39f;
+}
+
+.background-task-status.status-failed,
+.background-task-status.status-stopped {
+  color: #fca5a5;
+}
+
+.background-task-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 8px;
+  font-size: 0.76rem;
+  color: rgba(245, 239, 230, 0.6);
+}
+
+.background-task-summary {
+  margin: 10px 0 0;
+  font-size: 0.84rem;
+  line-height: 1.5;
+  color: rgba(245, 239, 230, 0.82);
+}
+
+.background-task-output {
+  display: block;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.22);
+  color: #d6e7ff;
+  font-size: 0.74rem;
+  word-break: break-all;
+}
+
 .diff-code {
   background: #101010;
 }
@@ -2550,8 +2748,7 @@ p {
     height: auto;
   }
 
-  .composer-box,
-  .chat-header {
+  .composer-box {
     display: grid;
     grid-template-columns: 1fr;
   }
@@ -2578,6 +2775,9 @@ p {
   }
 
   .chat-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
     padding: 10px 12px 8px;
     gap: 8px;
   }
@@ -2588,7 +2788,8 @@ p {
   }
 
   .chat-actions {
-    display: none;
+    display: flex;
+    justify-content: flex-end;
   }
 
   .chat-header .section-kicker {

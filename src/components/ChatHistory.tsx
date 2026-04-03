@@ -5,7 +5,7 @@ import type { DreamRecord, ProjectRecord, SessionActivityState, SessionSummary }
 type ChatHistoryProps = {
   projects: ProjectRecord[];
   selectedSessionId: string;
-  sessionIndicators: Record<string, { state: SessionActivityState }>;
+  sessionIndicators: Record<string, { state: SessionActivityState; online?: boolean }>;
   onOpenProject: () => void;
   onCloseProject: (projectId: string) => void;
   onCreateStreamwork: (projectId: string) => void;
@@ -360,7 +360,7 @@ function DreamSection({
   dream: DreamRecord;
   projectId: string;
   selectedSessionId: string;
-  sessionIndicators: Record<string, { state: SessionActivityState }>;
+  sessionIndicators: Record<string, { state: SessionActivityState; online?: boolean }>;
   collapsed: boolean;
   editing: EditingState | null;
   draggingStreamwork: { projectId: string; streamworkId: string } | null;
@@ -527,15 +527,22 @@ function DreamSection({
                       <ActionButton label="Del" title="Delete Session" tone="danger" onClick={() => onDeleteSession(session.id)} />
                     </div>
                   </div>
-                  {indicator.state !== 'idle' ? (
+                  {indicator.state !== 'idle' || indicator.online ? (
                     <div className="session-card-status">
-                      <span className={`session-status-badge ${indicator.state}`}>
-                        {indicator.state === 'responding'
-                          ? '工作中'
-                          : indicator.state === 'awaiting_reply'
-                            ? '待回复'
-                            : '未读'}
-                      </span>
+                      {indicator.online ? (
+                        <span className="session-status-badge online">在线</span>
+                      ) : null}
+                      {indicator.state !== 'idle' ? (
+                        <span className={`session-status-badge ${indicator.state}`}>
+                          {indicator.state === 'responding'
+                            ? '工作中'
+                            : indicator.state === 'background'
+                              ? '后台中'
+                            : indicator.state === 'awaiting_reply'
+                              ? '待回复'
+                              : '未读'}
+                        </span>
+                      ) : null}
                     </div>
                   ) : null}
                   <div className="session-card-meta">

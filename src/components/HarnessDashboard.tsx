@@ -21,6 +21,7 @@ type HarnessDashboardProps = {
   isWebRuntime?: boolean;
   onSendRoleMessage?: (sessionId: string, prompt: string) => void;
   onStopRole?: (sessionId: string) => void;
+  onDisconnectRole?: (sessionId: string) => void;
   onRequestDiff?: (filePath: string) => Promise<DiffPayload>;
   onRequestPermission?: (sessionId: string, targetPath: string, sensitive: boolean) => void;
   onGrantPermission?: (sessionId: string) => void;
@@ -63,6 +64,7 @@ const RoleChatPane = ({
   isWebRuntime,
   onSendMessage,
   onStop,
+  onDisconnect,
   onRequestDiff,
   onRequestPermission,
   onGrantPermission,
@@ -80,6 +82,7 @@ const RoleChatPane = ({
   isWebRuntime?: boolean;
   onSendMessage?: (sessionId: string, prompt: string) => void;
   onStop?: (sessionId: string) => void;
+  onDisconnect?: (sessionId: string) => void;
   onRequestDiff?: (filePath: string) => Promise<DiffPayload>;
   onRequestPermission?: (sessionId: string, targetPath: string, sensitive: boolean) => void;
   onGrantPermission?: (sessionId: string) => void;
@@ -114,6 +117,14 @@ const RoleChatPane = ({
           <ChatThread
             session={session}
             messages={session.messages ?? []}
+            isCliOnline={Boolean(interaction?.runtime?.processActive)}
+            onDisconnect={
+              sessionId
+                ? () => {
+                    onDisconnect?.(sessionId);
+                  }
+                : undefined
+            }
             onRequestDiff={onRequestDiff}
             onRequestPermission={
               sessionId
@@ -176,6 +187,7 @@ export function HarnessDashboard({
   isWebRuntime,
   onSendRoleMessage,
   onStopRole,
+  onDisconnectRole,
   onRequestDiff,
   onRequestPermission,
   onGrantPermission,
@@ -201,6 +213,7 @@ export function HarnessDashboard({
     isWebRuntime,
     onSendMessage: onSendRoleMessage,
     onStop: onStopRole,
+    onDisconnect: onDisconnectRole,
     onRequestDiff,
     onRequestPermission,
     onGrantPermission,

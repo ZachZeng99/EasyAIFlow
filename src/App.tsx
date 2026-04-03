@@ -13,7 +13,12 @@ import {
   buildAskUserQuestionResponsePayload,
   type AskUserQuestionDraft,
 } from './data/askUserQuestion';
-import type { SessionInteractionState } from './data/sessionInteraction';
+import {
+  clearSessionBackgroundTasks,
+  setSessionRuntimeState,
+  upsertSessionBackgroundTask,
+  type SessionInteractionState,
+} from './data/sessionInteraction';
 import {
   buildPlanModeFollowUpPrompt,
   parsePlanModeAllowedPrompts,
@@ -44,6 +49,10 @@ const flattenSessions = (projects: ProjectRecord[]) =>
 
 const flattenVisibleSessions = (projects: ProjectRecord[]) =>
   flattenSessions(projects).filter((session) => !session.hidden && session.sessionKind !== 'harness_role');
+
+const isTerminalBackgroundTaskStatus = (
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'stopped',
+) => status === 'completed' || status === 'failed' || status === 'stopped';
 
 const parsePlanModeTracePayload = (message: SessionRecord['messages'][number]): PlanModeRequest | null => {
   if (
@@ -109,7 +118,9 @@ const applyClaudeEvent = (projects: ProjectRecord[], event: ClaudeStreamEvent) =
     if (
       event.type === 'permission-request' ||
       event.type === 'ask-user-question' ||
-      event.type === 'plan-mode-request'
+      event.type === 'plan-mode-request' ||
+      event.type === 'background-task' ||
+      event.type === 'runtime-state'
     ) {
       return session;
     }
@@ -359,6 +370,7 @@ type BtwState = {
 
 type SessionIndicator = {
   state: SessionActivityState;
+  online?: boolean;
 };
 
 type MobilePanel = 'history' | 'session' | 'context';
@@ -432,6 +444,7 @@ export default function App() {
     () => allSessions.find((session) => session.id === selectedSessionId) ?? visibleSessions[0] ?? allSessions[0],
     [allSessions, selectedSessionId, visibleSessions],
   );
+  const activeSelectedSessionId = selectedSession?.id ?? selectedSessionId;
   const harnessPlannerSession = useMemo(
     () =>
       selectedSession?.sessionKind === 'harness' && selectedSession.harnessState
@@ -471,12 +484,16 @@ export default function App() {
   );
   const isSelectedSessionResponding = useMemo(
     () =>
-      selectedSession
-        ? selectedSession.sessionKind === 'harness'
-          ? selectedSession.harnessState?.status === 'running'
-          : isAssistantPendingStatus(findLastAssistantMessage(selectedSession)?.status)
-        : false,
-    [selectedSession],
+      sessionInteractions.get(selectedSession?.id ?? '')?.runtime
+        ? sessionInteractions.get(selectedSession?.id ?? '')?.runtime?.phase === 'running' ||
+          sessionInteractions.get(selectedSession?.id ?? '')?.runtime?.phase === 'awaiting_reply' ||
+          sessionInteractions.get(selectedSession?.id ?? '')?.runtime?.phase === 'terminating'
+        : selectedSession
+          ? selectedSession.sessionKind === 'harness'
+            ? selectedSession.harnessState?.status === 'running'
+            : isAssistantPendingStatus(findLastAssistantMessage(selectedSession)?.status)
+          : false,
+    [selectedSession, sessionInteractions],
   );
   const sessionIndicators = useMemo<Record<string, SessionIndicator>>(
     () =>
@@ -498,34 +515,64 @@ export default function App() {
               ? session.harnessState?.status === 'running' ||
                 relatedRoleSessions.some((candidate) => isAssistantPendingStatus(findLastAssistantMessage(candidate)?.status))
               : isAssistantPendingStatus(lastAssistant?.status);
-          const hasUnread = unreadSessionIds.includes(session.id);
+          const hasUnread =
+            session.id !== activeSelectedSessionId && unreadSessionIds.includes(session.id);
           const interaction = sessionInteractions.get(session.id);
+          const hasActiveBackgroundTasks = Boolean(
+            interaction?.backgroundTasks?.some(
+              (task) => task.status === 'pending' || task.status === 'running',
+            ),
+          );
+          const runtimePhase = interaction?.runtime?.phase;
+          const isOnline = Boolean(interaction?.runtime?.processActive);
           const hasBlockingInteraction = Boolean(
             interaction?.permission || interaction?.askUserQuestion || interaction?.planModeRequest,
           );
 
           if (hasBlockingInteraction) {
-            return [session.id, { state: 'awaiting_reply' }];
+            return [session.id, { state: 'awaiting_reply', online: isOnline }];
+          }
+
+          if (runtimePhase === 'awaiting_reply') {
+            return [session.id, { state: 'awaiting_reply', online: isOnline }];
+          }
+
+          if (runtimePhase === 'background') {
+            return [session.id, { state: 'background', online: isOnline }];
+          }
+
+          if (runtimePhase === 'running' || runtimePhase === 'terminating') {
+            return [session.id, { state: 'responding', online: isOnline }];
+          }
+
+          if (hasActiveBackgroundTasks) {
+            return [session.id, { state: 'background', online: isOnline }];
           }
 
           if (isResponding) {
-            return [session.id, { state: 'responding' }];
+            return [session.id, { state: 'responding', online: isOnline }];
           }
 
           if (hasUnread) {
-            return [session.id, { state: 'unread' }];
+            return [session.id, { state: 'unread', online: isOnline }];
           }
 
-          return [session.id, { state: 'idle' }];
+          return [session.id, { state: 'idle', online: isOnline }];
         }),
       ),
-    [allSessions, sessionInteractions, unreadSessionIds, visibleSessions],
+    [activeSelectedSessionId, allSessions, sessionInteractions, unreadSessionIds, visibleSessions],
   );
   const isWebRuntime = bridge.runtime === 'web';
   const selectedInteraction = sessionInteractions.get(selectedSession?.id ?? '');
   const hasBlockingInteraction = Boolean(
     selectedInteraction?.permission || selectedInteraction?.askUserQuestion || selectedInteraction?.planModeRequest,
   );
+  const hasActiveSelectedBackgroundTasks = Boolean(
+    selectedInteraction?.backgroundTasks?.some(
+      (task) => task.status === 'pending' || task.status === 'running',
+    ),
+  );
+  const canDisconnectSelectedSession = Boolean(selectedInteraction?.runtime?.processActive);
 
   const getOriginalFilePath = (file: File) => {
     try {
@@ -685,6 +732,7 @@ export default function App() {
 
         const nextProjects = bootstrap?.projects ?? [];
         setProjects(nextProjects);
+        setSessionInteractions(new Map(Object.entries(bootstrap?.interactions ?? {})));
         const firstSession = flattenVisibleSessions(nextProjects)[0];
         if (firstSession) {
           setSelectedSessionId((current) => current || firstSession.id);
@@ -747,6 +795,16 @@ export default function App() {
           },
         }));
       }
+      if (event.type === 'background-task') {
+        updateSessionInteraction(event.sessionId, (state) =>
+          upsertSessionBackgroundTask(state, event.task),
+        );
+      }
+      if (event.type === 'runtime-state') {
+        updateSessionInteraction(event.sessionId, (state) =>
+          setSessionRuntimeState(state, event.runtime),
+        );
+      }
       if (event.type === 'trace' && event.message.status === 'error') {
         const request = parsePermissionRequest(event.message.content);
         if (request) {
@@ -763,7 +821,15 @@ export default function App() {
       if (event.type === 'complete') {
         playReplyCompleteTone();
       }
-      if (event.sessionId !== selectedSessionId && (event.type === 'complete' || event.type === 'error')) {
+      if (
+        event.sessionId !== activeSelectedSessionId &&
+        (
+          event.type === 'complete' ||
+          event.type === 'error' ||
+          (event.type === 'runtime-state' && event.runtime.phase === 'inactive') ||
+          (event.type === 'background-task' && isTerminalBackgroundTaskStatus(event.task.status))
+        )
+      ) {
         setUnreadSessionIds((current) =>
           current.includes(event.sessionId) ? current : [...current, event.sessionId],
         );
@@ -803,19 +869,35 @@ export default function App() {
       flushDeltas();
       unsubscribe?.();
     };
-  }, [playReplyCompleteTone, selectedSessionId]);
+  }, [activeSelectedSessionId, playReplyCompleteTone]);
 
   useEffect(() => {
-    if (!selectedSessionId) {
+    if (!activeSelectedSessionId) {
       return;
     }
 
-    setUnreadSessionIds((current) => current.filter((sessionId) => sessionId !== selectedSessionId));
-  }, [selectedSessionId]);
+    setUnreadSessionIds((current) => current.filter((sessionId) => sessionId !== activeSelectedSessionId));
+  }, [activeSelectedSessionId]);
 
   useEffect(() => {
     const validSessionIds = new Set(allSessions.map((session) => session.id));
     setUnreadSessionIds((current) => current.filter((sessionId) => validSessionIds.has(sessionId)));
+  }, [allSessions]);
+
+  useEffect(() => {
+    const validSessionIds = new Set(allSessions.map((session) => session.id));
+    setSessionInteractions((current) => {
+      let changed = false;
+      const next = new Map<string, SessionInteractionState>();
+      current.forEach((value, sessionId) => {
+        if (validSessionIds.has(sessionId)) {
+          next.set(sessionId, value);
+          return;
+        }
+        changed = true;
+      });
+      return changed ? next : current;
+    });
   }, [allSessions]);
 
   useEffect(() => {
@@ -1083,6 +1165,7 @@ export default function App() {
     setIsSending(true);
     setUiError(null);
     setUnreadSessionIds((current) => current.filter((sessionId) => sessionId !== selectedSession.id));
+    updateSessionInteraction(selectedSession.id, (state) => clearSessionBackgroundTasks(state));
 
     const outgoingPrompt = prompt || 'Please inspect the attached files and describe anything relevant.';
     const pendingAttachments: PendingAttachment[] = attachments.map((attachment) => ({
@@ -1264,6 +1347,23 @@ export default function App() {
       inheritedContext: false,
       messages: [],
     });
+  };
+
+  const handleDisconnect = async (sessionId = selectedSession?.id ?? '') => {
+    if (!sessionId) {
+      return;
+    }
+
+    try {
+      setUiError(null);
+      setIsSending(false);
+      const result = await bridge.disconnectSession({ sessionId });
+      if (result?.projects) {
+        setProjects(result.projects);
+      }
+    } catch (error) {
+      setUiError(error instanceof Error ? error.message : 'Failed to disconnect Claude.');
+    }
   };
 
   const handleOpenProject = async () => {
@@ -1868,6 +1968,7 @@ export default function App() {
                         if (!roleSession) {
                           return;
                         }
+                        updateSessionInteraction(sid, (state) => clearSessionBackgroundTasks(state));
                         const result = await bridge.sendMessage({
                           sessionId: sid,
                           prompt,
@@ -1897,6 +1998,9 @@ export default function App() {
                       }
                     })();
                   }}
+                  onDisconnectRole={(sid) => {
+                    void handleDisconnect(sid);
+                  }}
                   onGrantPermission={(sid) => {
                     void handleGrantPermission(sid);
                   }}
@@ -1914,6 +2018,10 @@ export default function App() {
                 <ChatThread
                   session={selectedSession}
                   messages={selectedSession.messages ?? []}
+                  isCliOnline={canDisconnectSelectedSession}
+                  onDisconnect={() => {
+                    void handleDisconnect(selectedSession.id);
+                  }}
                   onRequestDiff={handleRequestDiff}
                   onRequestPermission={(request) =>
                     updateSessionInteraction(selectedSession.id, (state) => ({
@@ -1972,6 +2080,7 @@ export default function App() {
                   attachments={attachments}
                   isSending={isSending}
                   isResponding={isSelectedSessionResponding}
+                  allowSendWhileResponding={hasActiveSelectedBackgroundTasks}
                   model={model}
                   effort={effort}
                   supportsPathDrop={!isWebRuntime}
@@ -2018,6 +2127,7 @@ export default function App() {
             <ContextPanel
               session={selectedSession}
               messages={selectedSession.messages ?? []}
+              interaction={selectedInteraction}
               appVersion={appVersion}
               gitSnapshot={gitSnapshot}
               onRequestDiff={handleRequestDiff}

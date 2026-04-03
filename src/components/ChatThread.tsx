@@ -19,6 +19,8 @@ import type { ConversationMessage, DiffPayload, SessionSummary } from '../data/t
 type ChatThreadProps = {
   session: SessionSummary;
   messages: ConversationMessage[];
+  isCliOnline?: boolean;
+  onDisconnect?: () => void;
   onRequestPermission?: (request: PermissionRequest) => void;
   onRequestDiff?: (filePath: string) => Promise<DiffPayload>;
   interaction?: SessionInteractionState;
@@ -31,6 +33,8 @@ type ChatThreadProps = {
 export function ChatThread({
   session,
   messages,
+  isCliOnline = false,
+  onDisconnect,
   onRequestPermission,
   onRequestDiff,
   interaction,
@@ -41,6 +45,7 @@ export function ChatThread({
 }: ChatThreadProps) {
   const displayItems = useMemo(() => buildDisplayItems(messages), [messages]);
   const activePermissionRequest = getActiveSessionPermissionRequest(interaction);
+  const showDisconnectAction = isCliOnline && Boolean(onDisconnect);
   const [openTraceIds, setOpenTraceIds] = useState<Record<string, boolean>>({});
   const [openTraceGroupIds, setOpenTraceGroupIds] = useState<Record<string, boolean>>({});
   const [openCodeChangeGroupIds, setOpenCodeChangeGroupIds] = useState<Record<string, boolean>>({});
@@ -133,12 +138,18 @@ export function ChatThread({
   return (
     <section className="chat-pane">
       <header className="chat-header">
-        <div>
+        <div className="chat-header-main">
           <p className="section-kicker">
             {session.projectName} / Streamwork: {session.dreamName}
           </p>
           <h1>{session.title}</h1>
           <div className="session-tags">
+            {isCliOnline ? (
+              <span className="session-tag cli-status" aria-label="CLI online">
+                <span className="cli-status-dot" aria-hidden="true" />
+                CLI
+              </span>
+            ) : null}
             {session.groups.map((group) => (
               <span key={group.id} className="session-tag" style={{ borderColor: group.color, color: group.color }}>
                 {group.name}
@@ -149,14 +160,19 @@ export function ChatThread({
             </span>
           </div>
         </div>
-        <div className="chat-actions">
-          <button type="button" className="header-button">
-            Context
-          </button>
-          <button type="button" className="header-button active">
-            Session
-          </button>
-        </div>
+        {showDisconnectAction ? (
+          <div className="chat-actions">
+            <button
+              type="button"
+              className="disconnect-button"
+              aria-label="Disconnect session"
+              title="Disconnect session"
+              onClick={onDisconnect}
+            >
+              <span aria-hidden="true">🔌</span>
+            </button>
+          </div>
+        ) : null}
       </header>
 
       <div ref={streamRef} className="message-stream">

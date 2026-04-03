@@ -1,5 +1,25 @@
 export type ModelSelectionSource = 'implicit' | 'explicit';
 
+export const normalizeModelSelectionValue = (value: string | undefined) => {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const normalized = trimmed.toLowerCase();
+  if (normalized.includes('opus')) {
+    return 'opus[1m]';
+  }
+  if (normalized.includes('sonnet')) {
+    return 'sonnet';
+  }
+  if (normalized.includes('haiku')) {
+    return 'haiku[1m]';
+  }
+
+  return trimmed;
+};
+
 export const syncImplicitModelSelection = (
   currentModel: string,
   currentSource: ModelSelectionSource,
@@ -7,20 +27,18 @@ export const syncImplicitModelSelection = (
 ) => {
   if (currentSource === 'explicit') {
     return {
-      model: currentModel,
+      model: normalizeModelSelectionValue(currentModel) ?? currentModel,
       source: currentSource,
     };
   }
 
-  const normalized = sessionModel?.trim().toLowerCase();
-  if (normalized?.includes('opus')) {
-    return { model: 'opus[1m]', source: 'implicit' as const };
-  }
-  if (normalized?.includes('sonnet')) {
-    return { model: 'sonnet[1m]', source: 'implicit' as const };
-  }
-
-  return { model: currentModel, source: 'implicit' as const };
+  return {
+    model:
+      normalizeModelSelectionValue(sessionModel) ??
+      normalizeModelSelectionValue(currentModel) ??
+      currentModel,
+    source: 'implicit' as const,
+  };
 };
 
 export const resolveRequestedModelArg = (

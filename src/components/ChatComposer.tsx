@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ContextReference, ContextReferenceMode, TokenUsage } from '../data/types';
+import { normalizeModelSelectionValue } from '../data/modelSelection';
 
 export type ComposerAttachment = {
   id: string;
@@ -20,6 +21,7 @@ type ChatComposerProps = {
   attachments: ComposerAttachment[];
   isSending: boolean;
   isResponding: boolean;
+  allowSendWhileResponding?: boolean;
   model: string;
   effort: 'low' | 'medium' | 'high' | 'max';
   supportsPathDrop?: boolean;
@@ -68,6 +70,7 @@ export function ChatComposer({
   attachments,
   isSending,
   isResponding,
+  allowSendWhileResponding = false,
   model,
   effort,
   supportsPathDrop = true,
@@ -83,9 +86,11 @@ export function ChatComposer({
   onStop,
 }: ChatComposerProps) {
   const canSend = draft.trim().length > 0 || attachments.length > 0;
-  const showStopAction = isSending || isResponding;
-  const requestedModel = model.trim().toLowerCase();
-  const actualSessionModel = sessionModel.trim().toLowerCase();
+  const showStopAction = isSending || (isResponding && !allowSendWhileResponding);
+  const requestedModel =
+    (normalizeModelSelectionValue(model) ?? model.trim()).toLowerCase();
+  const actualSessionModel =
+    (normalizeModelSelectionValue(sessionModel) ?? sessionModel.trim()).toLowerCase();
   const staleLegacyWindow =
     requestedModel.includes('[1m]') &&
     !actualSessionModel.includes('[1m]') &&
@@ -167,7 +172,7 @@ export function ChatComposer({
           <span>Model</span>
           <select value={model} onChange={(event) => onModelChange(event.target.value)}>
             <option value="opus[1m]">opus4.6[1M]</option>
-            <option value="sonnet[1m]">sonnet4.6[1M]</option>
+            <option value="sonnet">sonnet4.6</option>
           </select>
         </label>
         <label className="composer-control">
@@ -359,14 +364,16 @@ export function ChatComposer({
             </div>
           ) : null}
         </div>
-        <button
-          type="button"
-          className="send-button"
-          onClick={showStopAction ? onStop : onSend}
-          disabled={!showStopAction && !canSend}
-        >
-          {showStopAction ? '停止' : '发送'}
-        </button>
+        <div className="composer-actions">
+          <button
+            type="button"
+            className="send-button"
+            onClick={showStopAction ? onStop : onSend}
+            disabled={!showStopAction && !canSend}
+          >
+            {showStopAction ? '停止' : '发送'}
+          </button>
+        </div>
       </div>
     </footer>
   );

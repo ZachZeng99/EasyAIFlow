@@ -1,5 +1,6 @@
 import type { AskUserQuestion } from './askUserQuestion.js';
 import type { PlanModeRequest } from './planMode.js';
+import type { BackgroundTaskRecord, SessionRuntimeState } from './types.js';
 
 export type SessionPermissionRequest = {
   path: string;
@@ -24,6 +25,8 @@ export type SessionInteractionState = {
   pendingPermissions?: SessionPermissionRequest[];
   askUserQuestion?: SessionAskUserQuestion;
   planModeRequest?: SessionPlanModeRequest;
+  backgroundTasks?: BackgroundTaskRecord[];
+  runtime?: SessionRuntimeState;
   isGrantingPermission?: boolean;
   isSubmittingAskUserQuestion?: boolean;
   isSubmittingPlanMode?: boolean;
@@ -88,3 +91,41 @@ export const advanceSessionPermissionRequest = (
     isGrantingPermission: false,
   };
 };
+
+export const upsertSessionBackgroundTask = (
+  state: SessionInteractionState,
+  task: BackgroundTaskRecord,
+): SessionInteractionState => {
+  const tasks = [...(state.backgroundTasks ?? [])];
+  const existingIndex = tasks.findIndex((candidate) => candidate.taskId === task.taskId);
+  if (existingIndex >= 0) {
+    tasks[existingIndex] = {
+      ...tasks[existingIndex],
+      ...task,
+    };
+  } else {
+    tasks.unshift(task);
+  }
+
+  tasks.sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));
+
+  return {
+    ...state,
+    backgroundTasks: tasks.slice(0, 24),
+  };
+};
+
+export const clearSessionBackgroundTasks = (
+  state: SessionInteractionState,
+): SessionInteractionState => ({
+  ...state,
+  backgroundTasks: undefined,
+});
+
+export const setSessionRuntimeState = (
+  state: SessionInteractionState,
+  runtime: SessionRuntimeState,
+): SessionInteractionState => ({
+  ...state,
+  runtime,
+});

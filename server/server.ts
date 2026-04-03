@@ -17,12 +17,14 @@ import {
   handleRespondToAskUserQuestion,
   handleRespondToPlanMode,
   handleStopSession,
+  handleDisconnectSession,
   handleSendMessage,
   handleBootstrapHarness,
   handleRunHarness,
   handleBtwMessage,
   handleBtwDiscard,
   handleGetSlashCommands,
+  handleBootstrapSessions,
   handleCloseProject,
   handleDeleteStreamwork,
   handleDeleteSession,
@@ -101,9 +103,7 @@ const rpcHandlers = {
     platform: 'web',
     defaultModel: await getConfiguredClaudeModel(ctx),
   }),
-  getProjects: async () => ({
-    projects: await getProjects(),
-  }),
+  getProjects: async () => handleBootstrapSessions(state),
   getGitSnapshot: async (payload: { cwd: string }) => getGitSnapshot(payload.cwd),
   getSlashCommands: async (payload: { cwd: string; model?: string }) =>
     handleGetSlashCommands(ctx, state, payload),
@@ -202,6 +202,8 @@ const rpcHandlers = {
   }) => handleSendMessage(ctx, state, payload),
   stopSessionRun: async (payload: { sessionId: string }) =>
     handleStopSession(ctx, state, payload),
+  disconnectSession: async (payload: { sessionId: string }) =>
+    handleDisconnectSession(ctx, state, payload),
 } as const;
 
 type RpcMethod = keyof typeof rpcHandlers;

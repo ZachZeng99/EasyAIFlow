@@ -64,12 +64,18 @@ const isSensitiveRequest = (targetPath: string | undefined, decisionReason: stri
   );
 };
 
-export const buildClaudeUserMessageLine = (prompt: string) =>
+export const buildClaudeUserMessageLine = (
+  prompt: string,
+  options?: { uuid?: string },
+) =>
   JSON.stringify({
     type: 'user',
+    session_id: '',
+    parent_tool_use_id: null,
+    ...(options?.uuid ? { uuid: options.uuid } : {}),
     message: {
       role: 'user',
-      content: [{ type: 'text', text: prompt }],
+      content: prompt,
     },
   });
 

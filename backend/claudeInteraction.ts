@@ -5,11 +5,13 @@ import { spawn } from 'node:child_process';
 import type { ClaudeInteractionContext } from './claudeInteractionContext.js';
 import type {
   ActiveClaudeRun,
+  ActiveClaudeTurn,
   ClaudeChildProcess,
   ClaudeInteractionState,
   ClaudePrintOptions,
   ClaudeRunState,
   PreparedClaudeRun,
+  ResidentClaudeSession,
 } from './claudeInteractionState.js';
 import {
   nowLabel,
@@ -54,7 +56,10 @@ import {
   noteBackgroundTaskNotificationInRunState,
   shouldCompleteClaudeRunOnClose,
 } from '../electron/claudeRunState.js';
-import { extractBackgroundTaskNotificationContent } from '../electron/backgroundTaskNotification.js';
+import {
+  extractBackgroundTaskNotificationContent,
+  parseClaudeBackgroundTaskEvent,
+} from '../electron/backgroundTaskNotification.js';
 import {
   buildClaudeAskUserQuestionToolResultLine,
   buildClaudeControlResponseLine,
@@ -70,7 +75,7 @@ import { buildPermissionRulesForPath } from '../electron/permissionRules.js';
 import { readLatestNativeClaudeApiError } from '../electron/nativeClaudeError.js';
 import { getClaudeSpawnOptions } from '../electron/claudeSpawn.js';
 import { createSequentialLineProcessor } from '../electron/sequentialLineProcessor.js';
-import { enqueueSessionRun, hasSessionRunQueued } from '../electron/sessionRunQueue.js';
+import { enqueueSessionRun } from '../electron/sessionRunQueue.js';
 import {
   readSessionStopVersion,
   requestSessionStop,
@@ -78,6 +83,10 @@ import {
   stopPendingSessionMessages,
 } from '../electron/sessionStop.js';
 import { buildRecordedCodeChangeDiff } from '../electron/recordedCodeChangeDiff.js';
+import {
+  normalizeClaudeModelSelection,
+  resolveClaudeModelArg,
+} from '../electron/claudeModel.js';
 import {
   addActiveClaudeRun,
   listActiveClaudeRunsForSession,
@@ -89,6 +98,7 @@ import {
   parseAskUserQuestions,
   type AskUserQuestion,
 } from '../src/data/askUserQuestion.js';
+import type { SessionInteractionState } from '../src/data/sessionInteraction.js';
 import {
   buildPlanModeResponseText,
   buildPlanModeTraceContent,
@@ -98,6 +108,7 @@ import {
 } from '../src/data/planMode.js';
 import { runHarnessOrchestration } from './harnessOrchestrator.js';
 import type {
+  BackgroundTaskRecord,
   BtwResponse,
   ConversationMessage,
   ContextReference,
@@ -124,8 +135,15 @@ export const readClaudeSettings = async (ctx: ClaudeInteractionContext) => {
 
 export const getConfiguredClaudeModel = async (ctx: ClaudeInteractionContext) => {
   const parsed = await readClaudeSettings(ctx);
-  return typeof parsed?.model === 'string' && parsed.model.trim() ? parsed.model.trim() : undefined;
+  return typeof parsed?.model === 'string' && parsed.model.trim()
+    ? normalizeClaudeModelSelection(parsed.model.trim()) ?? parsed.model.trim()
+    : undefined;
 };
+
+const resolveRequestedClaudeModel = async (
+  ctx: ClaudeInteractionContext,
+  requestedModel: string | undefined,
+) => resolveClaudeModelArg(requestedModel, await readClaudeSettings(ctx));
 
 export const grantPathPermission = async (ctx: ClaudeInteractionContext, projectRoot: string, targetPath: string) => {
   const settingsPath = path.join(projectRoot, '.claude', 'settings.local.json');
@@ -508,6 +526,330 @@ const syncRunSessionRuntime = async (sessionId: string, runState: ClaudeRunState
   Object.assign(runState, markRunSessionRuntimePersisted(runState));
 };
 
+const hasActiveBackgroundTasks = (runState: ClaudeRunState) =>
+  [...runState.backgroundTasks.values()].some(
+    (task) => task.status === 'pending' || task.status === 'running',
+  );
+
+const emitRuntimeState = (
+  ctx: ClaudeInteractionContext,
+  sessionId: string,
+  phase: import('../src/data/types.js').SessionRuntimePhase,
+  processActive: boolean,
+) => {
+  ctx.broadcastEvent({
+    type: 'runtime-state',
+    sessionId,
+    runtime: {
+      processActive,
+      phase,
+      updatedAt: Date.now(),
+    },
+  });
+};
+
+const buildClaudeControlRequestLine = (
+  subtype: 'interrupt' | 'end_session',
+  extra?: Record<string, unknown>,
+) =>
+  JSON.stringify({
+    type: 'control_request',
+    request_id: randomUUID(),
+    request: {
+      subtype,
+      ...(extra ?? {}),
+    },
+  });
+
+const getResidentSession = (
+  state: ClaudeInteractionState,
+  sessionId: string,
+) => state.residentSessions.get(sessionId);
+
+const removeResidentSession = (
+  state: ClaudeInteractionState,
+  sessionId: string,
+) => {
+  state.residentSessions.delete(sessionId);
+};
+
+const canRestartResidentSession = (resident: ResidentClaudeSession) =>
+  !resident.currentTurn &&
+  ![...resident.backgroundTaskOwners.values()].some((owner) =>
+    [...owner.runState.backgroundTasks.values()].some(
+      (task) => task.status === 'pending' || task.status === 'running',
+    ),
+  );
+
+const registerBackgroundTaskOwner = (
+  resident: ResidentClaudeSession,
+  taskId: string,
+  assistantMessageId: string,
+  runState: ClaudeRunState,
+) => {
+  resident.backgroundTaskOwners.set(taskId, {
+    assistantMessageId,
+    runState,
+  });
+};
+
+const finalizeBackgroundOwnersIfSettled = async (
+  ctx: ClaudeInteractionContext,
+  sessionId: string,
+  resident: ResidentClaudeSession,
+) => {
+  const seen = new Set<string>();
+  for (const [taskId, owner] of resident.backgroundTaskOwners) {
+    if (seen.has(owner.assistantMessageId)) {
+      continue;
+    }
+    seen.add(owner.assistantMessageId);
+    const hasActiveTasks = [...owner.runState.backgroundTasks.values()].some(
+      (task) => task.status === 'pending' || task.status === 'running',
+    );
+    if (hasActiveTasks) {
+      continue;
+    }
+
+    await completeAssistantRun(
+      ctx,
+      sessionId,
+      owner.assistantMessageId,
+      owner.runState,
+      owner.runState.lastResultContent ?? owner.runState.content,
+    );
+    for (const [ownedTaskId, candidate] of resident.backgroundTaskOwners) {
+      if (candidate.assistantMessageId === owner.assistantMessageId) {
+        resident.backgroundTaskOwners.delete(ownedTaskId);
+      }
+    }
+    // Delete the current entry as well in case it was skipped by map iteration semantics.
+    resident.backgroundTaskOwners.delete(taskId);
+  }
+};
+
+const residentHasActiveBackgroundTasks = (resident: ResidentClaudeSession) =>
+  [...resident.backgroundTaskOwners.values()].some((owner) =>
+    [...owner.runState.backgroundTasks.values()].some(
+      (task) => task.status === 'pending' || task.status === 'running',
+    ),
+  );
+
+const collectResidentBackgroundTasks = (resident: ResidentClaudeSession): BackgroundTaskRecord[] => {
+  const tasks = new Map<string, BackgroundTaskRecord>();
+
+  const collect = (runState?: ClaudeRunState) => {
+    if (!runState) {
+      return;
+    }
+    runState.backgroundTasks.forEach((task, taskId) => {
+      tasks.set(taskId, {
+        ...(tasks.get(taskId) ?? {}),
+        ...task,
+      });
+    });
+  };
+
+  collect(resident.currentTurn?.runState);
+  collect(resident.activeOutputTurn?.runState);
+  resident.backgroundTaskOwners.forEach((owner) => collect(owner.runState));
+
+  return [...tasks.values()]
+    .sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0))
+    .slice(0, 24);
+};
+
+const deriveResidentRuntimePhase = (
+  state: ClaudeInteractionState,
+  sessionId: string,
+  resident: ResidentClaudeSession,
+): import('../src/data/types.js').SessionRuntimePhase => {
+  const hasBlockingInteraction =
+    [...state.pendingPermissionRequests.values()].some((pending) => pending.sessionId === sessionId) ||
+    [...state.pendingAskUserQuestions.values()].some((pending) => pending.sessionId === sessionId) ||
+    [...state.pendingPlanModeRequests.values()].some((pending) => pending.sessionId === sessionId);
+
+  if (hasBlockingInteraction) {
+    return 'awaiting_reply';
+  }
+
+  if (resident.currentTurn || resident.activeOutputTurn) {
+    return 'running';
+  }
+
+  if (residentHasActiveBackgroundTasks(resident)) {
+    return 'background';
+  }
+
+  return 'idle';
+};
+
+export const getSessionInteractionSnapshots = (
+  state: ClaudeInteractionState,
+): Record<string, SessionInteractionState> => {
+  const snapshots: Record<string, SessionInteractionState> = {};
+  const ensureSnapshot = (sessionId: string) => {
+    snapshots[sessionId] ??= {};
+    return snapshots[sessionId];
+  };
+
+  state.residentSessions.forEach((resident, sessionId) => {
+    const snapshot = ensureSnapshot(sessionId);
+    const backgroundTasks = collectResidentBackgroundTasks(resident);
+    if (backgroundTasks.length > 0) {
+      snapshot.backgroundTasks = backgroundTasks;
+    }
+
+    const processActive =
+      !resident.child.killed &&
+      resident.child.exitCode === null &&
+      resident.child.signalCode === null;
+
+    snapshot.runtime = {
+      processActive,
+      phase: processActive ? deriveResidentRuntimePhase(state, sessionId, resident) : 'inactive',
+      updatedAt: Date.now(),
+    };
+  });
+
+  state.pendingPermissionRequests.forEach((pending, requestId) => {
+    const snapshot = ensureSnapshot(pending.sessionId);
+    const request = {
+      path:
+        pending.request.targetPath ??
+        pending.request.command ??
+        pending.request.description ??
+        pending.request.toolName,
+      sensitive: pending.request.sensitive,
+      requestId,
+      sessionId: pending.sessionId,
+    };
+    if (!snapshot.permission) {
+      snapshot.permission = request;
+      return;
+    }
+    snapshot.pendingPermissions = [...(snapshot.pendingPermissions ?? []), request];
+  });
+
+  state.pendingAskUserQuestions.forEach((pending) => {
+    const snapshot = ensureSnapshot(pending.sessionId);
+    snapshot.askUserQuestion = {
+      sessionId: pending.sessionId,
+      toolUseId: pending.toolUseId,
+      questions: pending.questions,
+    };
+  });
+
+  state.pendingPlanModeRequests.forEach((pending) => {
+    const snapshot = ensureSnapshot(pending.sessionId);
+    snapshot.planModeRequest = {
+      sessionId: pending.sessionId,
+      request: pending.request,
+    };
+  });
+
+  Object.values(snapshots).forEach((snapshot) => {
+    if (
+      !snapshot.runtime &&
+      (snapshot.permission || snapshot.askUserQuestion || snapshot.planModeRequest)
+    ) {
+      snapshot.runtime = {
+        processActive: true,
+        phase: 'awaiting_reply',
+        updatedAt: Date.now(),
+      };
+    }
+  });
+
+  return snapshots;
+};
+
+const createAutonomousAssistantTurn = async (
+  ctx: ClaudeInteractionContext,
+  sessionId: string,
+): Promise<ActiveClaudeTurn | undefined> => {
+  const session = await findSession(sessionId);
+  if (!session) {
+    return undefined;
+  }
+
+  const assistantMessage: ConversationMessage = {
+    id: randomUUID(),
+    role: 'assistant',
+    timestamp: nowLabel(),
+    title: 'Claude background response',
+    content: '',
+    status: 'background',
+  };
+
+  await upsertSessionMessage(sessionId, assistantMessage);
+  ctx.broadcastEvent({
+    type: 'trace',
+    sessionId,
+    message: assistantMessage,
+  });
+
+  return {
+    userMessageId: `background-user-${assistantMessage.id}`,
+    assistantMessageId: assistantMessage.id,
+    stopVersion: readSessionStopVersion(new Map(), sessionId),
+    session,
+    runState: {
+      ...createClaudeRunState(),
+      claudeSessionId: session.claudeSessionId,
+      model: session.model,
+      persistedClaudeSessionId: session.claudeSessionId,
+      persistedModel: session.model,
+      tokenUsage: session.tokenUsage,
+      lastResultContent: undefined,
+      backgroundTasks: new Map(),
+      toolTraces: new Map<string, ConversationMessage>(),
+      toolUseBlockIds: new Map<number, string>(),
+      toolUseJsonBuffers: new Map<string, string>(),
+    },
+    releaseQueuedTurn: () => undefined,
+    resolveCompletion: () => undefined,
+    rejectCompletion: () => undefined,
+  };
+};
+
+const parseBackgroundLaunchFromToolResult = (
+  content: string,
+  toolUseId: string,
+) => {
+  const normalized = content.trim();
+  if (
+    !/background|后台|output_file:|Output is being written to:|moved to the background|run remotely/i.test(
+      normalized,
+    )
+  ) {
+    return null;
+  }
+
+  const taskId =
+    normalized.match(/(?:taskId|task_id|ID):\s*([^\s.]+)/i)?.[1] ??
+    `tool-${toolUseId}`;
+  const outputFile =
+    normalized.match(/output_file:\s*([^\r\n]+)/i)?.[1]?.trim() ??
+    normalized.match(/Output is being written to:\s*([^\r\n]+)/i)?.[1]?.trim();
+  const taskType = /agent/i.test(normalized)
+    ? 'agent'
+    : /command|bash|powershell/i.test(normalized)
+      ? 'command'
+      : undefined;
+
+  return {
+    taskId,
+    status: 'running' as const,
+    description: taskType === 'agent' ? 'Background agent task' : 'Background task',
+    toolUseId,
+    taskType,
+    outputFile,
+    summary: normalized.split(/\r?\n/)[0]?.trim() || 'Background task launched.',
+    updatedAt: Date.now(),
+  };
+};
+
 export const completeAssistantRun = async (
   ctx: ClaudeInteractionContext,
   sessionId: string,
@@ -614,6 +956,11 @@ export const handleClaudeLine = async (
   runState: ClaudeRunState,
   activeRun: ActiveClaudeRun,
   releaseQueuedTurn: () => void,
+  options?: {
+    persistentSession?: boolean;
+    onBackgroundTaskOwner?: (taskId: string, assistantMessageId: string, runState: ClaudeRunState) => void;
+    onBackgroundActivated?: () => void;
+  },
 ) => {
   if (!line.trim()) {
     return;
@@ -628,12 +975,53 @@ export const handleClaudeLine = async (
   const backgroundTaskNotification = extractBackgroundTaskNotificationContent(parsed);
   if (backgroundTaskNotification) {
     Object.assign(runState, noteBackgroundTaskNotificationInRunState(runState, backgroundTaskNotification));
-    if (parsed.type === 'queue-operation') {
+  }
+  const backgroundTask = parseClaudeBackgroundTaskEvent(parsed);
+  if (backgroundTask) {
+    runState.backgroundTasks.set(backgroundTask.taskId, backgroundTask);
+    options?.onBackgroundTaskOwner?.(backgroundTask.taskId, assistantMessageId, runState);
+    if (backgroundTask.status === 'pending' || backgroundTask.status === 'running') {
+      emitRuntimeState(ctx, sessionId, 'background', true);
+      options?.onBackgroundActivated?.();
+      await updateAssistantMessage(sessionId, assistantMessageId, (message) => {
+        if (
+          message.role === 'assistant' &&
+          (message.status === 'queued' ||
+            message.status === 'streaming' ||
+            message.status === 'running')
+        ) {
+          message.status = 'background';
+        }
+      });
+      ctx.broadcastEvent({
+        type: 'status',
+        sessionId,
+        messageId: assistantMessageId,
+        status: 'background',
+      });
+    }
+    ctx.broadcastEvent({
+      type: 'background-task',
+      sessionId,
+      task: backgroundTask,
+    });
+    if (parsed.type === 'system' || parsed.type === 'queue-operation') {
+      return;
+    }
+  }
+  if (parsed.type === 'system') {
+    const systemState = typeof parsed.state === 'string' ? parsed.state : undefined;
+    if (parsed.subtype === 'session_state_changed' && systemState === 'idle') {
+      emitRuntimeState(ctx, sessionId, 'idle', true);
+      if (!options?.persistentSession && isWritableStdin(activeRun.child) && activeRun.child.stdin) {
+        activeRun.child.stdin.end();
+      }
       return;
     }
   }
   const askUserQuestionRequest = parseClaudeAskUserQuestionControlRequest(parsed);
   if (askUserQuestionRequest) {
+    emitRuntimeState(ctx, sessionId, 'awaiting_reply', true);
     const stdin = activeRun.child.stdin;
     if (isWritableStdin(activeRun.child) && stdin) {
       stdin.write(`${buildClaudeControlResponseLine(askUserQuestionRequest, 'allow')}\n`);
@@ -644,6 +1032,7 @@ export const handleClaudeLine = async (
   const planModeControlRequest = parseClaudePlanModeControlRequest(parsed);
   if (planModeControlRequest) {
     if (planModeControlRequest.toolName === 'ExitPlanMode') {
+      emitRuntimeState(ctx, sessionId, 'awaiting_reply', true);
       // Defer the control_response for ExitPlanMode until the user decides.
       // Sending 'allow' immediately would let Claude CLI auto-approve the plan
       // before the user has a chance to review it.
@@ -682,6 +1071,7 @@ export const handleClaudeLine = async (
       activeRun,
       request: permissionControlRequest,
     });
+    emitRuntimeState(ctx, sessionId, 'awaiting_reply', true);
     ctx.broadcastEvent({
       type: 'permission-request',
       sessionId,
@@ -721,6 +1111,7 @@ export const handleClaudeLine = async (
       content_block?: { type?: string; name?: string; input?: unknown; id?: string };
     };
     if (event?.type === 'content_block_delta' && event.delta?.type === 'text_delta' && event.delta.text) {
+      emitRuntimeState(ctx, sessionId, 'running', true);
       runState.content += event.delta.text;
       await updateAssistantMessage(sessionId, assistantMessageId, (message) => {
         message.content = runState.content;
@@ -805,6 +1196,12 @@ export const handleClaudeLine = async (
     // earlier text when the assistant event carries only the current turn.
     const finalText = runState.content || turnText || '';
     Object.assign(runState, applyAssistantTextToRunState(runState, finalText));
+    emitRuntimeState(
+      ctx,
+      sessionId,
+      hasActiveBackgroundTasks(runState) ? 'background' : 'running',
+      true,
+    );
 
     for (const block of message?.content ?? []) {
       if (block.type === 'tool_use') {
@@ -861,6 +1258,33 @@ export const handleClaudeLine = async (
             current.content = appendTraceContent(current.content, resultText);
             current.status = (block as { is_error?: boolean }).is_error ? 'error' : 'success';
             await emitTraceMessage(ctx, sessionId, current);
+            const backgroundLaunch = parseBackgroundLaunchFromToolResult(resultText, toolUseId);
+            if (backgroundLaunch) {
+              runState.backgroundTasks.set(backgroundLaunch.taskId, backgroundLaunch);
+              options?.onBackgroundTaskOwner?.(backgroundLaunch.taskId, assistantMessageId, runState);
+              options?.onBackgroundActivated?.();
+              await updateAssistantMessage(sessionId, assistantMessageId, (message) => {
+                if (
+                  message.role === 'assistant' &&
+                  (message.status === 'queued' ||
+                    message.status === 'streaming' ||
+                    message.status === 'running')
+                ) {
+                  message.status = 'background';
+                }
+              });
+              ctx.broadcastEvent({
+                type: 'status',
+                sessionId,
+                messageId: assistantMessageId,
+                status: 'background',
+              });
+              ctx.broadcastEvent({
+                type: 'background-task',
+                sessionId,
+                task: backgroundLaunch,
+              });
+            }
           }
           const pendingPlanModeRequest = state.pendingPlanModeRequests.get(toolUseId);
           if (pendingPlanModeRequest) {
@@ -880,13 +1304,51 @@ export const handleClaudeLine = async (
 
   if (parsed.type === 'result') {
     runState.receivedResult = true;
+    runState.lastResultContent = String(parsed.result ?? '');
     runState.tokenUsage = mapTokenUsage(parsed, runState.lastAssistantUsage);
-    try {
-      await completeAssistantRun(ctx, sessionId, assistantMessageId, runState, String(parsed.result ?? ''));
-    } finally {
-      releaseQueuedTurn();
-      activeRun.child.stdin?.end();
+    const visibleContent = runState.lastResultContent || runState.content;
+    if (!hasActiveBackgroundTasks(runState)) {
+      await completeAssistantRun(
+        ctx,
+        sessionId,
+        assistantMessageId,
+        runState,
+        visibleContent,
+      );
+      if (options?.persistentSession) {
+        emitRuntimeState(ctx, sessionId, 'idle', true);
+      }
+      if (!options?.persistentSession && isWritableStdin(activeRun.child) && activeRun.child.stdin) {
+        activeRun.child.stdin.end();
+      }
+      return;
     }
+
+    if (visibleContent) {
+      runState.content = visibleContent;
+      const title = buildMessageTitle(visibleContent, 'Claude response');
+      await updateAssistantMessage(sessionId, assistantMessageId, (message) => {
+        message.content = visibleContent;
+        message.status = 'background';
+        message.title = title;
+      });
+      await setSessionRuntime(sessionId, {
+        claudeSessionId: runState.claudeSessionId,
+        model: runState.model,
+        preview: visibleContent,
+        timeLabel: 'Just now',
+        tokenUsage: runState.tokenUsage,
+      });
+      ctx.broadcastEvent({
+        type: 'status',
+        sessionId,
+        messageId: assistantMessageId,
+        status: 'background',
+        title,
+        content: visibleContent,
+      });
+    }
+    return;
   }
 };
 
@@ -993,185 +1455,347 @@ export const markPreparedClaudeRunStarted = async (ctx: ClaudeInteractionContext
   });
 };
 
+const createActiveTurn = (
+  prepared: PreparedClaudeRun,
+  releaseQueuedTurn: () => void,
+  resolveCompletion: () => void,
+  rejectCompletion: (error: unknown) => void,
+): ActiveClaudeTurn => ({
+  userMessageId: prepared.userMessageId,
+  assistantMessageId: prepared.assistantMessageId,
+  stopVersion: prepared.stopVersion,
+  session: prepared.session,
+  runState: {
+    ...createClaudeRunState(),
+    claudeSessionId: prepared.session.claudeSessionId,
+    model: prepared.session.model,
+    persistedClaudeSessionId: prepared.session.claudeSessionId,
+    persistedModel: prepared.session.model,
+    tokenUsage: prepared.session.tokenUsage,
+    lastResultContent: undefined,
+    backgroundTasks: new Map(),
+    toolTraces: new Map<string, ConversationMessage>(),
+    toolUseBlockIds: new Map<number, string>(),
+    toolUseJsonBuffers: new Map<string, string>(),
+  },
+  releaseQueuedTurn,
+  resolveCompletion,
+  rejectCompletion,
+});
+
+const finalizeResidentSessionClose = async (
+  ctx: ClaudeInteractionContext,
+  state: ClaudeInteractionState,
+  resident: ResidentClaudeSession,
+  code: number | null,
+  error?: Error,
+) => {
+  cleanupPendingRequestsForRun(state, resident.runId);
+  removeActiveClaudeRun(state.activeRuns, resident.runId);
+  removeResidentSession(state, resident.sessionId);
+  emitRuntimeState(ctx, resident.sessionId, 'inactive', false);
+  await resident.stdoutProcessor.flush();
+
+  const turn = resident.currentTurn;
+  resident.currentTurn = undefined;
+
+  if (turn) {
+    turn.releaseQueuedTurn();
+    if (readSessionStopVersion(state.sessionStopVersions, resident.sessionId) !== turn.stopVersion) {
+      const stopped = await stopAssistantMessage(resident.sessionId, turn.assistantMessageId);
+      if (stopped) {
+        ctx.broadcastEvent({
+          type: 'status',
+          sessionId: resident.sessionId,
+          messageId: turn.assistantMessageId,
+          status: stopped.status,
+          title: stopped.title,
+          content: stopped.content,
+        });
+      }
+      turn.resolveCompletion();
+    } else if (error) {
+      await updateAssistantMessage(resident.sessionId, turn.assistantMessageId, (message) => {
+        message.content = error.message;
+        message.status = 'error';
+        message.title = 'Claude error';
+      });
+      await setSessionRuntime(resident.sessionId, {
+        claudeSessionId: turn.runState.claudeSessionId,
+        model: turn.runState.model,
+        preview: error.message,
+        timeLabel: 'Just now',
+      });
+      ctx.broadcastEvent({
+        type: 'error',
+        sessionId: resident.sessionId,
+        messageId: turn.assistantMessageId,
+        error: error.message,
+      });
+      turn.resolveCompletion();
+    } else if ((code ?? 0) === 0) {
+      if (turn.runState.terminalError) {
+        await setSessionRuntime(resident.sessionId, {
+          claudeSessionId: turn.runState.claudeSessionId,
+          model: turn.runState.model,
+          preview: turn.runState.terminalError,
+          timeLabel: 'Just now',
+        });
+      } else if (shouldCompleteClaudeRunOnClose(turn.runState)) {
+        await completeAssistantRun(
+          ctx,
+          resident.sessionId,
+          turn.assistantMessageId,
+          turn.runState,
+          turn.runState.lastResultContent ?? '',
+        );
+      }
+      turn.resolveCompletion();
+    } else {
+      const nativeApiError = await readLatestNativeClaudeApiError(
+        turn.session.workspace,
+        turn.runState.claudeSessionId ?? turn.session.claudeSessionId,
+      );
+      const errorMessage =
+        resident.stderrBuffer.trim() ||
+        turn.runState.terminalError ||
+        nativeApiError ||
+        `Claude exited with code ${code ?? 'unknown'}.`;
+      await updateAssistantMessage(resident.sessionId, turn.assistantMessageId, (message) => {
+        message.content = errorMessage;
+        message.status = 'error';
+        message.title = 'Claude error';
+      });
+      await setSessionRuntime(resident.sessionId, {
+        claudeSessionId: turn.runState.claudeSessionId,
+        model: turn.runState.model,
+        preview: errorMessage,
+        timeLabel: 'Just now',
+      });
+      ctx.broadcastEvent({
+        type: 'error',
+        sessionId: resident.sessionId,
+        messageId: turn.assistantMessageId,
+        error: errorMessage,
+      });
+      turn.resolveCompletion();
+    }
+    await finalizeToolTraces(ctx, resident.sessionId, turn.runState);
+  }
+
+  await finalizeBackgroundOwnersIfSettled(ctx, resident.sessionId, resident);
+};
+
+const ensureResidentClaudeSession = async (
+  ctx: ClaudeInteractionContext,
+  state: ClaudeInteractionState,
+  session: SessionSummary,
+  options?: ClaudePrintOptions,
+) => {
+  const resolvedModel = await resolveRequestedClaudeModel(ctx, options?.model);
+  const existing = getResidentSession(state, session.id);
+  if (existing && !existing.child.killed) {
+    if (
+      existing.configuredModel === resolvedModel &&
+      existing.configuredEffort === options?.effort
+    ) {
+      return existing;
+    }
+    if (!canRestartResidentSession(existing)) {
+      return existing;
+    }
+    if (!existing.child.killed) {
+      existing.child.kill();
+    }
+    removeResidentSession(state, session.id);
+    removeActiveClaudeRun(state.activeRuns, existing.runId);
+  }
+
+  const args = buildClaudePrintArgs({
+    model: resolvedModel,
+    effort: options?.effort,
+    sessionArgs: buildClaudeSessionArgs(session.claudeSessionId, session.title),
+  });
+
+  const child = spawn('claude', args, getClaudeSpawnOptions(session.workspace));
+  const activeRun = addActiveClaudeRun(state.activeRuns, {
+    runId: randomUUID(),
+    sessionId: session.id,
+    child,
+    projectRoot: session.workspace,
+  });
+
+  const resident: ResidentClaudeSession = {
+    ...activeRun,
+    configuredModel: resolvedModel,
+    configuredEffort: options?.effort,
+    stderrBuffer: '',
+    queuedTurns: new Map(),
+    backgroundTaskOwners: new Map(),
+    stdoutProcessor: createSequentialLineProcessor(async (line) => {
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        return;
+      }
+
+      const currentResident = getResidentSession(state, session.id);
+      if (!currentResident) {
+        return;
+      }
+
+      const parsedBackgroundTask = parseClaudeBackgroundTaskEvent(parsed);
+      const ownerTaskId =
+        (typeof parsed.task_id === 'string' ? parsed.task_id : undefined) ??
+        parsedBackgroundTask?.taskId;
+      const owner = ownerTaskId
+        ? currentResident.backgroundTaskOwners.get(ownerTaskId)
+        : undefined;
+
+      if (
+        parsed.type === 'user' &&
+        parsed.isMeta !== true &&
+        typeof parsed.uuid === 'string' &&
+        !parsed.parent_tool_use_id
+      ) {
+        const matchedTurn = currentResident.queuedTurns.get(parsed.uuid);
+        if (matchedTurn) {
+          currentResident.queuedTurns.delete(parsed.uuid);
+          currentResident.activeOutputTurn = matchedTurn;
+          emitRuntimeState(ctx, session.id, 'running', true);
+        }
+      }
+
+      let turn = currentResident.currentTurn ?? currentResident.activeOutputTurn;
+      if (
+        !turn &&
+        !owner &&
+        parsed.type === 'system' &&
+        parsed.subtype === 'task_notification'
+      ) {
+        turn = await createAutonomousAssistantTurn(ctx, session.id);
+        if (turn) {
+          currentResident.activeOutputTurn = turn;
+        }
+      }
+      const assistantMessageId = owner?.assistantMessageId ?? turn?.assistantMessageId;
+      const runState = owner?.runState ?? turn?.runState;
+      const releaseTurn = turn?.releaseQueuedTurn ?? (() => undefined);
+
+      if (!assistantMessageId || !runState) {
+        if (
+          parsed.type === 'system' &&
+          (parsed.subtype === 'task_notification' ||
+            (parsed.subtype === 'session_state_changed' && parsed.state === 'idle'))
+        ) {
+          emitRuntimeState(ctx, session.id, 'idle', true);
+          await finalizeBackgroundOwnersIfSettled(ctx, session.id, currentResident);
+        }
+        return;
+      }
+
+      await handleClaudeLine(
+        ctx,
+        state,
+        session.id,
+        assistantMessageId,
+        line,
+        runState,
+        currentResident,
+        releaseTurn,
+        {
+          persistentSession: true,
+          onBackgroundTaskOwner: (taskId, ownerAssistantMessageId, ownerRunState) =>
+            registerBackgroundTaskOwner(currentResident, taskId, ownerAssistantMessageId, ownerRunState),
+          onBackgroundActivated: () => {
+            const activeTurn = currentResident.currentTurn;
+            if (!activeTurn) {
+              return;
+            }
+            currentResident.currentTurn = undefined;
+            activeTurn.releaseQueuedTurn();
+            activeTurn.resolveCompletion();
+            emitRuntimeState(ctx, session.id, 'background', true);
+            if (isWritableStdin(currentResident.child) && currentResident.child.stdin) {
+              currentResident.child.stdin.write(`${buildClaudeControlRequestLine('interrupt')}\n`);
+            }
+          },
+        },
+      );
+
+      if (turn && parsed.type === 'result') {
+        for (const [taskId, task] of turn.runState.backgroundTasks) {
+          if (task.status === 'pending' || task.status === 'running') {
+            registerBackgroundTaskOwner(currentResident, taskId, turn.assistantMessageId, turn.runState);
+          }
+        }
+        if (currentResident.currentTurn === turn) {
+          currentResident.currentTurn = undefined;
+          turn.releaseQueuedTurn();
+          turn.resolveCompletion();
+        }
+        if (currentResident.activeOutputTurn === turn) {
+          currentResident.activeOutputTurn = undefined;
+        }
+      }
+
+      if (
+        parsed.type === 'system' &&
+        (parsed.subtype === 'task_notification' ||
+          (parsed.subtype === 'session_state_changed' && parsed.state === 'idle'))
+      ) {
+        await finalizeBackgroundOwnersIfSettled(ctx, session.id, currentResident);
+      }
+    }),
+  };
+
+  state.residentSessions.set(session.id, resident);
+  emitRuntimeState(ctx, session.id, 'idle', true);
+
+  child.stdout.on('data', (chunk: Buffer | string) => {
+    resident.stdoutProcessor.pushChunk(chunk.toString());
+  });
+
+  child.stderr.on('data', (chunk: Buffer | string) => {
+    resident.stderrBuffer += chunk.toString();
+  });
+
+  child.on('close', (code) => {
+    void finalizeResidentSessionClose(ctx, state, resident, code);
+  });
+
+  child.on('error', (error) => {
+    void finalizeResidentSessionClose(ctx, state, resident, null, error);
+  });
+
+  return resident;
+};
+
 export const executePreparedClaudeRun = async (
   ctx: ClaudeInteractionContext,
   state: ClaudeInteractionState,
   prepared: PreparedClaudeRun,
   releaseQueuedTurn: () => void,
 ) =>
-  new Promise<void>((resolve) => {
-    const { sessionId, assistantMessageId, session, resolvedPrompt, options } = prepared;
-    const args = buildClaudePrintArgs({
-      model: options?.model,
-      effort: options?.effort,
-      sessionArgs: buildClaudeSessionArgs(session.claudeSessionId, session.title),
-    });
-
-    const child = spawn('claude', args, getClaudeSpawnOptions(session.workspace));
-    const activeRun = addActiveClaudeRun(state.activeRuns, {
-      runId: randomUUID(),
-      sessionId,
-      child,
-      projectRoot: session.workspace,
-    });
-
-    let stderrBuffer = '';
-    let finalizing = false;
-    const beginFinalize = () => {
-      if (finalizing) {
-        return false;
+  new Promise<void>((resolve, reject) => {
+    const { session, resolvedPrompt } = prepared;
+    void (async () => {
+      const resident = await ensureResidentClaudeSession(ctx, state, session, prepared.options);
+      const turn = createActiveTurn(prepared, releaseQueuedTurn, resolve, reject);
+      resident.currentTurn = turn;
+      emitRuntimeState(ctx, prepared.sessionId, 'running', true);
+      if (!isWritableStdin(resident.child) || !resident.child.stdin) {
+        turn.releaseQueuedTurn();
+        resident.currentTurn = undefined;
+        throw new Error('Claude stdin is not writable.');
       }
-      finalizing = true;
-      cleanupPendingRequestsForRun(state, activeRun.runId);
-      removeActiveClaudeRun(state.activeRuns, activeRun.runId);
+      resident.child.stdin.write(
+        `${buildClaudeUserMessageLine(resolvedPrompt, { uuid: prepared.userMessageId })}\n`,
+      );
+    })().catch((error) => {
       releaseQueuedTurn();
-      return true;
-    };
-    const runState: ClaudeRunState = {
-      ...createClaudeRunState(),
-      claudeSessionId: session.claudeSessionId,
-      model: session.model,
-      persistedClaudeSessionId: session.claudeSessionId,
-      persistedModel: session.model,
-      tokenUsage: session.tokenUsage,
-      toolTraces: new Map<string, ConversationMessage>(),
-      toolUseBlockIds: new Map<number, string>(),
-      toolUseJsonBuffers: new Map<string, string>(),
-    };
-
-    const stdoutProcessor = createSequentialLineProcessor((line) =>
-      handleClaudeLine(ctx, state, sessionId, assistantMessageId, line, runState, activeRun, releaseQueuedTurn),
-    );
-
-    child.stdout.on('data', (chunk: Buffer | string) => {
-      stdoutProcessor.pushChunk(chunk.toString());
-    });
-
-    child.stderr.on('data', (chunk: Buffer | string) => {
-      stderrBuffer += chunk.toString();
-    });
-
-    child.stdin.write(`${buildClaudeUserMessageLine(resolvedPrompt)}\n`);
-
-    child.on('close', (code) => {
-      if (!beginFinalize()) {
-        return;
-      }
-
-      void (async () => {
-        try {
-          await stdoutProcessor.flush();
-
-          if (readSessionStopVersion(state.sessionStopVersions, sessionId) !== prepared.stopVersion) {
-            const stopped = await stopAssistantMessage(sessionId, assistantMessageId);
-            if (stopped) {
-              ctx.broadcastEvent({
-                type: 'status',
-                sessionId,
-                messageId: assistantMessageId,
-                status: stopped.status,
-                title: stopped.title,
-                content: stopped.content,
-              });
-            }
-            return;
-          }
-
-          if (code === 0) {
-            if (runState.terminalError) {
-              await setSessionRuntime(sessionId, {
-                claudeSessionId: runState.claudeSessionId,
-                model: runState.model,
-                preview: runState.terminalError,
-                timeLabel: 'Just now',
-              });
-              return;
-            }
-            if (shouldCompleteClaudeRunOnClose(runState)) {
-              await completeAssistantRun(ctx, sessionId, assistantMessageId, runState);
-            }
-            return;
-          }
-
-          const nativeApiError = await readLatestNativeClaudeApiError(
-            session.workspace,
-            runState.claudeSessionId ?? session.claudeSessionId,
-          );
-          const errorMessage =
-            stderrBuffer.trim() ||
-            runState.terminalError ||
-            nativeApiError ||
-            `Claude exited with code ${code ?? 'unknown'}.`;
-          await updateAssistantMessage(sessionId, assistantMessageId, (message) => {
-            message.content = errorMessage;
-            message.status = 'error';
-            message.title = 'Claude error';
-          });
-          await setSessionRuntime(sessionId, {
-            claudeSessionId: runState.claudeSessionId,
-            model: runState.model,
-            preview: errorMessage,
-            timeLabel: 'Just now',
-          });
-
-          ctx.broadcastEvent({
-            type: 'error',
-            sessionId,
-            messageId: assistantMessageId,
-            error: errorMessage,
-          });
-        } finally {
-          await finalizeToolTraces(ctx, sessionId, runState);
-          resolve();
-        }
-      })();
-    });
-
-    child.on('error', (error) => {
-      if (!beginFinalize()) {
-        return;
-      }
-
-      void (async () => {
-        try {
-          if (readSessionStopVersion(state.sessionStopVersions, sessionId) !== prepared.stopVersion) {
-            const stopped = await stopAssistantMessage(sessionId, assistantMessageId);
-            if (stopped) {
-              ctx.broadcastEvent({
-                type: 'status',
-                sessionId,
-                messageId: assistantMessageId,
-                status: stopped.status,
-                title: stopped.title,
-                content: stopped.content,
-              });
-            }
-            return;
-          }
-
-          await updateAssistantMessage(sessionId, assistantMessageId, (message) => {
-            message.content = error.message;
-            message.status = 'error';
-            message.title = 'Claude error';
-          });
-          await setSessionRuntime(sessionId, {
-            claudeSessionId: runState.claudeSessionId,
-            model: runState.model,
-            preview: error.message,
-            timeLabel: 'Just now',
-          });
-
-          ctx.broadcastEvent({
-            type: 'error',
-            sessionId,
-            messageId: assistantMessageId,
-            error: error.message,
-          });
-        } finally {
-          await finalizeToolTraces(ctx, sessionId, runState);
-          resolve();
-        }
-      })();
+      reject(error);
     });
   });
 
@@ -1184,7 +1808,7 @@ export const runClaudePrint = async (
   fallbackSession?: SessionSummary,
   options?: ClaudePrintOptions,
 ) => {
-  const queued = hasSessionRunQueued(state.sessionRunQueue, sessionId);
+  const queued = Boolean(getResidentSession(state, sessionId)?.currentTurn);
   const scheduledRun = enqueueSessionRun(state.sessionRunQueue, sessionId);
   const preparedRun = prepareClaudeRun(
     ctx,
@@ -1257,7 +1881,7 @@ export const runClaudePrintAndWait = async (
   fallbackSession?: SessionSummary,
   options?: ClaudePrintOptions,
 ) => {
-  const queued = hasSessionRunQueued(state.sessionRunQueue, sessionId);
+  const queued = Boolean(getResidentSession(state, sessionId)?.currentTurn);
   const scheduledRun = enqueueSessionRun(state.sessionRunQueue, sessionId);
   try {
     const prepared = await prepareClaudeRun(
@@ -1463,7 +2087,7 @@ CRITICAL CONSTRAINTS:
       }
 
       const args = buildClaudePrintArgs({
-        model: options?.model,
+        model: await resolveRequestedClaudeModel(ctx, options?.model),
         effort: options?.effort,
         sessionArgs,
         tools: '',
@@ -1678,6 +2302,18 @@ export const stopSessions = (state: ClaudeInteractionState, sessionIds: string[]
     state.sessionPlanApprovalPreferences.delete(sessionId);
     state.deferredExitPlanControlRequests.delete(sessionId);
     requestSessionStop(state.sessionStopVersions, sessionId);
+    const resident = getResidentSession(state, sessionId);
+    if (resident) {
+      if (resident.currentTurn) {
+        resident.currentTurn.releaseQueuedTurn();
+        resident.currentTurn.resolveCompletion();
+        resident.currentTurn = undefined;
+      }
+      if (!resident.child.killed) {
+        resident.child.kill();
+      }
+      removeResidentSession(state, sessionId);
+    }
     const runs = listActiveClaudeRunsForSession(state.activeRuns, sessionId);
     runs.forEach((run) => {
       if (!run.child.killed) {
@@ -1703,7 +2339,76 @@ export const stopSessions = (state: ClaudeInteractionState, sessionIds: string[]
   });
 };
 
-export const getSlashCommands = async (state: ClaudeInteractionState, cwd: string, model?: string) => {
+export const interruptSessionTurn = async (
+  ctx: ClaudeInteractionContext,
+  state: ClaudeInteractionState,
+  sessionId: string,
+) => {
+  const resident = getResidentSession(state, sessionId);
+  if (!resident || !resident.currentTurn) {
+    stopSessions(state, [sessionId]);
+    return stopPendingSessionMessages(sessionId);
+  }
+
+  const turn = resident.currentTurn;
+  resident.currentTurn = undefined;
+  requestSessionStop(state.sessionStopVersions, sessionId);
+
+  if (isWritableStdin(resident.child) && resident.child.stdin) {
+    resident.child.stdin.write(`${buildClaudeControlRequestLine('interrupt')}\n`);
+  }
+
+  const hasBackgroundTasks = hasActiveBackgroundTasks(turn.runState);
+  if (!hasBackgroundTasks) {
+    const stopped = await stopAssistantMessage(sessionId, turn.assistantMessageId);
+    if (stopped) {
+      ctx.broadcastEvent({
+        type: 'status',
+        sessionId,
+        messageId: turn.assistantMessageId,
+        status: stopped.status,
+        title: stopped.title,
+        content: stopped.content,
+      });
+    }
+  }
+
+  turn.releaseQueuedTurn();
+  turn.resolveCompletion();
+
+  emitRuntimeState(
+    ctx,
+    sessionId,
+    hasBackgroundTasks || residentHasActiveBackgroundTasks(resident) ? 'background' : 'idle',
+    true,
+  );
+
+  return {
+    projects: await getProjects(),
+  };
+};
+
+export const disconnectSession = async (
+  ctx: ClaudeInteractionContext,
+  state: ClaudeInteractionState,
+  sessionId: string,
+) => {
+  const resident = getResidentSession(state, sessionId);
+  if (resident && isWritableStdin(resident.child) && resident.child.stdin) {
+    resident.child.stdin.write(`${buildClaudeControlRequestLine('end_session', { reason: 'host_disconnect' })}\n`);
+  }
+  stopSessions(state, [sessionId]);
+  const result = await stopPendingSessionMessages(sessionId);
+  emitRuntimeState(ctx, sessionId, 'inactive', false);
+  return result;
+};
+
+export const getSlashCommands = async (
+  ctx: ClaudeInteractionContext,
+  state: ClaudeInteractionState,
+  cwd: string,
+  model?: string,
+) => {
   const cacheKey = `${cwd}::${model ?? ''}`;
   const cached = state.slashCommandCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) {
@@ -1722,66 +2427,69 @@ export const getSlashCommands = async (state: ClaudeInteractionState, cwd: strin
       'bypassPermissions',
     ];
 
-    if (model) {
-      args.push('--model', model);
-    }
-
-    const child = spawn('claude', args, getClaudeSpawnOptions(cwd));
-
-    let stdoutBuffer = '';
-    let settled = false;
-
-    const finish = (commands: string[]) => {
-      if (settled) {
-        return;
+    void (async () => {
+      const resolvedModel = await resolveRequestedClaudeModel(ctx, model);
+      if (resolvedModel) {
+        args.push('--model', resolvedModel);
       }
-      settled = true;
-      const normalized = [...new Set(commands.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim()))];
-      state.slashCommandCache.set(cacheKey, {
-        commands: normalized,
-        expiresAt: Date.now() + 60_000,
-      });
-      if (!child.killed) {
-        child.kill();
-      }
-      resolve(normalized);
-    };
 
-    const timeout = setTimeout(() => finish([]), 8_000);
+      const child = spawn('claude', args, getClaudeSpawnOptions(cwd));
 
-    child.stdout.on('data', (chunk: Buffer | string) => {
-      stdoutBuffer += chunk.toString();
-      const lines = stdoutBuffer.split(/\r?\n/);
-      stdoutBuffer = lines.pop() ?? '';
+      let stdoutBuffer = '';
+      let settled = false;
 
-      for (const line of lines) {
-        if (!line.trim()) {
-          continue;
+      const finish = (commands: string[]) => {
+        if (settled) {
+          return;
         }
+        settled = true;
+        const normalized = [...new Set(commands.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim()))];
+        state.slashCommandCache.set(cacheKey, {
+          commands: normalized,
+          expiresAt: Date.now() + 60_000,
+        });
+        if (!child.killed) {
+          child.kill();
+        }
+        resolve(normalized);
+      };
 
-        try {
-          const parsed = JSON.parse(line) as Record<string, unknown>;
-          if (parsed.type === 'system' && parsed.subtype === 'init' && Array.isArray(parsed.slash_commands)) {
-            clearTimeout(timeout);
-            finish(
-              parsed.slash_commands.filter((item): item is string => typeof item === 'string'),
-            );
-            return;
+      const timeout = setTimeout(() => finish([]), 8_000);
+
+      child.stdout.on('data', (chunk: Buffer | string) => {
+        stdoutBuffer += chunk.toString();
+        const lines = stdoutBuffer.split(/\r?\n/);
+        stdoutBuffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (!line.trim()) {
+            continue;
           }
-        } catch {
-          continue;
+
+          try {
+            const parsed = JSON.parse(line) as Record<string, unknown>;
+            if (parsed.type === 'system' && parsed.subtype === 'init' && Array.isArray(parsed.slash_commands)) {
+              clearTimeout(timeout);
+              finish(
+                parsed.slash_commands.filter((item): item is string => typeof item === 'string'),
+              );
+              return;
+            }
+          } catch {
+            continue;
+          }
         }
-      }
-    });
+      });
 
-    child.on('error', () => {
-      clearTimeout(timeout);
-      finish([]);
-    });
+      child.on('error', () => {
+        clearTimeout(timeout);
+        finish([]);
+      });
 
-    child.on('close', () => {
-      clearTimeout(timeout);
-      finish([]);
-    });
+      child.on('close', () => {
+        clearTimeout(timeout);
+        finish([]);
+      });
+    })().catch(() => resolve([]));
   });
 };

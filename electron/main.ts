@@ -14,12 +14,14 @@ import {
   handleRespondToAskUserQuestion,
   handleRespondToPlanMode,
   handleStopSession,
+  handleDisconnectSession,
   handleSendMessage,
   handleBootstrapHarness,
   handleRunHarness,
   handleBtwMessage,
   handleBtwDiscard,
   handleGetAppMeta,
+  handleBootstrapSessions,
   handleGetSlashCommands,
   handleCloseProject,
   handleDeleteStreamwork,
@@ -169,9 +171,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('claude:btw-discard', async (_event, payload: { cwd: string; claudeSessionId?: string }) =>
     handleBtwDiscard(ctx, state, payload),
   );
-  ipcMain.handle('sessions:bootstrap', async () => ({
-    projects: await getProjects(),
-  }));
+  ipcMain.handle('sessions:bootstrap', async () => handleBootstrapSessions(state));
   ipcMain.handle(
     'sessions:create',
     async (_event, payload?: { sourceSessionId?: string; includeStreamworkSummary?: boolean }) =>
@@ -285,6 +285,9 @@ app.whenReady().then(async () => {
   );
   ipcMain.handle('claude:stop-session', async (_event, payload: { sessionId: string }) =>
     handleStopSession(ctx, state, payload),
+  );
+  ipcMain.handle('claude:disconnect-session', async (_event, payload: { sessionId: string }) =>
+    handleDisconnectSession(ctx, state, payload),
   );
 
   await createMainWindow();

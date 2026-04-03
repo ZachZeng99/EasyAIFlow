@@ -1,5 +1,11 @@
 import type { spawn } from 'node:child_process';
-import type { ConversationMessage, ContextReference, SessionSummary, TokenUsage } from '../src/data/types.js';
+import type {
+  BackgroundTaskRecord,
+  ConversationMessage,
+  ContextReference,
+  SessionSummary,
+  TokenUsage,
+} from '../src/data/types.js';
 import type { ClaudePermissionControlRequest } from '../electron/claudeControlMessages.js';
 import type { AskUserQuestion } from '../src/data/askUserQuestion.js';
 import type { PlanModeRequest, PlanModeResponsePayload } from '../src/data/planMode.js';
@@ -51,6 +57,8 @@ export type ClaudeRunState = ClaudeRunStateCompletion & {
   tokenUsage?: TokenUsage;
   lastAssistantUsage?: PerCallUsage;
   terminalError?: string;
+  lastResultContent?: string;
+  backgroundTasks: Map<string, BackgroundTaskRecord>;
   toolTraces: Map<string, ConversationMessage>;
   toolUseBlockIds: Map<number, string>;
   toolUseJsonBuffers: Map<string, string>;
@@ -74,6 +82,38 @@ export type PreparedClaudeRun = {
   stopVersion: number;
 };
 
+export type ClaudeLineProcessor = {
+  pushChunk: (chunk: string) => void;
+  flush: () => Promise<void>;
+};
+
+export type ActiveClaudeTurn = {
+  userMessageId: string;
+  assistantMessageId: string;
+  stopVersion: number;
+  session: SessionSummary;
+  runState: ClaudeRunState;
+  releaseQueuedTurn: () => void;
+  resolveCompletion: () => void;
+  rejectCompletion: (error: unknown) => void;
+};
+
+export type BackgroundTaskOwner = {
+  assistantMessageId: string;
+  runState: ClaudeRunState;
+};
+
+export type ResidentClaudeSession = ActiveClaudeRun & {
+  configuredModel?: string;
+  configuredEffort?: ClaudePrintOptions['effort'];
+  stdoutProcessor: ClaudeLineProcessor;
+  stderrBuffer: string;
+  currentTurn?: ActiveClaudeTurn;
+  queuedTurns: Map<string, ActiveClaudeTurn>;
+  activeOutputTurn?: ActiveClaudeTurn;
+  backgroundTaskOwners: Map<string, BackgroundTaskOwner>;
+};
+
 export type DeferredExitPlanControl = {
   requestId: string;
   rawInput: Record<string, unknown>;
@@ -81,6 +121,7 @@ export type DeferredExitPlanControl = {
 
 export type ClaudeInteractionState = {
   activeRuns: ReturnType<typeof createActiveClaudeRunRegistry<ClaudeChildProcess>>;
+  residentSessions: Map<string, ResidentClaudeSession>;
   pendingPermissionRequests: Map<string, PendingPermissionRequest>;
   pendingAskUserQuestions: Map<string, PendingAskUserQuestion>;
   pendingPlanModeRequests: Map<string, PendingPlanModeRequest>;
@@ -93,6 +134,7 @@ export type ClaudeInteractionState = {
 
 export const createClaudeInteractionState = (): ClaudeInteractionState => ({
   activeRuns: createActiveClaudeRunRegistry<ClaudeChildProcess>(),
+  residentSessions: new Map(),
   pendingPermissionRequests: new Map(),
   pendingAskUserQuestions: new Map(),
   pendingPlanModeRequests: new Map(),

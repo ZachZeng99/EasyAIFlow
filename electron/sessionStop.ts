@@ -26,7 +26,7 @@ export const requestSessionStop = (
 };
 
 const isPendingStatus = (status: ConversationMessage['status']) =>
-  status === 'queued' || status === 'streaming' || status === 'running';
+  status === 'queued' || status === 'streaming' || status === 'running' || status === 'background';
 
 const buildStoppedAssistantMessage = (message: ConversationMessage): ConversationMessage => ({
   ...message,

@@ -55,6 +55,48 @@ export type TokenUsage = {
   windowSource?: 'runtime' | 'derived' | 'unknown';
 };
 
+export type BackgroundTaskStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'stopped';
+
+export type BackgroundTaskUsage = {
+  totalTokens: number;
+  toolUses: number;
+  durationMs: number;
+};
+
+export type BackgroundTaskRecord = {
+  taskId: string;
+  status: BackgroundTaskStatus;
+  description: string;
+  toolUseId?: string;
+  taskType?: string;
+  workflowName?: string;
+  prompt?: string;
+  outputFile?: string;
+  summary?: string;
+  lastToolName?: string;
+  usage?: BackgroundTaskUsage;
+  updatedAt?: number;
+};
+
+export type SessionRuntimePhase =
+  | 'inactive'
+  | 'running'
+  | 'background'
+  | 'awaiting_reply'
+  | 'idle'
+  | 'terminating';
+
+export type SessionRuntimeState = {
+  processActive: boolean;
+  phase: SessionRuntimePhase;
+  updatedAt?: number;
+};
+
 export type ChangedFile = {
   path: string;
   status: string;
@@ -123,7 +165,12 @@ export type SessionSummary = {
   branchSnapshot: BranchSnapshot;
 };
 
-export type SessionActivityState = 'idle' | 'responding' | 'awaiting_reply' | 'unread';
+export type SessionActivityState =
+  | 'idle'
+  | 'responding'
+  | 'background'
+  | 'awaiting_reply'
+  | 'unread';
 
 export type DreamRecord = {
   id: string;
@@ -156,7 +203,7 @@ export type ConversationMessage = {
   title: string;
   content: string;
   recordedDiff?: DiffPayload;
-  status?: 'queued' | 'streaming' | 'running' | 'success' | 'complete' | 'error';
+  status?: 'queued' | 'streaming' | 'running' | 'background' | 'success' | 'complete' | 'error';
   contextReferences?: ContextReference[];
   attachments?: MessageAttachment[];
   steps?: MessageStep[];
@@ -283,6 +330,16 @@ export type ClaudeStreamEvent =
       type: 'plan-mode-request';
       sessionId: string;
       request: PlanModeRequest;
+    }
+  | {
+      type: 'background-task';
+      sessionId: string;
+      task: BackgroundTaskRecord;
+    }
+  | {
+      type: 'runtime-state';
+      sessionId: string;
+      runtime: SessionRuntimeState;
     }
   | {
       type: 'complete';

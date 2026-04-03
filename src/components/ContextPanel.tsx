@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { DiffContent } from './DiffContent';
 import { extractCodeChangeSummaries } from '../data/codeChangeSummary';
+import type { SessionInteractionState } from '../data/sessionInteraction';
 import type { ConversationMessage, DiffPayload, GitSnapshot, SessionSummary } from '../data/types';
 
 type ContextPanelProps = {
   session: SessionSummary;
   messages: ConversationMessage[];
+  interaction?: SessionInteractionState;
   appVersion: string;
   gitSnapshot: GitSnapshot;
   onRequestDiff: (filePath: string) => Promise<DiffPayload>;
@@ -20,6 +22,7 @@ type ContextPanelProps = {
 export function ContextPanel({
   session,
   messages,
+  interaction,
   appVersion,
   gitSnapshot,
   onRequestDiff,
@@ -33,6 +36,7 @@ export function ContextPanel({
   const [selectedFilePath, setSelectedFilePath] = useState<string>('');
   const [diffPayload, setDiffPayload] = useState<DiffPayload | null>(null);
   const [isLoadingDiff, setIsLoadingDiff] = useState(false);
+  const backgroundTasks = interaction?.backgroundTasks ?? [];
 
   const sessionChangedFiles = useMemo(() => {
     const summaries = extractCodeChangeSummaries(messages);
@@ -88,8 +92,52 @@ export function ContextPanel({
     void loadDiff();
   }, [onRequestDiff, selectedFilePath]);
 
+  const formatTaskDuration = (durationMs: number) => {
+    if (durationMs < 1000) {
+      return `${durationMs} ms`;
+    }
+    if (durationMs < 60_000) {
+      return `${(durationMs / 1000).toFixed(1)} s`;
+    }
+    return `${(durationMs / 60_000).toFixed(1)} min`;
+  };
+
   return (
     <aside className="context-pane">
+      <div className="context-block">
+        <p className="section-kicker">background tasks</p>
+        <h2>后台任务</h2>
+        {backgroundTasks.length > 0 ? (
+          <div className="background-task-list">
+            {backgroundTasks.map((task) => (
+              <div key={task.taskId} className={`background-task-card status-${task.status}`}>
+                <div className="background-task-head">
+                  <strong>{task.description}</strong>
+                  <span className={`background-task-status status-${task.status}`}>{task.status}</span>
+                </div>
+                <div className="background-task-meta">
+                  <span>{task.taskType ?? 'task'}</span>
+                  {task.lastToolName ? <span>last tool: {task.lastToolName}</span> : null}
+                  {task.usage ? (
+                    <span>
+                      {task.usage.totalTokens} tk / {task.usage.toolUses} tools /{' '}
+                      {formatTaskDuration(task.usage.durationMs)}
+                    </span>
+                  ) : null}
+                </div>
+                {task.summary ? <p className="background-task-summary">{task.summary}</p> : null}
+                {task.outputFile ? <code className="background-task-output">{task.outputFile}</code> : null}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="changed-file-card empty">
+            <strong>没有后台任务</strong>
+            <p>这里只显示当前轮的后台任务；发送下一条消息后会清空上一轮。</p>
+          </div>
+        )}
+      </div>
+
       <div className="context-block">
         <p className="section-kicker">branch state</p>
         <h2>分支状态</h2>

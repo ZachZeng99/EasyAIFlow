@@ -20,6 +20,7 @@ import type {
   StreamworkCreateResult,
 } from './data/types';
 import type { PlanModeResponsePayload } from './data/planMode.js';
+import type { SessionInteractionState } from './data/sessionInteraction.js';
 
 type RpcErrorShape = {
   error?: string;
@@ -65,6 +66,7 @@ export type EasyAIFlowBridge = {
   getPathForFile: (file: File) => string;
   getProjects: () => Promise<{
     projects: ProjectRecord[];
+    interactions?: Record<string, SessionInteractionState>;
   }>;
   grantPathPermission: (payload: { projectRoot: string; targetPath: string }) => Promise<void>;
   respondToPermissionRequest: (payload: {
@@ -144,6 +146,7 @@ export type EasyAIFlowBridge = {
     };
   }>;
   stopSessionRun: (payload: { sessionId: string }) => Promise<SessionStopResult>;
+  disconnectSession: (payload: { sessionId: string }) => Promise<SessionStopResult>;
   onClaudeEvent: (listener: (event: ClaudeStreamEvent) => void) => () => void;
 };
 
@@ -221,6 +224,7 @@ const webBridge: EasyAIFlowBridge = {
   renameEntity: (payload) => callWebRpc('renameEntity', payload),
   sendMessage: (payload) => callWebRpc('sendMessage', payload),
   stopSessionRun: (payload) => callWebRpc('stopSessionRun', payload),
+  disconnectSession: (payload) => callWebRpc('disconnectSession', payload),
   onClaudeEvent: (listener) => {
     const source = new EventSource('/api/events');
     source.onmessage = (event) => {

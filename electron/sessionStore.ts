@@ -17,6 +17,7 @@ import {
   extractBackgroundTaskNotificationContent,
   isBackgroundTaskNotificationContent,
 } from './backgroundTaskNotification.js';
+import { normalizeClaudeModelSelection } from './claudeModel.js';
 import { mergeNativeImportedSessions } from './nativeSessionMerge.js';
 import { mergeNativeSessionIntoExisting, shouldRecoverSessionFromNative } from './nativeSessionRecovery.js';
 import { hydrateProjectForOpen } from './projectOpen.js';
@@ -58,7 +59,8 @@ const nativeClaudeProjectsRoot = () =>
 const nativeClaudeHistoryPath = () =>
   path.join(process.env.USERPROFILE ?? getRuntimePaths().homePath, '.claude', 'history.jsonl');
 
-const normalizeSessionModel = (model: string) => model.trim();
+const normalizeSessionModel = (model: string) =>
+  normalizeClaudeModelSelection(model) ?? model.trim();
 
 const normalizeSessionKind = (value: SessionKind | undefined): SessionKind =>
   value === 'harness' || value === 'harness_role' ? value : 'standard';
