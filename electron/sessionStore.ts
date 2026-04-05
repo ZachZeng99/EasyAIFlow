@@ -16,7 +16,9 @@ import {
 import {
   extractBackgroundTaskNotificationContent,
   isBackgroundTaskNotificationContent,
+  parseBackgroundTaskNotificationContent,
 } from './backgroundTaskNotification.js';
+import { isIgnorableBackgroundTaskFollowupText } from './claudeRunState.js';
 import { normalizeClaudeModelSelection } from './claudeModel.js';
 import { mergeNativeImportedSessions } from './nativeSessionMerge.js';
 import { mergeNativeSessionIntoExisting, shouldRecoverSessionFromNative } from './nativeSessionRecovery.js';
@@ -487,6 +489,31 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
   let customTitle = '';
   let interrupted = false;
   let backgroundTaskNotificationPending = false;
+  let pendingBackgroundTaskResult = '';
+
+  const flushPendingBackgroundTaskResult = (timestamp: string | number | undefined) => {
+    const content = pendingBackgroundTaskResult.trim();
+    backgroundTaskNotificationPending = false;
+    pendingBackgroundTaskResult = '';
+    if (!content) {
+      return;
+    }
+
+    const text =
+      firstMeaningfulLine(content) ||
+      content.split(/\r?\n/)[0]?.trim() ||
+      'Background task result';
+    lastAssistantText = text;
+    messages.push({
+      id: randomUUID(),
+      role: 'assistant',
+      kind: 'message',
+      timestamp: toTimeLabel(timestamp),
+      title: text.slice(0, 42),
+      content,
+      status: 'complete',
+    });
+  };
 
   for (const line of lines) {
     let parsed: Record<string, unknown>;
@@ -511,6 +538,9 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
     const backgroundTaskNotification = extractBackgroundTaskNotificationContent(parsed);
     if (backgroundTaskNotification) {
       backgroundTaskNotificationPending = true;
+      pendingBackgroundTaskResult =
+        parseBackgroundTaskNotificationContent(backgroundTaskNotification)?.result?.trim() ??
+        pendingBackgroundTaskResult;
       if (parsed.type === 'queue-operation') {
         continue;
       }
@@ -571,7 +601,13 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
           }
           if (isBackgroundTaskNotificationContent(content)) {
             backgroundTaskNotificationPending = true;
+            pendingBackgroundTaskResult =
+              parseBackgroundTaskNotificationContent(content)?.result?.trim() ??
+              pendingBackgroundTaskResult;
             continue;
+          }
+          if (pendingBackgroundTaskResult) {
+            flushPendingBackgroundTaskResult(parsed.timestamp as string | number | undefined);
           }
           if (!firstUserText) {
             firstUserText = text;
@@ -596,7 +632,13 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
       }
       if (isBackgroundTaskNotificationContent(content)) {
         backgroundTaskNotificationPending = true;
+        pendingBackgroundTaskResult =
+          parseBackgroundTaskNotificationContent(content)?.result?.trim() ??
+          pendingBackgroundTaskResult;
         continue;
+      }
+      if (pendingBackgroundTaskResult) {
+        flushPendingBackgroundTaskResult(parsed.timestamp as string | number | undefined);
       }
       if (!firstUserText) {
         firstUserText = text;
@@ -625,11 +667,18 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
           continue;
         }
         if (shouldSkipSyntheticAssistantPlaceholder(messageObj?.model, content)) {
+          if (pendingBackgroundTaskResult) {
+            flushPendingBackgroundTaskResult(parsed.timestamp as string | number | undefined);
+          }
           continue;
         }
         if (backgroundTaskNotificationPending) {
+          if (isIgnorableBackgroundTaskFollowupText(content)) {
+            flushPendingBackgroundTaskResult(parsed.timestamp as string | number | undefined);
+            continue;
+          }
           backgroundTaskNotificationPending = false;
-          continue;
+          pendingBackgroundTaskResult = '';
         }
         lastAssistantText = text;
         messages.push({
@@ -658,10 +707,20 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
             continue;
           }
           if (shouldSkipSyntheticAssistantPlaceholder(messageObj?.model, content)) {
+            if (pendingBackgroundTaskResult) {
+              flushPendingBackgroundTaskResult(parsed.timestamp as string | number | undefined);
+            }
             continue;
           }
           if (backgroundTaskNotificationPending) {
+            if (isIgnorableBackgroundTaskFollowupText(content)) {
+              flushPendingBackgroundTaskResult(parsed.timestamp as string | number | undefined);
+              continue;
+            }
             backgroundTaskNotificationPending = false;
+            pendingBackgroundTaskResult = '';
+          }
+          if (isIgnorableBackgroundTaskFollowupText(content) && messages.some((message) => message.role === 'assistant')) {
             continue;
           }
           lastAssistantText = text;
@@ -768,6 +827,10 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
         'API error';
       continue;
     }
+  }
+
+  if (pendingBackgroundTaskResult) {
+    flushPendingBackgroundTaskResult(lastTimestamp);
   }
 
   if (messages.some((message) => message.role === 'user' && message.content.includes('[Request interrupted by user]'))) {

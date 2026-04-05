@@ -16,6 +16,38 @@ import {
 } from '../data/sessionInteraction';
 import type { ConversationMessage, DiffPayload, SessionSummary } from '../data/types';
 
+const isTraceErrorStatus = (status: ConversationMessage['status']) => status === 'error';
+
+const getTracePreview = (message: ConversationMessage) => {
+  if (!isTraceErrorStatus(message.status)) {
+    return '';
+  }
+
+  const lines = message.content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length === 0) {
+    return '';
+  }
+
+  const ranked =
+    [...lines]
+      .reverse()
+      .find((line) =>
+        /(error|failed|interrupted|denied|rejected|timed out|timeout|exit code|not found|cannot|can't|unable|stopped)/i.test(
+          line,
+        ),
+      ) ??
+    [...lines]
+      .reverse()
+      .find((line) => !/^[\[\]{}(),:]+$/.test(line)) ??
+    lines[lines.length - 1];
+
+  return ranked.length > 160 ? `${ranked.slice(0, 157)}...` : ranked;
+};
+
 type ChatThreadProps = {
   session: SessionSummary;
   messages: ConversationMessage[];
@@ -178,18 +210,22 @@ export function ChatThread({
       <div ref={streamRef} className="message-stream">
         {displayItems.map((item) =>
           item.type === 'trace-group' ? (
-            <section
-              key={item.id}
-              className={`trace-group-card${openTraceGroupIds[item.id] ? ' expanded' : ' collapsed'}`}
-            >
+            (() => {
+              const isGroupOpen = openTraceGroupIds[item.id] ?? item.items.some((message) => isTraceErrorStatus(message.status));
+
+              return (
+                <section
+                  key={item.id}
+                  className={`trace-group-card${isGroupOpen ? ' expanded' : ' collapsed'}`}
+                >
               <button
                 type="button"
                 className="trace-group-head"
-                aria-expanded={Boolean(openTraceGroupIds[item.id])}
+                aria-expanded={isGroupOpen}
                 onClick={() =>
                   setOpenTraceGroupIds((current) => ({
                     ...current,
-                    [item.id]: !current[item.id],
+                    [item.id]: !isGroupOpen,
                   }))
                 }
               >
@@ -197,17 +233,21 @@ export function ChatThread({
                   <strong>Process</strong>
                   <span>{item.items.length} steps</span>
                 </div>
-                <span className="trace-arrow">{openTraceGroupIds[item.id] ? '▾' : '▸'}</span>
+                <span className="trace-arrow">{isGroupOpen ? '▾' : '▸'}</span>
               </button>
 
-              {openTraceGroupIds[item.id] ? (
+              {isGroupOpen ? (
                 <div className="trace-group-list">
                   {item.items.map((message) => {
                     const hasDetails = Boolean(message.content.trim());
                     const isOpen = hasDetails && Boolean(openTraceIds[message.id]);
+                    const preview = !isOpen ? getTracePreview(message) : '';
 
                     return (
-                      <article key={message.id} className={`trace-row ${message.kind ?? 'progress'}`}>
+                      <article
+                        key={message.id}
+                        className={`trace-row ${message.kind ?? 'progress'} ${message.status ?? 'running'}`}
+                      >
                         <button
                           type="button"
                           className="trace-toggle"
@@ -227,9 +267,12 @@ export function ChatThread({
                             <span className="trace-kind">{message.kind ?? 'trace'}</span>
                             <span>{message.timestamp}</span>
                           </div>
-                          <strong>
-                            {shouldShowTitle(message) ? message.title : message.content.split('\n')[0]?.slice(0, 72) ?? 'Trace'}
-                          </strong>
+                          <div className="trace-copy">
+                            <strong>
+                              {shouldShowTitle(message) ? message.title : message.content.split('\n')[0]?.slice(0, 72) ?? 'Trace'}
+                            </strong>
+                            {preview ? <span className="trace-preview">{preview}</span> : null}
+                          </div>
                           <span className="trace-arrow">{hasDetails ? (isOpen ? '▾' : '▸') : ''}</span>
                         </button>
                         {isOpen ? (
@@ -259,6 +302,8 @@ export function ChatThread({
                 </div>
               ) : null}
             </section>
+              );
+            })()
           ) : (
             <article key={item.message.id} className={`message-card ${item.message.role}${item.message.role === 'assistant' ? ' final-reply' : ''}`}>
               <div className="message-meta">

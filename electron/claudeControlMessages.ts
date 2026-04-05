@@ -42,6 +42,12 @@ export type ClaudePlanModeControlRequest = {
   rawInput: Record<string, unknown>;
 };
 
+export type ClaudeSdkControlRequestSubtype =
+  | 'interrupt'
+  | 'end_session'
+  | 'set_model'
+  | 'set_max_thinking_tokens';
+
 const asObject = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 
@@ -76,6 +82,20 @@ export const buildClaudeUserMessageLine = (
     message: {
       role: 'user',
       content: prompt,
+    },
+  });
+
+export const buildClaudeControlRequestLine = (
+  subtype: ClaudeSdkControlRequestSubtype,
+  extra?: Record<string, unknown>,
+  options?: { requestId?: string },
+) =>
+  JSON.stringify({
+    type: 'control_request',
+    request_id: options?.requestId ?? crypto.randomUUID(),
+    request: {
+      subtype,
+      ...(extra ?? {}),
     },
   });
 

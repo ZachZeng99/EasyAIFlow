@@ -1,4 +1,5 @@
 import type { ConversationMessage, SessionRecord } from '../src/data/types.js';
+import { isIgnorableBackgroundTaskFollowupText } from './claudeRunState.js';
 
 export type ParsedNativeSession = {
   nativeSessionId: string;
@@ -22,7 +23,12 @@ const hasEmptyCompletedAssistantPlaceholder = (messages: ConversationMessage[] |
 const getLastAssistantContent = (messages: ConversationMessage[] | undefined) =>
   [...(messages ?? [])]
     .reverse()
-    .find((message) => message.role === 'assistant' && message.content.trim())
+    .find(
+      (message) =>
+        message.role === 'assistant' &&
+        message.content.trim() &&
+        !isIgnorableBackgroundTaskFollowupText(message.content),
+    )
     ?.content.trim();
 
 export const shouldRecoverSessionFromNative = (

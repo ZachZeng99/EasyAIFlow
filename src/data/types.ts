@@ -78,6 +78,7 @@ export type BackgroundTaskRecord = {
   prompt?: string;
   outputFile?: string;
   summary?: string;
+  result?: string;
   lastToolName?: string;
   usage?: BackgroundTaskUsage;
   updatedAt?: number;
@@ -94,6 +95,7 @@ export type SessionRuntimePhase =
 export type SessionRuntimeState = {
   processActive: boolean;
   phase: SessionRuntimePhase;
+  appliedEffort?: 'low' | 'medium' | 'high' | 'max';
   updatedAt?: number;
 };
 

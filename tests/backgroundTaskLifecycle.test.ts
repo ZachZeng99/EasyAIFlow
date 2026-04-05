@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import React, { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
+  extractBackgroundTaskResolutionFromToolUseResult,
+  parseBackgroundLaunchFromToolResult,
+} from '../backend/claudeInteraction.ts';
+import {
   parseBackgroundTaskNotificationContent,
   parseClaudeBackgroundTaskEvent,
 } from '../electron/backgroundTaskNotification.ts';
@@ -144,6 +148,7 @@ run('parseBackgroundTaskNotificationContent reads XML task notifications', () =>
 <output-file>D:\\tmp\\task-xml.log</output-file>
 <status>killed</status>
 <summary>Background command was stopped</summary>
+<result>Subagent final answer.</result>
 <usage>
 <total_tokens>42</total_tokens>
 <tool_uses>1</tool_uses>
@@ -159,12 +164,66 @@ run('parseBackgroundTaskNotificationContent reads XML task notifications', () =>
     taskType: 'local_bash',
     outputFile: 'D:\\tmp\\task-xml.log',
     summary: 'Background command was stopped',
+    result: 'Subagent final answer.',
     usage: {
       totalTokens: 42,
       toolUses: 1,
       durationMs: 800,
     },
     updatedAt: task?.updatedAt,
+  });
+});
+
+run('parseBackgroundLaunchFromToolResult ignores ordinary read results that only mention 后台 in prose', () => {
+  const task = parseBackgroundLaunchFromToolResult({
+    toolUseId: 'tool-read-memory',
+    content: `1\t## UE Editor 操作规范
+24\t- 启动编辑器后台任务 completed ≠ 编辑器退出。编辑器是独立进程，后台 shell 只是启动命令结束。`,
+  });
+
+  assert.equal(task, null);
+});
+
+run('parseBackgroundLaunchFromToolResult detects real background command launches from structured tool results', () => {
+  const task = parseBackgroundLaunchFromToolResult({
+    toolUseId: 'tool-bash-bg',
+    content:
+      'Command running in background with ID: b78b0ei9u. Output is being written to: C:\\Users\\Lenovo\\AppData\\Local\\Temp\\claude\\task.output',
+    toolUseResult: {
+      stdout: '',
+      stderr: '',
+      interrupted: false,
+      isImage: false,
+      noOutputExpected: false,
+      backgroundTaskId: 'b78b0ei9u',
+    },
+  });
+
+  assert.deepEqual(task, {
+    taskId: 'b78b0ei9u',
+    status: 'running',
+    description: 'Background command task',
+    toolUseId: 'tool-bash-bg',
+    taskType: 'command',
+    outputFile: 'C:\\Users\\Lenovo\\AppData\\Local\\Temp\\claude\\task.output',
+    summary: 'Command running in background with ID: b78b0ei9u. Output is being written to: C:\\Users\\Lenovo\\AppData\\Local\\Temp\\claude\\task.output',
+    updatedAt: task?.updatedAt,
+  });
+});
+
+run('extractBackgroundTaskResolutionFromToolUseResult marks completed async agent results as settled', () => {
+  const task = extractBackgroundTaskResolutionFromToolUseResult({
+    resultText: '## Comprehensive Report\nThe task finished successfully.',
+    toolUseResult: {
+      status: 'completed',
+      agentId: 'agent-finished-1',
+    },
+  });
+
+  assert.deepEqual(task, {
+    taskId: 'agent-finished-1',
+    status: 'completed',
+    result: '## Comprehensive Report\nThe task finished successfully.',
   });
 });
 
@@ -222,6 +281,11 @@ run('ContextPanel renders background task state in the right rail', () => {
       session: makeSession(),
       messages: [],
       interaction: {
+        runtime: {
+          processActive: true,
+          phase: 'idle',
+          appliedEffort: 'high',
+        },
         backgroundTasks: [
           {
             taskId: 'task-ctx',
@@ -238,6 +302,7 @@ run('ContextPanel renders background task state in the right rail', () => {
           },
         ],
       },
+      requestedEffort: 'max',
       appVersion: 'desktop',
       gitSnapshot,
       canBootstrapHarness: false,
@@ -251,6 +316,9 @@ run('ContextPanel renders background task state in the right rail', () => {
   );
 
   assert.match(html, /后台任务/);
+  assert.match(html, /Thinking 状态/);
+  assert.match(html, /Restart required/);
+  assert.match(html, /Requested max · Active high/);
   assert.match(html, /Analyze build logs/);
   assert.match(html, /Still parsing the latest chunk/);
   assert.match(html, /task-ctx\.log/);

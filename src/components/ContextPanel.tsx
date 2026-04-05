@@ -8,6 +8,7 @@ type ContextPanelProps = {
   session: SessionSummary;
   messages: ConversationMessage[];
   interaction?: SessionInteractionState;
+  requestedEffort: 'low' | 'medium' | 'high' | 'max';
   appVersion: string;
   gitSnapshot: GitSnapshot;
   onRequestDiff: (filePath: string) => Promise<DiffPayload>;
@@ -23,6 +24,7 @@ export function ContextPanel({
   session,
   messages,
   interaction,
+  requestedEffort,
   appVersion,
   gitSnapshot,
   onRequestDiff,
@@ -37,6 +39,13 @@ export function ContextPanel({
   const [diffPayload, setDiffPayload] = useState<DiffPayload | null>(null);
   const [isLoadingDiff, setIsLoadingDiff] = useState(false);
   const backgroundTasks = interaction?.backgroundTasks ?? [];
+  const appliedEffort = interaction?.runtime?.appliedEffort;
+  const effortMatches = appliedEffort === requestedEffort;
+  const effortStatusLabel = appliedEffort
+    ? effortMatches
+      ? 'Applied'
+      : 'Restart required'
+    : 'Unknown';
 
   const sessionChangedFiles = useMemo(() => {
     const summaries = extractCodeChangeSummaries(messages);
@@ -104,6 +113,27 @@ export function ContextPanel({
 
   return (
     <aside className="context-pane">
+      <div className="context-block">
+        <p className="section-kicker">thinking status</p>
+        <h2>Thinking 状态</h2>
+        <div className={`setting-status-card${effortMatches ? ' is-applied' : ' is-pending'}`}>
+          <div className="setting-status-head">
+            <strong>{effortStatusLabel}</strong>
+            <span>
+              Requested {requestedEffort}
+              {appliedEffort ? ` · Active ${appliedEffort}` : ''}
+            </span>
+          </div>
+          <p>
+            {appliedEffort
+              ? effortMatches
+                ? '当前 Claude session 已经应用了这个 effort。'
+                : '当前 Claude session 还没有应用新的 effort；重启后才会切过去。'
+              : '当前 session 还没有上报已应用 effort。'}
+          </p>
+        </div>
+      </div>
+
       <div className="context-block">
         <p className="section-kicker">background tasks</p>
         <h2>后台任务</h2>

@@ -54,6 +54,7 @@ run('syncResidentRuntimeState returns resident sessions to idle after stopped ba
       exitCode: null,
       signalCode: null,
     },
+    configuredEffort: 'max',
     currentTurn: undefined,
     activeOutputTurn: undefined,
     backgroundTaskOwners: new Map([
@@ -74,4 +75,5 @@ run('syncResidentRuntimeState returns resident sessions to idle after stopped ba
   assert.equal(events[0]?.type, 'runtime-state');
   assert.equal(events[0]?.runtime?.processActive, true);
   assert.equal(events[0]?.runtime?.phase, 'idle');
+  assert.equal(events[0]?.runtime?.appliedEffort, 'max');
 });

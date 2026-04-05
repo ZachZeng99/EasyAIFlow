@@ -59,3 +59,21 @@ run('applyParsedSessionMetadata keeps the latest assistant model metadata', () =
     model: 'claude-opus-4-6',
   });
 });
+
+run('applyParsedSessionMetadata captures the init model before the first assistant turn', () => {
+  const updated = applyParsedSessionMetadata(
+    {
+      claudeSessionId: 'existing-session',
+    },
+    {
+      type: 'system',
+      subtype: 'init',
+      model: 'claude-opus-4-6[1m]',
+    },
+  );
+
+  assert.deepEqual(updated, {
+    claudeSessionId: 'existing-session',
+    model: 'claude-opus-4-6[1m]',
+  });
+});

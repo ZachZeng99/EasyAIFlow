@@ -54,6 +54,21 @@ export const noteBackgroundTaskNotificationInRunState = <T extends ClaudeRunStat
   backgroundTaskNotificationPending: isBackgroundTaskNotificationContent(content),
 });
 
+export const isIgnorableBackgroundTaskFollowupText = (content: string) => {
+  const normalized = content.trim();
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    /^No response requested\.?$/i.test(normalized) ||
+    /^\(?Background task (?:completed|cleaned up)\b[\s\S]*?(?:no action needed|nothing new)[\s\S]*\)?$/i.test(normalized) ||
+    /^后台任务清理完了.*$/i.test(normalized) ||
+    (/^Last background task\b/i.test(normalized) &&
+      (/already incorporated/i.test(normalized) || /nothing new/i.test(normalized)))
+  );
+};
+
 export const applyAssistantTextToRunState = <T extends ClaudeRunStateCompletion>(
   state: T,
   incomingText: string,
@@ -63,10 +78,21 @@ export const applyAssistantTextToRunState = <T extends ClaudeRunStateCompletion>
   }
 
   if (state.backgroundTaskNotificationPending) {
-    return {
-      ...state,
-      backgroundTaskNotificationPending: false,
-    };
+    const hasMeaningfulExistingContent =
+      Boolean(state.completedContent?.trim()) ||
+      Boolean(state.content.trim()) ||
+      ('lastToolResultContent' in state &&
+        typeof (state as T & { lastToolResultContent?: unknown }).lastToolResultContent === 'string' &&
+        (state as T & { lastToolResultContent?: string }).lastToolResultContent?.trim());
+    if (
+      hasMeaningfulExistingContent &&
+      isIgnorableBackgroundTaskFollowupText(incomingText)
+    ) {
+      return {
+        ...state,
+        backgroundTaskNotificationPending: false,
+      };
+    }
   }
 
   return {

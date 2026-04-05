@@ -127,5 +127,8 @@ export const setSessionRuntimeState = (
   runtime: SessionRuntimeState,
 ): SessionInteractionState => ({
   ...state,
-  runtime,
+  runtime: {
+    ...(state.runtime ?? {}),
+    ...runtime,
+  },
 });

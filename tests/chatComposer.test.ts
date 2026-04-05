@@ -85,3 +85,34 @@ run('ChatComposer keeps the send action available while only background tasks ar
   assert.match(html, />发送</);
   assert.doesNotMatch(html, />停止</);
 });
+
+run('ChatComposer renders an inline notice when the host provides one', () => {
+  const html = renderToStaticMarkup(
+    createElement(ChatComposer, {
+      draft: '继续这个需求',
+      tokenUsage,
+      sessionModel: 'opus[1m]',
+      contextReferences: [],
+      slashCommands: [],
+      attachments: [],
+      isSending: false,
+      isResponding: false,
+      model: 'opus[1m]',
+      effort: 'medium',
+      notice: 'Thinking changed to max. Claude effort takes effect after the session restarts.',
+      onDraftChange: () => undefined,
+      onInsertDroppedPaths: () => undefined,
+      onAttachFiles: () => undefined,
+      onRemoveAttachment: () => undefined,
+      onModelChange: () => undefined,
+      onEffortChange: () => undefined,
+      onUpdateContextReferenceMode: () => undefined,
+      onRemoveContextReference: () => undefined,
+      onSend: () => undefined,
+      onStop: () => undefined,
+    }),
+  );
+
+  assert.match(html, /Thinking changed to max/);
+  assert.match(html, /session restarts/);
+});

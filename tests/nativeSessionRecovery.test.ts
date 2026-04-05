@@ -95,3 +95,35 @@ run('mergeNativeSessionIntoExisting replaces broken messages but keeps local own
   assert.equal(recovered.messages.length, 1);
   assert.equal(recovered.messages[0]?.content.startsWith('## 源码验证结果汇总'), true);
 });
+
+run('shouldRecoverSessionFromNative ignores cleanup-only assistant follow-ups when comparing final answers', () => {
+  const existing = makeSession({
+    preview: '(Background task cleaned up — no action needed.)',
+    messages: [
+      makeMessage({
+        id: 'assistant-cleanup',
+        content: '(Background task cleaned up — no action needed.)',
+        title: '(Background task cleaned up — no action needed.)',
+      }),
+    ],
+  });
+
+  const parsed: ParsedNativeSession = {
+    ...parsedNative,
+    messages: [
+      makeMessage({
+        id: 'assistant-answer',
+        content: '## Lumen 三种 Gather 对半透明的处理\n\n核心结论：半透明 GI 与 Gather 方法基本解耦。',
+        title: '## Lumen 三种 Gather 对半透明的处理',
+      }),
+      makeMessage({
+        id: 'assistant-cleanup-native',
+        content: '(Background task cleaned up — no action needed.)',
+        title: '(Background task cleaned up — no action needed.)',
+      }),
+    ],
+    preview: '## Lumen 三种 Gather 对半透明的处理',
+  };
+
+  assert.equal(shouldRecoverSessionFromNative(existing, parsed), true);
+});

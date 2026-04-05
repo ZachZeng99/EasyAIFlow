@@ -384,6 +384,7 @@ export default function App() {
   const [model, setModel] = useState('opus[1m]');
   const [modelSelectionSource, setModelSelectionSource] = useState<ModelSelectionSource>('implicit');
   const [effort, setEffort] = useState<'low' | 'medium' | 'high' | 'max'>('high');
+  const [composerNotice, setComposerNotice] = useState<string | null>(null);
   const [isResizingPane, setIsResizingPane] = useState(false);
   const [leftPaneWidth, setLeftPaneWidth] = useState(338);
   const [isDialogBusy, setIsDialogBusy] = useState(false);
@@ -444,6 +445,23 @@ export default function App() {
     () => allSessions.find((session) => session.id === selectedSessionId) ?? visibleSessions[0] ?? allSessions[0],
     [allSessions, selectedSessionId, visibleSessions],
   );
+  const selectedInteractionState = useMemo(
+    () => sessionInteractions.get(selectedSession?.id ?? ''),
+    [selectedSession?.id, sessionInteractions],
+  );
+  useEffect(() => {
+    setComposerNotice(null);
+  }, [selectedSession?.id]);
+  useEffect(() => {
+    const appliedEffort = selectedInteractionState?.runtime?.appliedEffort;
+    if (!composerNotice || !appliedEffort) {
+      return;
+    }
+
+    if (appliedEffort === effort) {
+      setComposerNotice(`Thinking ${effort} is now active for this session.`);
+    }
+  }, [composerNotice, effort, selectedInteractionState?.runtime?.appliedEffort]);
   const activeSelectedSessionId = selectedSession?.id ?? selectedSessionId;
   const harnessPlannerSession = useMemo(
     () =>
@@ -2083,13 +2101,20 @@ export default function App() {
                   allowSendWhileResponding={hasActiveSelectedBackgroundTasks}
                   model={model}
                   effort={effort}
+                  appliedEffort={selectedInteraction?.runtime?.appliedEffort}
+                  notice={composerNotice}
                   supportsPathDrop={!isWebRuntime}
                   onDraftChange={handleDraftChange}
                   onModelChange={(value) => {
                     setModel(value);
                     setModelSelectionSource('explicit');
                   }}
-                  onEffortChange={setEffort}
+                  onEffortChange={(value) => {
+                    setEffort(value);
+                    setComposerNotice(
+                      `Thinking changed to ${value}. Claude effort takes effect after the session restarts.`,
+                    );
+                  }}
                   onUpdateContextReferenceMode={(referenceId, mode) => {
                     handleUpdateContextReferences(
                       displayContextReferences.map((reference) =>
@@ -2128,6 +2153,7 @@ export default function App() {
               session={selectedSession}
               messages={selectedSession.messages ?? []}
               interaction={selectedInteraction}
+              requestedEffort={effort}
               appVersion={appVersion}
               gitSnapshot={gitSnapshot}
               onRequestDiff={handleRequestDiff}

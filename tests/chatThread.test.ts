@@ -76,3 +76,35 @@ run('ChatThread keeps process groups collapsed by default', () => {
   assert.doesNotMatch(html, /trace-group-list/);
   assert.doesNotMatch(html, />Read</);
 });
+
+run('ChatThread expands failed process groups and shows an inline failure reason', () => {
+  const html = renderToStaticMarkup(
+    createElement(ChatThread, {
+      session,
+      messages: [
+        {
+          id: 'assistant-2',
+          role: 'assistant',
+          timestamp: '4/4 20:28',
+          title: 'Claude response',
+          content: '好问题，让我确认一下源码。',
+          status: 'complete',
+        },
+        {
+          id: 'tool-agent-1',
+          role: 'system',
+          kind: 'tool_use',
+          timestamp: '4/4 20:28',
+          title: 'Agent',
+          content:
+            '{\n  "subagent_type": "Explore"\n}\n[Request interrupted by user for tool use]',
+          status: 'error',
+        },
+      ],
+    }),
+  );
+
+  assert.match(html, /trace-group-list/);
+  assert.match(html, />Agent</);
+  assert.match(html, /\[Request interrupted by user for tool use\]/);
+});

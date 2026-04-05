@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   buildClaudeAskUserQuestionToolResultLine,
+  buildClaudeControlRequestLine,
   buildClaudeControlResponseLine,
   buildClaudePlanModeToolResultLine,
   buildClaudeUserMessageLine,
@@ -24,9 +25,32 @@ run('buildClaudeUserMessageLine emits a stream-json user message', () => {
 
   assert.deepEqual(JSON.parse(line), {
     type: 'user',
+    session_id: '',
+    parent_tool_use_id: null,
     message: {
       role: 'user',
-      content: [{ type: 'text', text: 'Create probe.txt' }],
+      content: 'Create probe.txt',
+    },
+  });
+});
+
+run('buildClaudeControlRequestLine emits SDK control requests with an overridable request id', () => {
+  const line = buildClaudeControlRequestLine(
+    'set_model',
+    {
+      model: 'opus[1m]',
+    },
+    {
+      requestId: 'req_set_model',
+    },
+  );
+
+  assert.deepEqual(JSON.parse(line), {
+    type: 'control_request',
+    request_id: 'req_set_model',
+    request: {
+      subtype: 'set_model',
+      model: 'opus[1m]',
     },
   });
 });

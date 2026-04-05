@@ -58,6 +58,7 @@ export type ClaudeRunState = ClaudeRunStateCompletion & {
   lastAssistantUsage?: PerCallUsage;
   terminalError?: string;
   lastResultContent?: string;
+  lastToolResultContent?: string;
   backgroundTasks: Map<string, BackgroundTaskRecord>;
   toolTraces: Map<string, ConversationMessage>;
   toolUseBlockIds: Map<number, string>;
@@ -103,6 +104,13 @@ export type BackgroundTaskOwner = {
   runState: ClaudeRunState;
 };
 
+export type ResidentPendingControlRequest = {
+  subtype: 'set_model';
+  nextModel?: string;
+  resolve: () => void;
+  reject: (error: unknown) => void;
+};
+
 export type ResidentClaudeSession = ActiveClaudeRun & {
   configuredModel?: string;
   configuredEffort?: ClaudePrintOptions['effort'];
@@ -112,6 +120,7 @@ export type ResidentClaudeSession = ActiveClaudeRun & {
   queuedTurns: Map<string, ActiveClaudeTurn>;
   activeOutputTurn?: ActiveClaudeTurn;
   backgroundTaskOwners: Map<string, BackgroundTaskOwner>;
+  pendingControlRequests: Map<string, ResidentPendingControlRequest>;
 };
 
 export type DeferredExitPlanControl = {

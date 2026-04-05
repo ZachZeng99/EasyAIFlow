@@ -24,6 +24,8 @@ type ChatComposerProps = {
   allowSendWhileResponding?: boolean;
   model: string;
   effort: 'low' | 'medium' | 'high' | 'max';
+  appliedEffort?: 'low' | 'medium' | 'high' | 'max';
+  notice?: string | null;
   supportsPathDrop?: boolean;
   onDraftChange: (value: string) => void;
   onInsertDroppedPaths: (files: FileList | null) => void;
@@ -73,6 +75,8 @@ export function ChatComposer({
   allowSendWhileResponding = false,
   model,
   effort,
+  appliedEffort,
+  notice,
   supportsPathDrop = true,
   onDraftChange,
   onInsertDroppedPaths,
@@ -198,6 +202,18 @@ export function ChatComposer({
           {hasKnownContextWindow ? <span>{usagePercentNum}%</span> : null}
         </div>
       </div>
+      {notice || appliedEffort ? (
+        <div className="composer-reminder">
+          {notice ?? null}
+          {appliedEffort ? (
+            <strong className="composer-reminder-status">
+              {appliedEffort === effort
+                ? `Active in this session: ${appliedEffort}`
+                : `Active in this session: ${appliedEffort} · restart required for ${effort}`}
+            </strong>
+          ) : null}
+        </div>
+      ) : null}
 
       {attachments.length > 0 ? (
         <div className="attachment-strip">

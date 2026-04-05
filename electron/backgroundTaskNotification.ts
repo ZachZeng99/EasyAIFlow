@@ -115,6 +115,7 @@ export const parseBackgroundTaskNotificationContent = (
         })
       : undefined;
   const summary = readXmlTag(content, 'summary');
+  const result = readXmlTag(content, 'result');
 
   return {
     taskId,
@@ -124,6 +125,7 @@ export const parseBackgroundTaskNotificationContent = (
     taskType: readXmlTag(content, 'task-type'),
     outputFile: readXmlTag(content, 'output-file'),
     summary,
+    result,
     usage,
     updatedAt: Date.now(),
   };
@@ -147,6 +149,7 @@ export const parseClaudeBackgroundTaskEvent = (
     prompt?: unknown;
     output_file?: unknown;
     summary?: unknown;
+    result?: unknown;
     last_tool_name?: unknown;
     status?: unknown;
     usage?: unknown;
@@ -193,6 +196,7 @@ export const parseClaudeBackgroundTaskEvent = (
         toolUseId: getString(record.tool_use_id),
         outputFile: getString(record.output_file),
         summary,
+        result: getString(record.result),
         usage: parseBackgroundTaskUsage(record.usage),
         updatedAt: Date.now(),
       };

@@ -3,6 +3,7 @@ import {
   advanceSessionPermissionRequest,
   enqueueSessionPermissionRequest,
   getActiveSessionPermissionRequest,
+  setSessionRuntimeState,
 } from '../src/data/sessionInteraction.ts';
 
 const run = (name: string, fn: () => void) => {
@@ -48,4 +49,21 @@ run('advanceSessionPermissionRequest promotes the next queued permission', () =>
 
   assert.equal(getActiveSessionPermissionRequest(state)?.requestId, 'req-2');
   assert.deepEqual(state.pendingPermissions ?? [], []);
+});
+
+run('setSessionRuntimeState preserves previously known runtime fields when partial updates arrive', () => {
+  const state = setSessionRuntimeState(
+    setSessionRuntimeState({}, {
+      processActive: true,
+      phase: 'idle',
+      appliedEffort: 'high',
+    }),
+    {
+      processActive: true,
+      phase: 'running',
+    },
+  );
+
+  assert.equal(state.runtime?.phase, 'running');
+  assert.equal(state.runtime?.appliedEffort, 'high');
 });

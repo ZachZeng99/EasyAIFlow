@@ -29,5 +29,14 @@ export const applyParsedSessionMetadata = <
     }
   }
 
+  if (
+    parsed.type === 'system' &&
+    parsed.subtype === 'init' &&
+    typeof parsed.model === 'string' &&
+    parsed.model.trim()
+  ) {
+    next.model = parsed.model.trim();
+  }
+
   return next;
 };
