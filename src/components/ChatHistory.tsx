@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { getProviderBadgeLabel, normalizeSessionProvider } from '../data/sessionProvider';
 import { sortDreamsWithTemporaryFirst } from '../data/streamworkOrder';
 import type { DreamRecord, ProjectRecord, SessionActivityState, SessionSummary } from '../data/types';
 
@@ -465,7 +466,8 @@ function DreamSection({
                   key={session.id}
                   role="button"
                   tabIndex={0}
-                  className={`session-card${selected ? ' selected' : ''} ${indicator.state}${session.sessionKind === 'harness' ? ' harness' : ''}`}
+                  className={`session-card provider-${normalizeSessionProvider(session.provider)}${selected ? ' selected' : ''} ${indicator.state}${session.sessionKind === 'harness' ? ' harness' : ''}`}
+                  data-provider-label={getProviderBadgeLabel(session.provider)}
                   onClick={() => onSelectSession(session)}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' || event.key === ' ') {

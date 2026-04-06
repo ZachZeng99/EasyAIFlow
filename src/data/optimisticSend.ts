@@ -1,3 +1,4 @@
+import { getProviderDisplayName } from './sessionProvider.js';
 import type { ContextReference, MessageAttachment, PendingAttachment, ProjectRecord, SessionRecord } from './types.js';
 
 const cloneReferences = (references: ContextReference[]) => references.map((reference) => ({ ...reference }));
@@ -33,6 +34,7 @@ export const buildOptimisticSendState = ({
   attachments,
   references,
   queued,
+  provider,
   now = new Date(),
 }: {
   projects: ProjectRecord[];
@@ -41,12 +43,14 @@ export const buildOptimisticSendState = ({
   attachments: PendingAttachment[];
   references: ContextReference[];
   queued: boolean;
+  provider?: SessionRecord['provider'];
   now?: Date;
 }) => {
   const timestamp = now.toLocaleString('zh-CN');
   const updatedAt = now.getTime();
   const userMessageId = `local-user-${updatedAt}`;
   const assistantMessageId = `local-assistant-${updatedAt}`;
+  const providerName = getProviderDisplayName(provider);
 
   const nextProjects = updateSessionInProjects(projects, sessionId, (session) => ({
     ...session,
@@ -69,9 +73,9 @@ export const buildOptimisticSendState = ({
         id: assistantMessageId,
         role: 'assistant',
         timestamp,
-        title: queued ? 'Claude queued' : 'Claude response',
+        title: queued ? `${providerName} queued` : `${providerName} response`,
         content: queued
-          ? 'Queued. Claude will start this message after the current run completes.'
+          ? `Queued. ${providerName} will start this message after the current run completes.`
           : '',
         status: queued ? 'queued' : 'streaming',
       },

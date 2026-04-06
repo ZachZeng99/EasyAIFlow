@@ -1,3 +1,4 @@
+import { getProviderDisplayName } from '../src/data/sessionProvider.js';
 import type { ConversationMessage } from '../src/data/types.js';
 import {
   findSession,
@@ -28,21 +29,25 @@ export const requestSessionStop = (
 const isPendingStatus = (status: ConversationMessage['status']) =>
   status === 'queued' || status === 'streaming' || status === 'running' || status === 'background';
 
-const buildStoppedAssistantMessage = (message: ConversationMessage): ConversationMessage => ({
+const buildStoppedAssistantMessage = (
+  message: ConversationMessage,
+  providerName: string,
+): ConversationMessage => ({
   ...message,
-  title: 'Claude stopped',
+  title: `${providerName} stopped`,
   content: message.content.trim() ? message.content : 'Stopped.',
   status: 'complete',
 });
 
 export const stopAssistantMessage = async (sessionId: string, messageId: string) => {
   const session = await findSession(sessionId);
+  const providerName = getProviderDisplayName(session?.provider);
   const existing = session?.messages?.find((message) => message.id === messageId);
   if (!existing || existing.role !== 'assistant' || !isPendingStatus(existing.status)) {
     return null;
   }
 
-  const stopped = buildStoppedAssistantMessage(existing);
+  const stopped = buildStoppedAssistantMessage(existing, providerName);
   await updateAssistantMessage(sessionId, messageId, (message) => {
     message.title = stopped.title;
     message.content = stopped.content;
@@ -65,6 +70,7 @@ export const stopPendingSessionMessages = async (sessionId: string) => {
     };
   }
 
+  const providerName = getProviderDisplayName(session.provider);
   const changedMessages: ConversationMessage[] = [];
   let lastAssistantContent = '';
 
@@ -92,7 +98,7 @@ export const stopPendingSessionMessages = async (sessionId: string) => {
 
   if (!lastAssistantContent && changedMessages.length > 0) {
     await setSessionRuntime(sessionId, {
-      preview: 'Claude stopped',
+      preview: `${providerName} stopped`,
       timeLabel: 'Just now',
     });
   }

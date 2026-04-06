@@ -51,6 +51,7 @@ contextBridge.exposeInMainWorld('easyAIFlow', {
     streamworkId: string;
     name?: string;
     includeStreamworkSummary?: boolean;
+    provider?: import('../src/data/types.js').SessionProvider;
   }) =>
     ipcRenderer.invoke('sessions:create-in-streamwork', payload),
   bootstrapHarness: (payload: { sessionId: string }) => ipcRenderer.invoke('sessions:bootstrap-harness', payload),
@@ -62,7 +63,11 @@ contextBridge.exposeInMainWorld('easyAIFlow', {
     model?: string;
     effort?: 'low' | 'medium' | 'high' | 'max';
   }) => ipcRenderer.invoke('sessions:run-harness', payload),
-  createSession: (payload?: { sourceSessionId?: string; includeStreamworkSummary?: boolean }) =>
+  createSession: (payload?: {
+    sourceSessionId?: string;
+    includeStreamworkSummary?: boolean;
+    provider?: import('../src/data/types.js').SessionProvider;
+  }) =>
     ipcRenderer.invoke('sessions:create', payload),
   deleteSession: (payload: { sessionId: string }) => ipcRenderer.invoke('sessions:delete', payload),
   updateSessionContextReferences: (payload: {
@@ -81,6 +86,19 @@ contextBridge.exposeInMainWorld('easyAIFlow', {
     effort?: 'low' | 'medium' | 'high' | 'max';
   }) =>
     ipcRenderer.invoke('claude:send-message', payload),
+  switchModel: (payload: {
+    sessionId: string;
+    session?: import('../src/data/types.js').SessionSummary;
+    model: string;
+    effort?: 'low' | 'medium' | 'high' | 'max';
+  }) =>
+    ipcRenderer.invoke('claude:switch-model', payload),
+  switchEffort: (payload: {
+    sessionId: string;
+    session?: import('../src/data/types.js').SessionSummary;
+    effort: 'low' | 'medium' | 'high' | 'max';
+  }) =>
+    ipcRenderer.invoke('claude:switch-effort', payload),
   stopSessionRun: (payload: { sessionId: string }) => ipcRenderer.invoke('claude:stop-session', payload),
   disconnectSession: (payload: { sessionId: string }) => ipcRenderer.invoke('claude:disconnect-session', payload),
   onClaudeEvent: (listener: (event: import('../src/data/types.js').ClaudeStreamEvent) => void) => {

@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { stopAllCodexRuns } from '../backend/codexInteraction.js';
 import {
   configureRuntimePaths,
   getRuntimePaths,
@@ -19,6 +20,8 @@ import {
   handleStopSession,
   handleDisconnectSession,
   handleSendMessage,
+  handleSwitchEffort,
+  handleSwitchModel,
   handleBootstrapHarness,
   handleRunHarness,
   handleBtwMessage,
@@ -168,13 +171,28 @@ const rpcHandlers = {
     handleDeleteStreamwork(ctx, state, payload),
   reorderStreamworks: async (payload: { projectId: string; sourceId: string; targetId: string }) =>
     reorderStreamworks(payload.projectId, payload.sourceId, payload.targetId),
-  createSession: async (payload?: { sourceSessionId?: string; includeStreamworkSummary?: boolean }) =>
-    createSession(payload?.sourceSessionId, Boolean(payload?.includeStreamworkSummary)),
+  createSession: async (payload?: {
+    sourceSessionId?: string;
+    includeStreamworkSummary?: boolean;
+    provider?: import('../src/data/types.js').SessionProvider;
+  }) =>
+    createSession(
+      payload?.sourceSessionId,
+      Boolean(payload?.includeStreamworkSummary),
+      payload?.provider,
+    ),
   createSessionInStreamwork: async (payload: {
     streamworkId: string;
     name?: string;
     includeStreamworkSummary?: boolean;
-  }) => createSessionInStreamwork(payload.streamworkId, payload.name, Boolean(payload.includeStreamworkSummary)),
+    provider?: import('../src/data/types.js').SessionProvider;
+  }) =>
+    createSessionInStreamwork(
+      payload.streamworkId,
+      payload.name,
+      Boolean(payload.includeStreamworkSummary),
+      payload.provider,
+    ),
   bootstrapHarness: async (payload: { sessionId: string }) =>
     handleBootstrapHarness(ctx, state, payload),
   runHarness: async (payload: {
@@ -200,6 +218,17 @@ const rpcHandlers = {
     model?: string;
     effort?: 'low' | 'medium' | 'high' | 'max';
   }) => handleSendMessage(ctx, state, payload),
+  switchModel: async (payload: {
+    sessionId: string;
+    session?: SessionSummary;
+    model: string;
+    effort?: 'low' | 'medium' | 'high' | 'max';
+  }) => handleSwitchModel(ctx, state, payload),
+  switchEffort: async (payload: {
+    sessionId: string;
+    session?: SessionSummary;
+    effort: 'low' | 'medium' | 'high' | 'max';
+  }) => handleSwitchEffort(ctx, state, payload),
   stopSessionRun: async (payload: { sessionId: string }) =>
     handleStopSession(ctx, state, payload),
   disconnectSession: async (payload: { sessionId: string }) =>
@@ -357,6 +386,7 @@ createServer(async (request, response) => {
 });
 
 const killActiveRuns = () => {
+  stopAllCodexRuns();
   state.activeRuns.forEach((run) => {
     if (!run.child.killed) {
       run.child.kill();

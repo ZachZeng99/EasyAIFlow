@@ -18,6 +18,7 @@ const makeSession = (): SessionRecord => ({
   preview: 'Earlier preview',
   timeLabel: 'Yesterday',
   updatedAt: 1,
+  provider: 'claude',
   model: 'opus[1m]',
   workspace: 'X:\\AITool\\EasyAIFlow',
   projectId: 'project-1',
@@ -142,4 +143,26 @@ run('buildOptimisticSendState shows a queued placeholder when the session is alr
   assert.equal(assistantMessage.status, 'queued');
   assert.equal(assistantMessage.title, 'Claude queued');
   assert.match(assistantMessage.content, /Queued\./);
+});
+
+run('buildOptimisticSendState uses provider-specific placeholder copy', () => {
+  const projects = makeProjects();
+  const session = projects[0]?.dreams[0]?.sessions[0] as SessionRecord;
+  session.provider = 'codex';
+  session.model = 'gpt-5.4';
+
+  const result = buildOptimisticSendState({
+    projects,
+    sessionId: 'session-1',
+    prompt: 'Check the failing build',
+    attachments: [],
+    references: [],
+    queued: false,
+    provider: 'codex',
+    now: new Date('2026-03-25T08:09:10.000Z'),
+  });
+
+  const updatedSession = result.projects[0]?.dreams[0]?.sessions[0] as SessionRecord;
+  const assistantMessage = updatedSession.messages[2];
+  assert.equal(assistantMessage.title, 'Codex response');
 });

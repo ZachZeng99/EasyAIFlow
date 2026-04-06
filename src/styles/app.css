@@ -444,41 +444,105 @@ p {
 }
 
 .session-card {
+  --session-provider-border: rgba(255, 255, 255, 0.08);
+  --session-provider-border-active: rgba(255, 255, 255, 0.16);
+  --session-provider-bg: rgba(255, 255, 255, 0.03);
+  --session-provider-bg-active: rgba(255, 255, 255, 0.06);
+  --session-provider-watermark: rgba(255, 255, 255, 0.12);
   width: 100%;
   padding: 12px 13px;
+  border: 1px solid var(--session-provider-border);
   border-radius: 14px;
   text-align: left;
   position: relative;
   overflow: hidden;
+  isolation: isolate;
+  background: var(--session-provider-bg);
   transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
+}
+
+.session-card::before {
+  content: attr(data-provider-label);
+  position: absolute;
+  right: -14px;
+  top: 50%;
+  transform: translateY(-50%) rotate(90deg);
+  font-family: 'Cascadia Code', 'Consolas', monospace;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.34em;
+  line-height: 1;
+  color: var(--session-provider-watermark);
+  opacity: 0.72;
+  pointer-events: none;
+  user-select: none;
+  white-space: nowrap;
+  z-index: 0;
+}
+
+.session-card > * {
+  position: relative;
+  z-index: 1;
 }
 
 .session-card:hover,
 .session-card.selected {
-  border-color: rgba(96, 165, 250, 0.3);
-  background: rgba(96, 165, 250, 0.1);
+  border-color: var(--session-provider-border-active);
+  background: var(--session-provider-bg-active);
   transform: translateY(-1px);
+}
+
+.session-card.provider-claude {
+  --session-provider-border: rgba(250, 204, 21, 0.26);
+  --session-provider-border-active: rgba(250, 204, 21, 0.44);
+  --session-provider-bg:
+    linear-gradient(135deg, rgba(250, 204, 21, 0.1), rgba(245, 158, 11, 0.035) 48%, rgba(255, 255, 255, 0.03) 100%);
+  --session-provider-bg-active:
+    linear-gradient(135deg, rgba(250, 204, 21, 0.16), rgba(245, 158, 11, 0.05) 48%, rgba(255, 255, 255, 0.04) 100%);
+  --session-provider-watermark: rgba(253, 224, 71, 0.2);
+}
+
+.session-card.provider-claude:hover,
+.session-card.provider-claude.selected {
+  border-color: var(--session-provider-border-active);
+  background: var(--session-provider-bg-active);
+}
+
+.session-card.provider-codex {
+  --session-provider-border: rgba(96, 165, 250, 0.26);
+  --session-provider-border-active: rgba(96, 165, 250, 0.44);
+  --session-provider-bg:
+    linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(37, 99, 235, 0.04) 48%, rgba(255, 255, 255, 0.03) 100%);
+  --session-provider-bg-active:
+    linear-gradient(135deg, rgba(59, 130, 246, 0.17), rgba(37, 99, 235, 0.06) 48%, rgba(255, 255, 255, 0.04) 100%);
+  --session-provider-watermark: rgba(147, 197, 253, 0.22);
+}
+
+.session-card.provider-codex:hover,
+.session-card.provider-codex.selected {
+  border-color: var(--session-provider-border-active);
+  background: var(--session-provider-bg-active);
 }
 
 .session-card.responding {
   border-color: rgba(245, 158, 11, 0.3);
   background:
-    linear-gradient(135deg, rgba(245, 158, 11, 0.12), rgba(255, 255, 255, 0.03)),
-    rgba(255, 255, 255, 0.03);
+    linear-gradient(135deg, rgba(245, 158, 11, 0.16), rgba(255, 255, 255, 0.03)),
+    var(--session-provider-bg-active);
 }
 
 .session-card.background {
   border-color: rgba(244, 114, 182, 0.32);
   background:
-    linear-gradient(135deg, rgba(244, 114, 182, 0.14), rgba(255, 255, 255, 0.03)),
-    rgba(255, 255, 255, 0.03);
+    linear-gradient(135deg, rgba(244, 114, 182, 0.16), rgba(255, 255, 255, 0.03)),
+    var(--session-provider-bg-active);
 }
 
 .session-card.harness {
   border-color: rgba(245, 158, 11, 0.18);
   background:
-    linear-gradient(180deg, rgba(245, 158, 11, 0.08), rgba(255, 255, 255, 0.03)),
-    rgba(255, 255, 255, 0.03);
+    linear-gradient(180deg, rgba(245, 158, 11, 0.1), rgba(255, 255, 255, 0.03)),
+    var(--session-provider-bg);
 }
 
 .session-card.responding::after {
@@ -504,15 +568,15 @@ p {
 .session-card.awaiting_reply {
   border-color: rgba(251, 113, 133, 0.35);
   background:
-    linear-gradient(135deg, rgba(251, 113, 133, 0.14), rgba(255, 255, 255, 0.03)),
-    rgba(255, 255, 255, 0.03);
+    linear-gradient(135deg, rgba(251, 113, 133, 0.16), rgba(255, 255, 255, 0.03)),
+    var(--session-provider-bg-active);
 }
 
 .session-card.unread {
   border-color: rgba(56, 189, 248, 0.28);
   background:
-    linear-gradient(180deg, rgba(56, 189, 248, 0.08), rgba(255, 255, 255, 0.03)),
-    rgba(255, 255, 255, 0.03);
+    linear-gradient(180deg, rgba(56, 189, 248, 0.1), rgba(255, 255, 255, 0.03)),
+    var(--session-provider-bg-active);
 }
 
 .inline-rename {
@@ -1123,7 +1187,8 @@ p {
   line-height: 1.5;
 }
 
-.dialog-field input {
+.dialog-field input,
+.dialog-field select {
   width: 100%;
   padding: 12px 14px;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -1458,6 +1523,18 @@ p {
 .process-tag {
   border-color: rgba(255, 255, 255, 0.12);
   color: rgba(245, 239, 230, 0.64);
+}
+
+.provider-pill.provider-claude {
+  border-color: rgba(96, 165, 250, 0.24);
+  background: rgba(96, 165, 250, 0.12);
+  color: #bfdbfe;
+}
+
+.provider-pill.provider-codex {
+  border-color: rgba(45, 212, 191, 0.24);
+  background: rgba(20, 184, 166, 0.12);
+  color: #99f6e4;
 }
 
 .disconnect-button {

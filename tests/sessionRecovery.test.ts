@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import { recoverStaleSessionMessages } from '../electron/sessionRecovery.ts';
+import {
+  recoverStaleSessionMessages,
+  recoverStaleSessionMessagesForProvider,
+} from '../electron/sessionRecovery.ts';
 import type { ConversationMessage } from '../src/data/types.ts';
 
 const run = (name: string, fn: () => void) => {
@@ -57,4 +60,15 @@ run('recoverStaleSessionMessages marks queued assistant messages as interrupted'
   assert.equal(message.status, 'error');
   assert.equal(message.title, 'Claude queue interrupted');
   assert.equal(message.content, 'Queued Claude run did not resume after restart.');
+});
+
+run('recoverStaleSessionMessagesForProvider uses provider-specific recovery copy', () => {
+  const [message] = recoverStaleSessionMessagesForProvider(
+    [makeMessage({ role: 'assistant', kind: 'message', status: 'queued', title: 'Codex queued' })],
+    'codex',
+  );
+
+  assert.equal(message.status, 'error');
+  assert.equal(message.title, 'Codex queue interrupted');
+  assert.equal(message.content, 'Queued Codex run did not resume after restart.');
 });

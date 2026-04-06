@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { AskUserQuestionDraft } from '../data/askUserQuestion';
 import type { PlanModeResponsePayload } from '../data/planMode';
+import { normalizeSessionProvider } from '../data/sessionProvider';
 import type { SessionInteractionState } from '../data/sessionInteraction';
 import type { DiffPayload, HarnessRole, SessionRecord, SessionSummary, TokenUsage } from '../data/types';
 import { ChatThread } from './ChatThread';
@@ -138,6 +139,7 @@ const RoleChatPane = ({
             onSubmitPlanMode={sessionId ? (payload) => onSubmitPlanMode?.(sessionId, payload) : undefined}
           />
           <ChatComposer
+            provider={normalizeSessionProvider(session.provider)}
             draft={draft}
             tokenUsage={session.tokenUsage ?? emptyTokenUsage}
             sessionModel={session.model ?? ''}

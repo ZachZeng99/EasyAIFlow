@@ -24,8 +24,18 @@ import { mergeNativeImportedSessions } from './nativeSessionMerge.js';
 import { mergeNativeSessionIntoExisting, shouldRecoverSessionFromNative } from './nativeSessionRecovery.js';
 import { hydrateProjectForOpen } from './projectOpen.js';
 import { buildRecordedCodeChangeDiff } from './recordedCodeChangeDiff.js';
+import {
+  getDefaultModelForProvider,
+  getDefaultPreviewForProvider,
+  normalizeSessionProvider,
+} from '../src/data/sessionProvider.js';
 import { sortDreamsWithTemporaryFirst } from '../src/data/streamworkOrder.js';
-import { normalizeWorkspacePath, sameWorkspacePath, toClaudeProjectDirName } from './workspacePaths.js';
+import {
+  isWorkspaceWithinProjectTree,
+  normalizeWorkspacePath,
+  sameWorkspacePath,
+  toClaudeProjectDirName,
+} from './workspacePaths.js';
 import { filterVisibleProjects } from './projectVisibility.js';
 import { normalizeProjectsForCache, normalizeProjectsFromPersistence } from './sessionStoreNormalization.js';
 import type {
@@ -40,6 +50,7 @@ import type {
   HarnessRole,
   ProjectCreateResult,
   ProjectRecord,
+  SessionProvider,
   SessionContextUpdateResult,
   SessionKind,
   SessionCreateResult,
@@ -61,8 +72,8 @@ const nativeClaudeProjectsRoot = () =>
 const nativeClaudeHistoryPath = () =>
   path.join(process.env.USERPROFILE ?? getRuntimePaths().homePath, '.claude', 'history.jsonl');
 
-const normalizeSessionModel = (model: string) =>
-  normalizeClaudeModelSelection(model) ?? model.trim();
+const normalizeSessionModel = (model: string, provider: SessionProvider) =>
+  provider === 'claude' ? normalizeClaudeModelSelection(model) ?? model.trim() : model.trim();
 
 const normalizeSessionKind = (value: SessionKind | undefined): SessionKind =>
   value === 'harness' || value === 'harness_role' ? value : 'standard';
@@ -338,10 +349,12 @@ const normalizeProjects = (projects: ProjectRecord[]) =>
 const normalizeDreamSessions = (dream: DreamRecord) => {
   const sessions = dream.sessions.map((session) => {
     const current = session as SessionRecord;
-    const model = normalizeSessionModel(current.model);
+    const provider = normalizeSessionProvider(current.provider);
+    const model = normalizeSessionModel(current.model, provider);
 
     return {
       ...current,
+      provider,
       model,
       sessionKind: normalizeSessionKind(current.sessionKind),
       hidden: Boolean(current.hidden),
@@ -844,6 +857,7 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
     lastErrorText,
     interrupted,
     nativeSessionId,
+    providerName: 'Claude',
   });
 
   return {
@@ -855,6 +869,261 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
     preview: summary.preview,
     timeLabel: toTimeLabel(lastTimestamp),
     updatedAt: toUpdatedAt(lastTimestamp),
+  };
+};
+
+const codexSessionsRoot = () =>
+  path.join(process.env.USERPROFILE ?? getRuntimePaths().homePath, '.codex', 'sessions');
+const codexArchivedSessionsRoot = () =>
+  path.join(process.env.USERPROFILE ?? getRuntimePaths().homePath, '.codex', 'archived_sessions');
+const codexSessionIndexPath = () =>
+  path.join(process.env.USERPROFILE ?? getRuntimePaths().homePath, '.codex', 'session_index.jsonl');
+
+const listJsonlFilesRecursively = async (rootDir: string): Promise<string[]> => {
+  const results: string[] = [];
+  const visit = async (currentDir: string) => {
+    let entries;
+    try {
+      entries = await readdir(currentDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        await visit(fullPath);
+        continue;
+      }
+      if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+        results.push(fullPath);
+      }
+    }
+  };
+
+  await visit(rootDir);
+  return results;
+};
+
+const extractCodexMessageText = (content: unknown): string => {
+  if (!Array.isArray(content)) {
+    return '';
+  }
+
+  return content
+    .map((block) => {
+      if (!block || typeof block !== 'object') {
+        return '';
+      }
+      const typedBlock = block as { type?: string; text?: unknown };
+      if (
+        (typedBlock.type === 'input_text' || typedBlock.type === 'output_text' || typedBlock.type === 'text') &&
+        typeof typedBlock.text === 'string'
+      ) {
+        return typedBlock.text;
+      }
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+};
+
+const isCodexImportedContextMessage = (text: string) => {
+  const trimmed = text.trim();
+  return (
+    !trimmed ||
+    trimmed.startsWith('<environment_context>') ||
+    trimmed.startsWith('# AGENTS.md instructions for ') ||
+    trimmed.startsWith('<INSTRUCTIONS>') ||
+    trimmed.startsWith('Host behavior note:')
+  );
+};
+
+const readCodexThreadNameIndex = async () => {
+  const result = new Map<string, string>();
+  let raw = '';
+  try {
+    raw = await readFile(codexSessionIndexPath(), 'utf8');
+  } catch {
+    return result;
+  }
+
+  for (const line of raw.split(/\r?\n/).filter(Boolean)) {
+    try {
+      const parsed = JSON.parse(line) as { id?: unknown; thread_name?: unknown };
+      if (
+        typeof parsed.id === 'string' &&
+        parsed.id.trim() &&
+        typeof parsed.thread_name === 'string' &&
+        parsed.thread_name.trim()
+      ) {
+        result.set(parsed.id.trim(), parsed.thread_name.trim());
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return result;
+};
+
+const parseCodexSessionFile = async (
+  filePath: string,
+  threadNameIndex: Map<string, string>,
+) => {
+  const raw = await readFile(filePath, 'utf8');
+  const lines = raw.split(/\r?\n/).filter(Boolean);
+  const messages: ConversationMessage[] = [];
+  let workspace = '';
+  let model = 'gpt-5.4';
+  let firstUserText = '';
+  let lastAssistantText = '';
+  let lastErrorText = '';
+  let lastTimestamp: string | number | undefined;
+  let nativeSessionId = path.basename(filePath, '.jsonl');
+  let tokenUsage: TokenUsage = {
+    contextWindow: 0,
+    used: 0,
+    input: 0,
+    output: 0,
+    cached: 0,
+    windowSource: 'unknown',
+  };
+  let hasMeaningfulUserMessage = false;
+
+  for (const line of lines) {
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+
+    if (parsed.timestamp) {
+      lastTimestamp = parsed.timestamp as string | number;
+    }
+
+    if (parsed.type === 'session_meta') {
+      const payload = parsed.payload as { id?: unknown; cwd?: unknown } | undefined;
+      if (typeof payload?.id === 'string' && payload.id.trim()) {
+        nativeSessionId = payload.id.trim();
+      }
+      if (typeof payload?.cwd === 'string' && payload.cwd.trim()) {
+        workspace = payload.cwd.trim();
+      }
+      continue;
+    }
+
+    if (parsed.type === 'turn_context') {
+      const payload = parsed.payload as { cwd?: unknown; model?: unknown } | undefined;
+      if (typeof payload?.cwd === 'string' && payload.cwd.trim()) {
+        workspace = payload.cwd.trim();
+      }
+      if (typeof payload?.model === 'string' && payload.model.trim()) {
+        model = payload.model.trim();
+      }
+      continue;
+    }
+
+    if (parsed.type === 'event_msg') {
+      const payload = parsed.payload as
+        | {
+            type?: unknown;
+            info?: {
+              total_token_usage?: {
+                input_tokens?: number;
+                cached_input_tokens?: number;
+                output_tokens?: number;
+              };
+              model_context_window?: number;
+            };
+          }
+        | undefined;
+      if (payload?.type === 'token_count' && payload.info?.total_token_usage) {
+        const usage = payload.info.total_token_usage;
+        const input = usage.input_tokens ?? 0;
+        const cached = usage.cached_input_tokens ?? 0;
+        const output = usage.output_tokens ?? 0;
+        tokenUsage = {
+          contextWindow: payload.info.model_context_window ?? 0,
+          used: input + cached + output,
+          input,
+          output,
+          cached,
+          windowSource: payload.info.model_context_window ? 'runtime' : 'unknown',
+        };
+      }
+      continue;
+    }
+
+    if (parsed.type !== 'response_item') {
+      continue;
+    }
+
+    const payload = parsed.payload as
+      | {
+          type?: unknown;
+          role?: unknown;
+          content?: unknown;
+        }
+      | undefined;
+    if (payload?.type !== 'message' || (payload.role !== 'user' && payload.role !== 'assistant')) {
+      continue;
+    }
+
+    const text = extractCodexMessageText(payload.content);
+    if (!text || isCodexImportedContextMessage(text)) {
+      continue;
+    }
+
+    if (payload.role === 'user') {
+      firstUserText ||= text;
+      hasMeaningfulUserMessage = true;
+    } else {
+      if (!hasMeaningfulUserMessage) {
+        continue;
+      }
+      lastAssistantText = text;
+    }
+
+    messages.push({
+      id: randomUUID(),
+      role: payload.role,
+      kind: 'message',
+      timestamp: toTimeLabel(lastTimestamp),
+      title:
+        payload.role === 'user'
+          ? 'User prompt'
+          : firstMeaningfulLine(text).slice(0, 42) || 'Codex response',
+      content: text,
+      status: 'complete',
+    });
+  }
+
+  if (messages.length === 0) {
+    return null;
+  }
+
+  const summary = deriveImportedSessionSummary({
+    customTitle: threadNameIndex.get(nativeSessionId),
+    firstUserText,
+    lastAssistantText,
+    lastErrorText,
+    nativeSessionId,
+    providerName: 'Codex',
+  });
+
+  return {
+    nativeSessionId,
+    workspace,
+    model,
+    messages,
+    title: summary.title,
+    preview: summary.preview,
+    timeLabel: toTimeLabel(lastTimestamp),
+    updatedAt: toUpdatedAt(lastTimestamp),
+    tokenUsage,
   };
 };
 
@@ -997,6 +1266,130 @@ const importNativeClaudeSessions = async (project: ProjectRecord) => {
   temporary.sessions = pruneTemporaryImportedDuplicates(
     mergeNativeImportedSessions(existingSessions, importedSessions, seenNativeIds),
   );
+};
+
+const isGeneratedCodexPlaceholder = (session: SessionRecord) =>
+  !session.codexThreadId &&
+  /^New Session \d+$/.test(session.title) &&
+  session.preview === 'Start a new Codex conversation.' &&
+  (session.messages?.length ?? 0) === 0;
+
+const mergeImportedCodexSessions = (
+  existingSessions: SessionRecord[],
+  importedSessions: SessionRecord[],
+  seenCodexIds: Set<string>,
+) => {
+  const preservedLocalSessions =
+    importedSessions.length > 0
+      ? existingSessions.filter((session) => !session.codexThreadId && !isGeneratedCodexPlaceholder(session))
+      : existingSessions.filter((session) => !session.codexThreadId);
+
+  const preservedRemoteSessions = existingSessions.filter(
+    (session): session is SessionRecord & { codexThreadId: string } => Boolean(session.codexThreadId),
+  );
+
+  return [
+    ...preservedLocalSessions,
+    ...preservedRemoteSessions.filter((session) => !seenCodexIds.has(session.codexThreadId)),
+    ...importedSessions,
+  ].sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));
+};
+
+const importNativeCodexSessions = async (project: ProjectRecord) => {
+  const temporary = project.dreams.find((dream) => dream.isTemporary);
+  if (!temporary) {
+    return;
+  }
+
+  const existingSessions = [...temporary.sessions] as SessionRecord[];
+  const projectSessions = project.dreams.flatMap((dream) => dream.sessions) as SessionRecord[];
+  const existingByCodexThreadId = new Map(
+    projectSessions
+      .filter((session): session is SessionRecord & { codexThreadId: string } => Boolean(session.codexThreadId))
+      .map((session) => [session.codexThreadId, session]),
+  );
+
+  const files = [
+    ...(await listJsonlFilesRecursively(codexSessionsRoot())),
+    ...(await listJsonlFilesRecursively(codexArchivedSessionsRoot())),
+  ];
+  const threadNameIndex = await readCodexThreadNameIndex();
+
+  const seenCodexIds = new Set<string>();
+  const importedSessions: SessionRecord[] = [];
+
+  for (const file of files) {
+    let parsed: Awaited<ReturnType<typeof parseCodexSessionFile>> | null = null;
+    try {
+      parsed = await parseCodexSessionFile(file, threadNameIndex);
+    } catch {
+      continue;
+    }
+
+    if (!parsed) {
+      continue;
+    }
+
+    const workspace = parsed.workspace || project.rootPath;
+    if (!isWorkspaceWithinProjectTree(project.rootPath, workspace)) {
+      continue;
+    }
+
+    seenCodexIds.add(parsed.nativeSessionId);
+    const existing =
+      findImportedSessionTarget(
+        projectSessions,
+        parsed.nativeSessionId,
+        parsed.title,
+        workspace,
+        'codexThreadId',
+      ) ?? existingByCodexThreadId.get(parsed.nativeSessionId);
+    const display = resolveImportedSessionDisplay(existing, parsed);
+    const importedSession: SessionRecord = {
+      id: existing?.id ?? randomUUID(),
+      title: display.title,
+      preview: display.preview,
+      timeLabel: display.timeLabel,
+      provider: 'codex',
+      model: parsed.model,
+      workspace,
+      projectId: project.id,
+      projectName: project.name,
+      dreamId: temporary.id,
+      dreamName: temporary.name,
+      claudeSessionId: existing?.claudeSessionId,
+      codexThreadId: parsed.nativeSessionId,
+      updatedAt: display.updatedAt,
+      sessionKind: existing?.sessionKind ?? 'standard',
+      hidden: existing?.hidden ?? false,
+      instructionPrompt: existing?.instructionPrompt,
+      harness: existing?.harness,
+      harnessState: normalizeHarnessState(existing?.harnessState),
+      groups: existing?.groups ?? [],
+      contextReferences: normalizeContextReferences(existing?.contextReferences),
+      tokenUsage: parsed.tokenUsage,
+      branchSnapshot: existing?.branchSnapshot ?? makeEmptyBranchSnapshot(project.rootPath),
+      messages: parsed.messages,
+    };
+
+    if (existing) {
+      Object.assign(existing, importedSession);
+      if (existing.dreamId === temporary.id) {
+        importedSessions.push(existing);
+      }
+    } else {
+      importedSessions.push(importedSession);
+    }
+  }
+
+  temporary.sessions = pruneTemporaryImportedDuplicates(
+    mergeImportedCodexSessions(existingSessions, importedSessions, seenCodexIds),
+  );
+};
+
+const importNativeProjectSessions = async (project: ProjectRecord) => {
+  await importNativeClaudeSessions(project);
+  await importNativeCodexSessions(project);
 };
 
 const recoverExistingSessionsFromNativeHistory = async (projects: ProjectRecord[]) => {
@@ -1156,7 +1549,7 @@ const ensureStateShape = (value: unknown): AppState => {
 const hydrateLoadedState = async (state: AppState) => {
   for (const project of state.projects) {
     try {
-      await importNativeClaudeSessions(project);
+    await importNativeProjectSessions(project);
     } catch {
       // Preserve the persisted project tree when auxiliary native-session import fails.
     }
@@ -1371,6 +1764,7 @@ export const setSessionRuntime = async (
   sessionId: string,
   values: {
     claudeSessionId?: string;
+    codexThreadId?: string;
     model?: string;
     preview?: string;
     timeLabel?: string;
@@ -1386,6 +1780,9 @@ export const setSessionRuntime = async (
 
     if (values.claudeSessionId) {
       session.claudeSessionId = values.claudeSessionId;
+    }
+    if (values.codexThreadId) {
+      session.codexThreadId = values.codexThreadId;
     }
     if (values.model) {
       session.model = values.model;
@@ -1455,6 +1852,7 @@ const makeStreamworkHistoryReference = (streamwork: DreamRecord): ContextReferen
 export const createSession = async (
   sourceSessionId?: string,
   includeStreamworkSummary = false,
+  provider?: SessionProvider,
 ): Promise<SessionCreateResult> => {
   const state = await loadState();
 
@@ -1481,12 +1879,13 @@ export const createSession = async (
   }
 
   const templateSession = (sourceSession ?? fallbackDream.sessions[0]) as SessionRecord | undefined;
+  const sessionProvider = normalizeSessionProvider(provider ?? templateSession?.provider);
   const nextIndex = fallbackDream.sessions.length + 1;
   const now = new Date();
   const nextSession: SessionRecord = {
     id: randomUUID(),
     title: `New Session ${nextIndex}`,
-    preview: 'Start a new Claude conversation.',
+    preview: getDefaultPreviewForProvider(sessionProvider),
     timeLabel: new Intl.DateTimeFormat('zh-CN', {
       hour: '2-digit',
       minute: '2-digit',
@@ -1494,13 +1893,18 @@ export const createSession = async (
       day: 'numeric',
     }).format(now),
     updatedAt: now.getTime(),
-    model: templateSession?.model ?? 'opus[1m]',
+    provider: sessionProvider,
+    model:
+      provider === undefined && normalizeSessionProvider(templateSession?.provider) === sessionProvider
+        ? templateSession?.model ?? getDefaultModelForProvider(sessionProvider)
+        : getDefaultModelForProvider(sessionProvider),
     workspace: templateSession?.workspace ?? fallbackProject.rootPath,
     projectId: fallbackProject.id,
     projectName: fallbackProject.name,
     dreamId: fallbackDream.id,
     dreamName: fallbackDream.name,
     claudeSessionId: undefined,
+    codexThreadId: undefined,
     sessionKind: 'standard',
     hidden: false,
     instructionPrompt: undefined,
@@ -1537,13 +1941,14 @@ const createBaseSession = (
   streamwork: DreamRecord,
   title: string,
   workspace: string,
+  provider: SessionProvider = 'claude',
 ): SessionRecord => {
   const now = new Date();
 
   return {
     id: randomUUID(),
     title,
-    preview: 'Start a new Claude conversation.',
+    preview: getDefaultPreviewForProvider(provider),
     timeLabel: new Intl.DateTimeFormat('zh-CN', {
       hour: '2-digit',
       minute: '2-digit',
@@ -1551,13 +1956,15 @@ const createBaseSession = (
       day: 'numeric',
     }).format(now),
     updatedAt: now.getTime(),
-    model: 'opus[1m]',
+    provider,
+    model: getDefaultModelForProvider(provider),
     workspace,
     projectId: project.id,
     projectName: project.name,
     dreamId: streamwork.id,
     dreamName: streamwork.name,
     claudeSessionId: undefined,
+    codexThreadId: undefined,
     sessionKind: 'standard',
     hidden: false,
     instructionPrompt: undefined,
@@ -1638,7 +2045,13 @@ const ensureHarnessSession = (
     return existing;
   }
 
-  const nextSession = createBaseSession(project, streamwork, title, rootSession.workspace);
+  const nextSession = createBaseSession(
+    project,
+    streamwork,
+    title,
+    rootSession.workspace,
+    normalizeSessionProvider(rootSession.provider),
+  );
   nextSession.preview = `${role} harness session`;
   nextSession.sessionKind = 'harness_role';
   nextSession.hidden = true;
@@ -1671,6 +2084,9 @@ export const bootstrapHarnessFromSession = async (sessionId: string): Promise<Ha
 
   if (!sourceSession || !sourceProject || !sourceStreamwork) {
     throw new Error('Session not found.');
+  }
+  if (normalizeSessionProvider(sourceSession.provider) !== 'claude') {
+    throw new Error('Harness is currently available only for Claude sessions.');
   }
 
   const rootSessionId = sourceSession.harness?.rootSessionId ?? sourceSession.id;
@@ -1766,7 +2182,7 @@ export const createProject = async (name: string, rootPath: string): Promise<Pro
     ensureTemporaryStreamwork(existingProject);
     const existingSession = await hydrateProjectForOpen(
       existingProject,
-      importNativeClaudeSessions,
+      importNativeProjectSessions,
       ensureProjectHasSession,
     );
     await saveState(state);
@@ -1800,7 +2216,7 @@ export const createProject = async (name: string, rootPath: string): Promise<Pro
   };
 
   project.dreams.push(temporaryStreamwork, streamwork);
-  const session = await hydrateProjectForOpen(project, importNativeClaudeSessions, ensureProjectHasSession);
+  const session = await hydrateProjectForOpen(project, importNativeProjectSessions, ensureProjectHasSession);
   state.projects.unshift(project);
 
   await saveState(state);
@@ -1843,6 +2259,7 @@ export const createSessionInStreamwork = async (
   streamworkId: string,
   name?: string,
   includeStreamworkSummary = false,
+  provider: SessionProvider = 'claude',
 ): Promise<SessionCreateResult> => {
   const state = await loadState();
   let foundProject: ProjectRecord | undefined;
@@ -1869,6 +2286,7 @@ export const createSessionInStreamwork = async (
     targetStreamwork,
     name?.trim() || `New Session ${nextIndex}`,
     targetProject.rootPath,
+    normalizeSessionProvider(provider),
   );
   if (includeStreamworkSummary && targetStreamwork.sessions.length > 0) {
     session.contextReferences = [makeStreamworkHistoryReference(targetStreamwork)];

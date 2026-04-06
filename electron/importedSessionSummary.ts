@@ -5,17 +5,19 @@ export const deriveImportedSessionSummary = (input: {
   lastErrorText?: string;
   interrupted?: boolean;
   nativeSessionId: string;
+  providerName?: string;
 }) => {
   const customTitle = input.customTitle?.trim() ?? '';
   const firstUserText = input.firstUserText?.trim() ?? '';
   const lastAssistantText = input.lastAssistantText?.trim() ?? '';
   const lastErrorText = input.lastErrorText?.trim() ?? '';
   const interrupted = Boolean(input.interrupted);
+  const providerName = input.providerName?.trim() || 'Claude';
 
   if (customTitle) {
     return {
       title: customTitle.trim(),
-      preview: (lastAssistantText || firstUserText || lastErrorText || 'Imported Claude history.').trim(),
+      preview: (lastAssistantText || firstUserText || lastErrorText || `Imported ${providerName} history.`).trim(),
     };
   }
 
@@ -35,6 +37,6 @@ export const deriveImportedSessionSummary = (input: {
 
   return {
     title: (firstUserText ? firstUserText.slice(0, 42) : `Imported ${input.nativeSessionId.slice(0, 8)}`).trim(),
-    preview: (lastAssistantText || firstUserText || 'Imported Claude history.').trim(),
+    preview: (lastAssistantText || firstUserText || `Imported ${providerName} history.`).trim(),
   };
 };

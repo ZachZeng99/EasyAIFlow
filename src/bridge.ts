@@ -16,6 +16,7 @@ import type {
   SessionStopResult,
   SessionContextUpdateResult,
   SessionCreateResult,
+  SessionProvider,
   SessionSummary,
   StreamworkCreateResult,
 } from './data/types';
@@ -112,12 +113,14 @@ export type EasyAIFlowBridge = {
     streamworkId: string;
     name?: string;
     includeStreamworkSummary?: boolean;
+    provider?: SessionProvider;
   }) => Promise<SessionCreateResult>;
   bootstrapHarness: (payload: { sessionId: string }) => Promise<HarnessBootstrapResult>;
   runHarness: (payload: { sessionId: string } & HarnessRunOptions) => Promise<HarnessRunResult>;
   createSession: (payload?: {
     sourceSessionId?: string;
     includeStreamworkSummary?: boolean;
+    provider?: SessionProvider;
   }) => Promise<SessionCreateResult>;
   deleteSession: (payload: { sessionId: string }) => Promise<DeleteEntityResult>;
   updateSessionContextReferences: (payload: {
@@ -144,6 +147,21 @@ export type EasyAIFlowBridge = {
       userMessageId: string;
       assistantMessageId: string;
     };
+  }>;
+  switchModel: (payload: {
+    sessionId: string;
+    session?: SessionSummary;
+    model: string;
+    effort?: 'low' | 'medium' | 'high' | 'max';
+  }) => Promise<{
+    projects: ProjectRecord[];
+  }>;
+  switchEffort: (payload: {
+    sessionId: string;
+    session?: SessionSummary;
+    effort: 'low' | 'medium' | 'high' | 'max';
+  }) => Promise<{
+    projects: ProjectRecord[];
   }>;
   stopSessionRun: (payload: { sessionId: string }) => Promise<SessionStopResult>;
   disconnectSession: (payload: { sessionId: string }) => Promise<SessionStopResult>;
@@ -223,6 +241,8 @@ const webBridge: EasyAIFlowBridge = {
   updateSessionContextReferences: (payload) => callWebRpc('updateSessionContextReferences', payload),
   renameEntity: (payload) => callWebRpc('renameEntity', payload),
   sendMessage: (payload) => callWebRpc('sendMessage', payload),
+  switchModel: (payload) => callWebRpc('switchModel', payload),
+  switchEffort: (payload) => callWebRpc('switchEffort', payload),
   stopSessionRun: (payload) => callWebRpc('stopSessionRun', payload),
   disconnectSession: (payload) => callWebRpc('disconnectSession', payload),
   onClaudeEvent: (listener) => {

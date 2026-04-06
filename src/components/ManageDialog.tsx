@@ -7,6 +7,11 @@ type ManageDialogProps = {
     label: string;
     value: string;
     placeholder?: string;
+    type?: 'text' | 'select';
+    options?: Array<{
+      label: string;
+      value: string;
+    }>;
   }>;
   toggles?: Array<{
     key: string;
@@ -57,18 +62,31 @@ export function ManageDialog({
           {fields.map((field) => (
             <label key={field.key} className="dialog-field">
               <span>{field.label}</span>
-              <input
-                type="text"
-                value={field.value}
-                placeholder={field.placeholder}
-                onChange={(event) => onChange(field.key, event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    event.preventDefault();
-                    onSubmit();
-                  }
-                }}
-              />
+              {field.type === 'select' ? (
+                <select
+                  value={field.value}
+                  onChange={(event) => onChange(field.key, event.target.value)}
+                >
+                  {(field.options ?? []).map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  value={field.value}
+                  placeholder={field.placeholder}
+                  onChange={(event) => onChange(field.key, event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      onSubmit();
+                    }
+                  }}
+                />
+              )}
             </label>
           ))}
           {toggles.map((toggle) => (

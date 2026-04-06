@@ -32,6 +32,7 @@ const makeProject = (message: ConversationMessage): ProjectRecord[] => {
     preview: '',
     timeLabel: 'Just now',
     updatedAt: 1,
+    provider: 'claude',
     model: 'opus[1m]',
     workspace: 'X:\\AITool\\EasyAIFlow',
     projectId: 'project-1',
@@ -106,4 +107,26 @@ run('normalizeProjectsFromPersistence still recovers stale streaming assistant m
 
   assert.equal(message?.status, 'error');
   assert.equal(message?.content, 'Previous Claude run did not finish.');
+});
+
+run('normalizeProjectsFromPersistence preserves provider and applies provider-specific recovery copy', () => {
+  const projects = makeProject(
+    makeMessage({
+      status: 'queued',
+      title: 'Codex queued',
+      content: '',
+    }),
+  );
+  const session = projects[0]?.dreams[0]?.sessions[0] as SessionRecord;
+  session.provider = 'codex';
+  session.model = 'gpt-5.4';
+
+  const normalized = normalizeProjectsFromPersistence(projects);
+  const recoveredSession = normalized[0]?.dreams[0]?.sessions[0] as SessionRecord | undefined;
+  const message = recoveredSession?.messages?.[0];
+
+  assert.equal(recoveredSession?.provider, 'codex');
+  assert.equal(message?.status, 'error');
+  assert.equal(message?.title, 'Codex queue interrupted');
+  assert.equal(message?.content, 'Queued Codex run did not resume after restart.');
 });

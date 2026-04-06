@@ -1,6 +1,13 @@
 import type { ClaudeInteractionContext } from './claudeInteractionContext.js';
 import type { ClaudeInteractionState } from './claudeInteractionState.js';
 import {
+  disconnectCodexRun,
+  runCodexPrint,
+  stopCodexRun,
+  switchCodexSessionEffort,
+  switchCodexSessionModel,
+} from './codexInteraction.js';
+import {
   grantPathPermission,
   getSessionInteractionSnapshots,
   runClaudePrint,
@@ -13,6 +20,8 @@ import {
   getConfiguredClaudeModel,
   getSlashCommands,
   runHarnessForSession,
+  switchClaudeSessionModel,
+  switchClaudeSessionEffort,
 } from './claudeInteraction.js';
 import { isWritableStdin } from './claudeHelpers.js';
 import {
@@ -28,6 +37,7 @@ import {
   createStreamwork,
   deleteSession,
   deleteStreamwork,
+  findSession,
   getProjects,
   renameEntity,
   reorderStreamworks,
@@ -42,6 +52,10 @@ import type {
   SessionSummary,
 } from '../src/data/types.js';
 import type { PlanModeResponsePayload } from '../src/data/planMode.js';
+import { normalizeSessionProvider } from '../src/data/sessionProvider.js';
+
+const resolveSessionProvider = async (sessionId: string, fallbackSession?: SessionSummary) =>
+  normalizeSessionProvider((await findSession(sessionId))?.provider ?? fallbackSession?.provider);
 
 export const handleRespondToPermission = async (
   ctx: ClaudeInteractionContext,
@@ -174,6 +188,9 @@ export const handleStopSession = async (
   state: ClaudeInteractionState,
   payload: { sessionId: string },
 ) => {
+  if ((await resolveSessionProvider(payload.sessionId)) === 'codex') {
+    return stopCodexRun(ctx, payload.sessionId);
+  }
   const result = await interruptSessionTurn(ctx, state, payload.sessionId);
   return {
     projects: result.projects,
@@ -185,6 +202,9 @@ export const handleDisconnectSession = async (
   state: ClaudeInteractionState,
   payload: { sessionId: string },
 ) => {
+  if ((await resolveSessionProvider(payload.sessionId)) === 'codex') {
+    return disconnectCodexRun(ctx, payload.sessionId);
+  }
   const result = await disconnectSession(ctx, state, payload.sessionId);
   result.changedMessages.forEach((message) => {
     if (message.role === 'assistant') {
@@ -222,18 +242,65 @@ export const handleSendMessage = async (
     model?: string;
     effort?: 'low' | 'medium' | 'high' | 'max';
   },
-) =>
-  runClaudePrint(ctx, state, payload.sessionId, payload.prompt, payload.attachments ?? [], payload.session, {
+) => {
+  if ((await resolveSessionProvider(payload.sessionId, payload.session)) === 'codex') {
+    return runCodexPrint(ctx, payload.sessionId, payload.prompt, payload.attachments ?? [], payload.session, {
+      references: payload.references,
+      model: payload.model,
+    });
+  }
+
+  return runClaudePrint(ctx, state, payload.sessionId, payload.prompt, payload.attachments ?? [], payload.session, {
     references: payload.references,
     model: payload.model,
     effort: payload.effort,
   });
+};
+
+export const handleSwitchModel = async (
+  ctx: ClaudeInteractionContext,
+  state: ClaudeInteractionState,
+  payload: {
+    sessionId: string;
+    session?: SessionSummary;
+    model: string;
+    effort?: 'low' | 'medium' | 'high' | 'max';
+  },
+) => {
+  if ((await resolveSessionProvider(payload.sessionId, payload.session)) === 'codex') {
+    return switchCodexSessionModel(payload);
+  }
+
+  return switchClaudeSessionModel(ctx, state, payload);
+};
+
+export const handleSwitchEffort = async (
+  ctx: ClaudeInteractionContext,
+  state: ClaudeInteractionState,
+  payload: {
+    sessionId: string;
+    session?: SessionSummary;
+    effort: 'low' | 'medium' | 'high' | 'max';
+  },
+) => {
+  if ((await resolveSessionProvider(payload.sessionId, payload.session)) === 'codex') {
+    return switchCodexSessionEffort(payload);
+  }
+
+  return switchClaudeSessionEffort(ctx, state, payload);
+};
 
 export const handleBootstrapHarness = async (
   _ctx: ClaudeInteractionContext,
   _state: ClaudeInteractionState,
   payload: { sessionId: string },
-) => bootstrapHarnessFromSession(payload.sessionId);
+) => {
+  if ((await resolveSessionProvider(payload.sessionId)) !== 'claude') {
+    throw new Error('Harness is currently available only for Claude sessions.');
+  }
+
+  return bootstrapHarnessFromSession(payload.sessionId);
+};
 
 export const handleRunHarness = async (
   ctx: ClaudeInteractionContext,
@@ -246,7 +313,13 @@ export const handleRunHarness = async (
     model?: string;
     effort?: 'low' | 'medium' | 'high' | 'max';
   },
-) => runHarnessForSession(ctx, state, payload.sessionId, payload);
+) => {
+  if ((await resolveSessionProvider(payload.sessionId)) !== 'claude') {
+    throw new Error('Harness is currently available only for Claude sessions.');
+  }
+
+  return runHarnessForSession(ctx, state, payload.sessionId, payload);
+};
 
 export const handleBtwMessage = async (
   ctx: ClaudeInteractionContext,

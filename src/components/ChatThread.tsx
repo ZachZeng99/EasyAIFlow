@@ -7,6 +7,7 @@ import { InlineAskUserQuestionCard } from './InlineAskUserQuestionCard';
 import { InlinePlanModeCard } from './InlinePlanModeCard';
 import { getDisplayedCodeChangeDiff, shouldRequestCodeChangeDiff } from '../data/codeChangeDiff';
 import { parsePermissionRequest, type PermissionRequest } from '../data/permissionRequest';
+import { getProviderBadgeLabel, getProviderDisplayName, normalizeSessionProvider } from '../data/sessionProvider';
 import { buildDisplayItems, shouldShowTitle } from '../data/chatThreadDisplay';
 import type { AskUserQuestionDraft } from '../data/askUserQuestion';
 import type { PlanModeResponsePayload } from '../data/planMode';
@@ -75,6 +76,7 @@ export function ChatThread({
   onSubmitAskUserQuestion,
   onSubmitPlanMode,
 }: ChatThreadProps) {
+  const providerName = getProviderDisplayName(session.provider);
   const displayItems = useMemo(() => buildDisplayItems(messages), [messages]);
   const activePermissionRequest = getActiveSessionPermissionRequest(interaction);
   const showDisconnectAction = isCliOnline && Boolean(onDisconnect);
@@ -189,6 +191,9 @@ export function ChatThread({
             ))}
             <span className="session-tag process-tag">
               {traceSummary.tools} tools · {traceSummary.progress} progress · {traceSummary.thinking} thinking
+            </span>
+            <span className={`session-tag provider-pill provider-${normalizeSessionProvider(session.provider)}`}>
+              {getProviderBadgeLabel(session.provider)}
             </span>
           </div>
         </div>
@@ -307,7 +312,7 @@ export function ChatThread({
           ) : (
             <article key={item.message.id} className={`message-card ${item.message.role}${item.message.role === 'assistant' ? ' final-reply' : ''}`}>
               <div className="message-meta">
-                <span className={`message-role ${item.message.role}`}>{item.message.role === 'user' ? 'You' : 'Claude'}</span>
+                <span className={`message-role ${item.message.role}`}>{item.message.role === 'user' ? 'You' : providerName}</span>
                 <span>{item.message.timestamp}</span>
                 {item.message.status ? <span className={`message-status ${item.message.status}`}>{item.message.status}</span> : null}
               </div>

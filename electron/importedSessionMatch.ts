@@ -3,11 +3,12 @@ import { sameWorkspacePath } from './workspacePaths.js';
 
 export const findImportedSessionTarget = (
   projectSessions: SessionRecord[],
-  claudeSessionId: string,
+  importedSessionId: string,
   title: string,
   workspace: string,
+  sessionIdKey: 'claudeSessionId' | 'codexThreadId' = 'claudeSessionId',
 ) => {
-  const direct = projectSessions.find((session) => session.claudeSessionId === claudeSessionId);
+  const direct = projectSessions.find((session) => session[sessionIdKey] === importedSessionId);
   if (direct) {
     return direct;
   }

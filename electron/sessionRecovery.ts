@@ -1,6 +1,12 @@
-import type { ConversationMessage } from '../src/data/types.js';
+import { getProviderDisplayName, normalizeSessionProvider } from '../src/data/sessionProvider.js';
+import type { ConversationMessage, SessionProvider } from '../src/data/types.js';
 
-const recoverMessage = (message: ConversationMessage): ConversationMessage => {
+const recoverMessage = (
+  message: ConversationMessage,
+  provider: SessionProvider | undefined,
+): ConversationMessage => {
+  const providerName = getProviderDisplayName(provider);
+
   if (message.status !== 'running' && message.status !== 'streaming' && message.status !== 'queued') {
     return message;
   }
@@ -10,8 +16,8 @@ const recoverMessage = (message: ConversationMessage): ConversationMessage => {
       return {
         ...message,
         status: 'error',
-        title: 'Claude queue interrupted',
-        content: 'Queued Claude run did not resume after restart.',
+        title: `${providerName} queue interrupted`,
+        content: `Queued ${providerName} run did not resume after restart.`,
       };
     }
 
@@ -26,8 +32,8 @@ const recoverMessage = (message: ConversationMessage): ConversationMessage => {
     return {
       ...message,
       status: 'error',
-      title: 'Claude error',
-      content: 'Previous Claude run did not finish.',
+      title: `${providerName} error`,
+      content: `Previous ${providerName} run did not finish.`,
     };
   }
 
@@ -59,4 +65,9 @@ const recoverMessage = (message: ConversationMessage): ConversationMessage => {
 };
 
 export const recoverStaleSessionMessages = (messages: ConversationMessage[] | undefined) =>
-  (messages ?? []).map(recoverMessage);
+  (messages ?? []).map((message) => recoverMessage(message, 'claude'));
+
+export const recoverStaleSessionMessagesForProvider = (
+  messages: ConversationMessage[] | undefined,
+  provider: SessionProvider | undefined,
+) => (messages ?? []).map((message) => recoverMessage(message, normalizeSessionProvider(provider)));

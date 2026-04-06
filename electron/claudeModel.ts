@@ -65,3 +65,25 @@ export const resolveClaudeModelArg = (requestedModel: string | undefined, settin
 
   return trimmed;
 };
+
+export const shouldSwitchClaudeSessionModel = (payload: {
+  prompt?: string;
+  claudeSessionId?: string;
+  currentResolvedModel?: string;
+  requestedResolvedModel?: string;
+}) => {
+  const prompt = payload.prompt?.trim();
+  if (prompt?.startsWith('/')) {
+    return false;
+  }
+
+  if (!payload.claudeSessionId || !payload.requestedResolvedModel) {
+    return false;
+  }
+
+  if (!payload.currentResolvedModel) {
+    return true;
+  }
+
+  return payload.currentResolvedModel.trim() !== payload.requestedResolvedModel.trim();
+};

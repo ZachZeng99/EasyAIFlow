@@ -1,7 +1,13 @@
-export const buildClaudeSessionArgs = (claudeSessionId: string | undefined, sessionTitle: string) => {
+export const buildClaudeSessionArgs = (
+  claudeSessionId: string | undefined,
+  sessionTitle: string,
+  forkSession = false,
+) => {
   if (!claudeSessionId) {
     return ['-n', sessionTitle];
   }
 
-  return ['--resume', claudeSessionId];
+  return forkSession
+    ? ['--resume', claudeSessionId, '--fork-session']
+    : ['--resume', claudeSessionId];
 };

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   normalizeClaudeModelSelection,
   resolveClaudeModelArg,
+  shouldSwitchClaudeSessionModel,
 } from '../electron/claudeModel.js';
 
 const run = (name: string, fn: () => void) => {
@@ -45,4 +46,34 @@ run('resolveClaudeModelArg keeps explicit model names unchanged', () => {
 
 run('normalizeClaudeModelSelection maps native sonnet model names back to UI alias', () => {
   assert.equal(normalizeClaudeModelSelection('claude-sonnet-4-6'), 'sonnet');
+});
+
+run('shouldSwitchClaudeSessionModel only switches persisted sessions and ignores slash prompts', () => {
+  assert.equal(
+    shouldSwitchClaudeSessionModel({
+      claudeSessionId: 'session-123',
+      currentResolvedModel: 'claude-sonnet-4-6',
+      requestedResolvedModel: 'claude-opus-4-6[1m]',
+      prompt: 'continue this task',
+    }),
+    true,
+  );
+  assert.equal(
+    shouldSwitchClaudeSessionModel({
+      claudeSessionId: 'session-123',
+      currentResolvedModel: 'claude-sonnet-4-6',
+      requestedResolvedModel: 'claude-sonnet-4-6',
+      prompt: 'continue this task',
+    }),
+    false,
+  );
+  assert.equal(
+    shouldSwitchClaudeSessionModel({
+      claudeSessionId: 'session-123',
+      currentResolvedModel: 'claude-sonnet-4-6',
+      requestedResolvedModel: 'claude-opus-4-6[1m]',
+      prompt: '/clear',
+    }),
+    false,
+  );
 });

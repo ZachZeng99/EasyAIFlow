@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { ContextReference, ContextReferenceMode, TokenUsage } from '../data/types';
+import { normalizeSessionProvider } from '../data/sessionProvider';
+import type { ContextReference, ContextReferenceMode, SessionProvider, TokenUsage } from '../data/types';
 import { normalizeModelSelectionValue } from '../data/modelSelection';
 
 export type ComposerAttachment = {
@@ -13,6 +14,7 @@ export type ComposerAttachment = {
 };
 
 type ChatComposerProps = {
+  provider: SessionProvider;
   draft: string;
   tokenUsage: TokenUsage;
   sessionModel: string;
@@ -62,8 +64,19 @@ const formatSize = (value: number) => {
   return `${value} B`;
 };
 const isImageAttachment = (attachment: ComposerAttachment) => attachment.mimeType.startsWith('image/');
+const MODEL_OPTIONS = {
+  claude: [
+    { value: 'opus[1m]', label: 'opus4.6[1M]' },
+    { value: 'sonnet', label: 'sonnet4.6' },
+  ],
+  codex: [
+    { value: 'gpt-5.4', label: 'gpt-5.4' },
+    { value: 'gpt-5.4-mini', label: 'gpt-5.4-mini' },
+  ],
+} as const;
 
 export function ChatComposer({
+  provider,
   draft,
   tokenUsage,
   sessionModel,
@@ -89,6 +102,7 @@ export function ChatComposer({
   onSend,
   onStop,
 }: ChatComposerProps) {
+  const normalizedProvider = normalizeSessionProvider(provider);
   const canSend = draft.trim().length > 0 || attachments.length > 0;
   const showStopAction = isSending || (isResponding && !allowSendWhileResponding);
   const requestedModel =
@@ -136,6 +150,22 @@ export function ChatComposer({
   const [activeSlashIndex, setActiveSlashIndex] = useState(0);
   const [isDragActive, setIsDragActive] = useState(false);
   const visibleSlashCommands = slashState?.commands ?? [];
+  const modelOptions = useMemo(() => {
+    const baseOptions: Array<{ value: string; label: string }> = [...MODEL_OPTIONS[normalizedProvider]];
+    const knownValues = new Set(baseOptions.map((option) => option.value));
+    [model, sessionModel].forEach((value) => {
+      const trimmed = value.trim();
+      if (!trimmed || knownValues.has(trimmed)) {
+        return;
+      }
+      baseOptions.unshift({
+        value: trimmed,
+        label: trimmed,
+      });
+      knownValues.add(trimmed);
+    });
+    return baseOptions;
+  }, [model, normalizedProvider, sessionModel]);
 
   useEffect(() => {
     setActiveSlashIndex(0);
@@ -175,19 +205,24 @@ export function ChatComposer({
         <label className="composer-control">
           <span>Model</span>
           <select value={model} onChange={(event) => onModelChange(event.target.value)}>
-            <option value="opus[1m]">opus4.6[1M]</option>
-            <option value="sonnet">sonnet4.6</option>
+            {modelOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
           </select>
         </label>
-        <label className="composer-control">
-          <span>Thinking</span>
-          <select value={effort} onChange={(event) => onEffortChange(event.target.value as 'low' | 'medium' | 'high' | 'max')}>
-            <option value="low">Low</option>
-            <option value="medium">Medium</option>
-            <option value="high">High</option>
-            <option value="max">Max</option>
-          </select>
-        </label>
+        {normalizedProvider === 'claude' ? (
+          <label className="composer-control">
+            <span>Thinking</span>
+            <select value={effort} onChange={(event) => onEffortChange(event.target.value as 'low' | 'medium' | 'high' | 'max')}>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+              <option value="max">Max</option>
+            </select>
+          </label>
+        ) : null}
         <div className="composer-usage" aria-label="Token usage">
           {hasKnownContextWindow ? <span className="usage-emoji">{usageEmoji}</span> : null}
           <strong>{usageSummary}</strong>

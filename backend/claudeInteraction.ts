@@ -87,6 +87,7 @@ import { buildRecordedCodeChangeDiff } from '../electron/recordedCodeChangeDiff.
 import {
   normalizeClaudeModelSelection,
   resolveClaudeModelArg,
+  shouldSwitchClaudeSessionModel,
 } from '../electron/claudeModel.js';
 import {
   addActiveClaudeRun,
@@ -1862,14 +1863,12 @@ const ensureResidentClaudeSession = async (
   options?: ClaudePrintOptions,
 ) => {
   const resolvedModel = await resolveRequestedClaudeModel(ctx, options?.model);
+  const persistedModel = await resolveRequestedClaudeModel(ctx, session.model);
   const existing = getResidentSession(state, session.id);
+  const effortChanged = existing?.configuredEffort !== options?.effort;
+  const modelChanged = existing?.configuredModel !== resolvedModel;
   if (existing && !existing.child.killed) {
-    const modelChanged = existing.configuredModel !== resolvedModel;
-    const effortChanged = existing.configuredEffort !== options?.effort;
-    if (
-      !modelChanged &&
-      !effortChanged
-    ) {
+    if (!modelChanged && !effortChanged) {
       return existing;
     }
 
@@ -1897,10 +1896,15 @@ const ensureResidentClaudeSession = async (
     removeActiveClaudeRun(state.activeRuns, existing.runId);
   }
 
+  const forkSession = Boolean(
+    session.claudeSessionId &&
+      ((persistedModel && resolvedModel && persistedModel !== resolvedModel) ||
+        (existing && effortChanged)),
+  );
   const args = buildClaudePrintArgs({
     model: resolvedModel,
     effort: options?.effort,
-    sessionArgs: buildClaudeSessionArgs(session.claudeSessionId, session.title),
+    sessionArgs: buildClaudeSessionArgs(session.claudeSessionId, session.title, forkSession),
   });
 
   const child = spawn('claude', args, getClaudeSpawnOptions(session.workspace));
@@ -1938,6 +1942,10 @@ const ensureResidentClaudeSession = async (
         parsed = JSON.parse(line) as Record<string, unknown>;
       } catch {
         return;
+      }
+
+      if (parsed.type === 'system' && parsed.subtype === 'init') {
+        resolveResidentReady();
       }
 
       const currentResident = getResidentSession(state, session.id);
@@ -2130,9 +2138,114 @@ const ensureResidentClaudeSession = async (
     rejectResidentControlRequests(resident, error);
     void finalizeResidentSessionClose(ctx, state, resident, null, error);
   });
-
   await residentReady;
   return resident;
+};
+
+export const switchClaudeSessionModel = async (
+  ctx: ClaudeInteractionContext,
+  state: ClaudeInteractionState,
+  payload: {
+    sessionId: string;
+    session?: SessionSummary;
+    model: string;
+    effort?: 'low' | 'medium' | 'high' | 'max';
+  },
+) => {
+  const requestedModel = payload.model.trim();
+  if (!requestedModel) {
+    return {
+      projects: await getProjects(),
+    };
+  }
+
+  const session =
+    (await findSession(payload.sessionId)) ??
+    (payload.session ? await ensureSessionRecord(payload.session) : null);
+  if (!session) {
+    throw new Error('Session not found');
+  }
+
+  const currentResolvedModel = await resolveRequestedClaudeModel(ctx, session.model);
+  const requestedResolvedModel = await resolveRequestedClaudeModel(ctx, requestedModel);
+  if (
+    !shouldSwitchClaudeSessionModel({
+      claudeSessionId: session.claudeSessionId,
+      currentResolvedModel,
+      requestedResolvedModel,
+    })
+  ) {
+    return {
+      projects: await getProjects(),
+    };
+  }
+
+  await runClaudePrintAndWait(
+    ctx,
+    state,
+    payload.sessionId,
+    `/model ${requestedModel}`,
+    [],
+    session,
+    {
+      effort: payload.effort,
+    },
+  );
+
+  return {
+    projects: await getProjects(),
+  };
+};
+
+export const switchClaudeSessionEffort = async (
+  ctx: ClaudeInteractionContext,
+  state: ClaudeInteractionState,
+  payload: {
+    sessionId: string;
+    session?: SessionSummary;
+    effort: 'low' | 'medium' | 'high' | 'max';
+  },
+) => {
+  const session =
+    (await findSession(payload.sessionId)) ??
+    (payload.session ? await ensureSessionRecord(payload.session) : null);
+  if (!session) {
+    throw new Error('Session not found');
+  }
+
+  const resident = getResidentSession(state, payload.sessionId);
+  if (!resident && !session.claudeSessionId) {
+    return {
+      projects: await getProjects(),
+    };
+  }
+
+  if (resident?.configuredEffort === payload.effort) {
+    return {
+      projects: await getProjects(),
+    };
+  }
+
+  await runClaudePrintAndWait(
+    ctx,
+    state,
+    payload.sessionId,
+    `/effort ${payload.effort}`,
+    [],
+    session,
+    {
+      effort: resident?.configuredEffort,
+    },
+  );
+
+  const currentResident = getResidentSession(state, payload.sessionId);
+  if (currentResident) {
+    currentResident.configuredEffort = payload.effort;
+  }
+
+  return {
+    projects: await getProjects(),
+  };
 };
 
 export const executePreparedClaudeRun = async (

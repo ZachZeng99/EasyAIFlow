@@ -26,7 +26,17 @@ import {
   type PlanModeResponsePayload,
 } from './data/planMode';
 import { parsePermissionRequest } from './data/permissionRequest';
-import { resolveRequestedModelArg, syncImplicitModelSelection, type ModelSelectionSource } from './data/modelSelection';
+import {
+  resolveRequestedModelArg,
+  syncModelSelectionForSession,
+  type ModelSelectionSource,
+} from './data/modelSelection';
+import {
+  getProviderDisplayName,
+  normalizeSessionProvider,
+  providerSupportsBtw,
+  providerSupportsHarness,
+} from './data/sessionProvider';
 import type {
   BtwResponse,
   ClaudeStreamEvent,
@@ -114,6 +124,7 @@ const updateSessionInProjects = (
 const applyClaudeEvent = (projects: ProjectRecord[], event: ClaudeStreamEvent) =>
   updateSessionInProjects(projects, event.sessionId, (session) => {
     const updatedAt = Date.now();
+    const providerName = getProviderDisplayName(session.provider);
 
     if (
       event.type === 'permission-request' ||
@@ -213,7 +224,7 @@ const applyClaudeEvent = (projects: ProjectRecord[], event: ClaudeStreamEvent) =
     return {
       ...session,
       messages,
-      preview: 'Claude error',
+      preview: `${providerName} error`,
       timeLabel: 'Just now',
       updatedAt,
     };
@@ -462,6 +473,10 @@ export default function App() {
       setComposerNotice(`Thinking ${effort} is now active for this session.`);
     }
   }, [composerNotice, effort, selectedInteractionState?.runtime?.appliedEffort]);
+  const getSessionProvider = useCallback(
+    (session: Pick<SessionRecord, 'provider'> | undefined) => normalizeSessionProvider(session?.provider),
+    [],
+  );
   const activeSelectedSessionId = selectedSession?.id ?? selectedSessionId;
   const harnessPlannerSession = useMemo(
     () =>
@@ -591,6 +606,8 @@ export default function App() {
     ),
   );
   const canDisconnectSelectedSession = Boolean(selectedInteraction?.runtime?.processActive);
+  const selectedProvider = getSessionProvider(selectedSession);
+  const selectedProviderName = getProviderDisplayName(selectedProvider);
 
   const getOriginalFilePath = (file: File) => {
     try {
@@ -668,6 +685,7 @@ export default function App() {
         targetId,
         fields: {
           name: 'New Session',
+          provider: 'claude',
         },
         toggles: {
           includeStreamworkSummary: false,
@@ -924,7 +942,12 @@ export default function App() {
     }
 
     setModel((current) => {
-      const next = syncImplicitModelSelection(current, modelSelectionSource, selectedSession.model);
+      const next = syncModelSelectionForSession(
+        current,
+        modelSelectionSource,
+        selectedSession.model,
+        selectedSession.provider,
+      );
       if (next.source !== modelSelectionSource) {
         setModelSelectionSource(next.source);
       }
@@ -951,6 +974,11 @@ export default function App() {
       return;
     }
 
+    if (!providerSupportsBtw(selectedSession.provider)) {
+      setSlashCommands([]);
+      return;
+    }
+
     let cancelled = false;
     void bridge
       .getSlashCommands({
@@ -971,7 +999,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [selectedSession?.workspace, model, modelSelectionSource]);
+  }, [model, modelSelectionSource, selectedSession]);
 
   useEffect(() => {
     attachmentsRef.current = attachments;
@@ -1151,7 +1179,7 @@ export default function App() {
     }
 
     if (hasBlockingInteraction) {
-      setUiError('Resolve the current interactive Claude request before sending another message.');
+      setUiError('Resolve the current interactive request before sending another message.');
       return;
     }
 
@@ -1160,7 +1188,7 @@ export default function App() {
       return;
     }
 
-    if (prompt.startsWith('/btw')) {
+    if (providerSupportsBtw(selectedSession.provider) && prompt.startsWith('/btw')) {
       const btwPrompt = prompt.replace(/^\/btw\b/, '').trim();
       setDraft('');
       clearAttachments();
@@ -1194,6 +1222,8 @@ export default function App() {
       path: attachment.path,
       dataUrl: attachment.dataUrl,
     }));
+    let requestedModel = resolveRequestedModelArg(model, modelSelectionSource);
+
     const optimisticSend = buildOptimisticSendState({
       projects,
       sessionId: selectedSession.id,
@@ -1201,6 +1231,7 @@ export default function App() {
       attachments: pendingAttachments,
       references: displayContextReferences,
       queued: isSelectedSessionResponding,
+      provider: selectedSession.provider,
     });
 
     setProjects(optimisticSend.projects);
@@ -1212,7 +1243,7 @@ export default function App() {
         attachments: pendingAttachments,
         session: selectedSession,
         references: displayContextReferences,
-        model: resolveRequestedModelArg(model, modelSelectionSource),
+        model: requestedModel,
         effort,
       });
 
@@ -1221,18 +1252,19 @@ export default function App() {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to send message.';
+      const providerName = getProviderDisplayName(selectedSession.provider);
       setUiError(message);
       setProjects((current) =>
         updateSessionInProjects(current, selectedSession.id, (session) => ({
           ...session,
-          preview: 'Claude error',
+          preview: `${providerName} error`,
           timeLabel: 'Just now',
           updatedAt: Date.now(),
           messages: (session.messages ?? []).map((entry) =>
             entry.id === optimisticSend.assistantMessageId
               ? {
                   ...entry,
-                  title: 'Claude error',
+                  title: `${providerName} error`,
                   content: message,
                   status: 'error',
                 }
@@ -1278,7 +1310,7 @@ export default function App() {
         setProjects(result.projects);
       }
     } catch (error) {
-      setUiError(error instanceof Error ? error.message : 'Failed to stop Claude.');
+      setUiError(error instanceof Error ? error.message : `Failed to stop ${selectedProviderName}.`);
     }
   };
 
@@ -1287,8 +1319,13 @@ export default function App() {
       return;
     }
 
+    if (!providerSupportsBtw(selectedSession.provider)) {
+      setUiError('BTW is only available for Claude sessions.');
+      return;
+    }
+
     if (hasBlockingInteraction) {
-      setUiError('Resolve the current interactive Claude request before sending another message.');
+      setUiError('Resolve the current interactive request before sending another message.');
       return;
     }
 
@@ -1380,7 +1417,7 @@ export default function App() {
         setProjects(result.projects);
       }
     } catch (error) {
-      setUiError(error instanceof Error ? error.message : 'Failed to disconnect Claude.');
+      setUiError(error instanceof Error ? error.message : `Failed to disconnect ${selectedProviderName}.`);
     }
   };
 
@@ -1487,9 +1524,10 @@ export default function App() {
           throw new Error('Unable to resume the session for the answered questions.');
         }
 
+        const followUpPrompt = buildAskUserQuestionFollowUpPrompt(askQuestion.questions, response);
         const result = await bridge.sendMessage({
           sessionId: targetSession.id,
-          prompt: buildAskUserQuestionFollowUpPrompt(askQuestion.questions, response),
+          prompt: followUpPrompt,
           session: targetSession,
           references: targetSession.contextReferences ?? [],
           model: resolveRequestedModelArg(model, modelSelectionSource),
@@ -1508,7 +1546,7 @@ export default function App() {
       }));
       setUiError(null);
     } catch (error) {
-      setUiError(error instanceof Error ? error.message : 'Failed to answer Claude question.');
+      setUiError(error instanceof Error ? error.message : 'Failed to answer the pending question.');
       updateSessionInteraction(sessionId, (s) => ({ ...s, isSubmittingAskUserQuestion: false }));
     }
   };
@@ -1536,9 +1574,10 @@ export default function App() {
           throw new Error('Unable to resume the session for the plan decision.');
         }
 
+        const followUpPrompt = buildPlanModeFollowUpPrompt(planRequest.request, payload);
         const result = await bridge.sendMessage({
           sessionId: targetSession.id,
-          prompt: buildPlanModeFollowUpPrompt(planRequest.request, payload),
+          prompt: followUpPrompt,
           session: targetSession,
           references: targetSession.contextReferences ?? [],
           model: resolveRequestedModelArg(model, modelSelectionSource),
@@ -1739,6 +1778,7 @@ export default function App() {
     }
 
     const name = dialogState.fields.name?.trim() ?? '';
+    const provider = normalizeSessionProvider(dialogState.fields.provider);
     const rootPath = dialogState.fields.rootPath?.trim() ?? '';
     const requiresName =
       dialogState.kind === 'create-streamwork' || dialogState.kind === 'create-session';
@@ -1773,6 +1813,7 @@ export default function App() {
           streamworkId: dialogState.targetId,
           name,
           includeStreamworkSummary: Boolean(dialogState.toggles.includeStreamworkSummary),
+          provider,
         });
         setProjects(result.projects);
         setSelectedSessionId(result.session.id);
@@ -1809,7 +1850,7 @@ export default function App() {
     dialogState?.kind === 'create-project'
       ? 'Web mode cannot open the native folder picker. Enter a project path that the server machine can access.'
       : dialogState?.kind === 'close-project'
-      ? 'This will close the project and stop all running Claude conversations under it.'
+      ? 'This will close the project and stop all running sessions under it.'
       : dialogState?.kind === 'delete-streamwork'
         ? 'This will permanently delete this streamwork and all its session history.'
         : dialogState?.kind === 'delete-session'
@@ -1836,6 +1877,19 @@ export default function App() {
           };
         }
 
+        if (dialogState.kind === 'create-session' && key === 'provider') {
+          return {
+            key,
+            value,
+            label: 'Provider',
+            type: 'select' as const,
+            options: [
+              { label: 'Claude', value: 'claude' },
+              { label: 'Codex', value: 'codex' },
+            ],
+          };
+        }
+
         return {
           key,
           value,
@@ -1859,6 +1913,7 @@ export default function App() {
   const hasActiveSession = Boolean(selectedSession && selectedProject && selectedStreamwork);
   const canBootstrapHarness = Boolean(
     selectedSession &&
+      providerSupportsHarness(selectedSession.provider) &&
       selectedSession.sessionKind !== 'harness' &&
       selectedSession.sessionKind !== 'harness_role' &&
       (selectedSession.messages ?? []).some(
@@ -1867,6 +1922,7 @@ export default function App() {
   );
   const canRunHarness = Boolean(
     selectedSession?.sessionKind === 'harness' &&
+      providerSupportsHarness(selectedSession.provider) &&
       selectedSession.harnessState,
   );
   const shellStyle = isMobileLayout
@@ -2066,7 +2122,7 @@ export default function App() {
                   }}
                 />
               )}
-              {selectedSession.sessionKind !== 'harness' ? (
+              {selectedSession.sessionKind !== 'harness' && providerSupportsBtw(selectedSession.provider) ? (
                 <BtwPanel
                   isOpen={btwState.isOpen}
                   draft={btwState.draft}
@@ -2090,6 +2146,7 @@ export default function App() {
               ) : null}
               {selectedSession.sessionKind !== 'harness' ? (
                 <ChatComposer
+                  provider={selectedProvider}
                   draft={draft}
                   tokenUsage={selectedSession.tokenUsage}
                   sessionModel={selectedSession.model}

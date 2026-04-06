@@ -22,6 +22,8 @@ export type HarnessMetadata = {
   artifactDir: string;
 };
 
+export type SessionProvider = 'claude' | 'codex';
+
 export type SessionKind = 'standard' | 'harness' | 'harness_role';
 
 export type HarnessLifecycleStatus = 'ready' | 'running' | 'completed' | 'failed' | 'cancelled';
@@ -149,6 +151,7 @@ export type SessionSummary = {
   preview: string;
   timeLabel: string;
   updatedAt?: number;
+  provider?: SessionProvider;
   model: string;
   workspace: string;
   projectId: string;
@@ -156,6 +159,7 @@ export type SessionSummary = {
   dreamId: string;
   dreamName: string;
   claudeSessionId?: string;
+  codexThreadId?: string;
   sessionKind?: SessionKind;
   hidden?: boolean;
   instructionPrompt?: string;

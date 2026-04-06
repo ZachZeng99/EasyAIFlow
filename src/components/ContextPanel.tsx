@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { DiffContent } from './DiffContent';
 import { extractCodeChangeSummaries } from '../data/codeChangeSummary';
+import { getProviderDisplayName, providerSupportsHarness } from '../data/sessionProvider';
 import type { SessionInteractionState } from '../data/sessionInteraction';
 import type { ConversationMessage, DiffPayload, GitSnapshot, SessionSummary } from '../data/types';
 
@@ -35,6 +36,8 @@ export function ContextPanel({
   isBootstrappingHarness = false,
   isRunningHarness = false,
 }: ContextPanelProps) {
+  const providerName = getProviderDisplayName(session.provider);
+  const harnessSupported = providerSupportsHarness(session.provider);
   const [selectedFilePath, setSelectedFilePath] = useState<string>('');
   const [diffPayload, setDiffPayload] = useState<DiffPayload | null>(null);
   const [isLoadingDiff, setIsLoadingDiff] = useState(false);
@@ -257,6 +260,10 @@ export function ContextPanel({
         <h2>Long-Running Harness</h2>
         <div className="meta-list">
           <div>
+            <span>Provider</span>
+            <strong>{providerName}</strong>
+          </div>
+          <div>
             <span>Kind</span>
             <strong>{session.sessionKind ?? 'standard'}</strong>
           </div>
@@ -265,7 +272,9 @@ export function ContextPanel({
             <strong>{session.harnessState?.artifactDir ?? session.harness?.artifactDir ?? 'not bootstrapped'}</strong>
           </div>
         </div>
-        {session.sessionKind !== 'harness' ? canBootstrapHarness ? (
+        {!harnessSupported ? (
+          <p className="harness-panel-note">Harness is currently available only for Claude sessions.</p>
+        ) : session.sessionKind !== 'harness' ? canBootstrapHarness ? (
           <button
             type="button"
             className="mini-action primary"

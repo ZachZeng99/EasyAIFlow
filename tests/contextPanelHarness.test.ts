@@ -31,6 +31,7 @@ const makeSession = (overrides?: Partial<SessionSummary>): SessionSummary => ({
   preview: 'Preview',
   timeLabel: 'Just now',
   updatedAt: Date.now(),
+  provider: 'claude',
   model: 'opus[1m]',
   workspace: 'X:\\AITool\\EasyAIFlow',
   projectId: 'project-1',
@@ -63,6 +64,7 @@ run('ContextPanel shows only Bootstrap Harness for eligible standard sessions', 
   const html = renderToStaticMarkup(
     createElement(ContextPanel, {
       session: makeSession(),
+      messages: [],
       appVersion: 'desktop',
       gitSnapshot,
       canBootstrapHarness: true,
@@ -100,6 +102,7 @@ run('ContextPanel shows only Run Harness for harness sessions', () => {
           lastDecision: 'READY',
         },
       }),
+      messages: [],
       appVersion: 'desktop',
       gitSnapshot,
       canBootstrapHarness: false,
@@ -114,4 +117,29 @@ run('ContextPanel shows only Run Harness for harness sessions', () => {
 
   assert.match(html, /Run Harness/);
   assert.doesNotMatch(html, /Bootstrap Harness/);
+});
+
+run('ContextPanel hides Harness actions for Codex sessions', () => {
+  const html = renderToStaticMarkup(
+    createElement(ContextPanel, {
+      session: makeSession({
+        provider: 'codex',
+        model: 'gpt-5.4',
+      }),
+      messages: [],
+      appVersion: 'desktop',
+      gitSnapshot,
+      canBootstrapHarness: true,
+      canRunHarness: false,
+      onRequestDiff: async () => {
+        throw new Error('not needed');
+      },
+      onBootstrapHarness: () => undefined,
+      onRunHarness: () => undefined,
+    }),
+  );
+
+  assert.match(html, /Harness is currently available only for Claude sessions\./);
+  assert.doesNotMatch(html, /Bootstrap Harness/);
+  assert.doesNotMatch(html, /Run Harness/);
 });

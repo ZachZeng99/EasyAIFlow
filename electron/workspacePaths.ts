@@ -37,6 +37,21 @@ export const sameWorkspacePath = (left: string, right: string) => {
   return Boolean(normalizedLeft) && normalizedLeft === normalizedRight;
 };
 
+export const isWorkspaceWithinProjectTree = (projectRoot: string, workspace: string) => {
+  const normalizedProjectRoot = normalizeWorkspacePath(projectRoot);
+  const normalizedWorkspace = normalizeWorkspacePath(workspace);
+  if (!normalizedProjectRoot || !normalizedWorkspace) {
+    return false;
+  }
+
+  if (normalizedProjectRoot === normalizedWorkspace) {
+    return true;
+  }
+
+  const separator = normalizedProjectRoot.includes('\\') ? '\\' : '/';
+  return normalizedWorkspace.startsWith(`${normalizedProjectRoot}${separator}`);
+};
+
 export const toClaudeProjectDirName = (rootPath: string) => {
   const normalized = normalizeWorkspacePath(rootPath).replace(/\//g, '\\');
   const match = normalized.match(/^([A-Za-z]):\\?(.*)$/);

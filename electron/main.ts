@@ -1,6 +1,7 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stopAllCodexRuns } from '../backend/codexInteraction.js';
 import { configureRuntimePaths } from '../backend/runtimePaths.js';
 import type { ClaudeInteractionContext } from '../backend/claudeInteractionContext.js';
 import { createClaudeInteractionState } from '../backend/claudeInteractionState.js';
@@ -16,6 +17,8 @@ import {
   handleStopSession,
   handleDisconnectSession,
   handleSendMessage,
+  handleSwitchEffort,
+  handleSwitchModel,
   handleBootstrapHarness,
   handleRunHarness,
   handleBtwMessage,
@@ -174,16 +177,36 @@ app.whenReady().then(async () => {
   ipcMain.handle('sessions:bootstrap', async () => handleBootstrapSessions(state));
   ipcMain.handle(
     'sessions:create',
-    async (_event, payload?: { sourceSessionId?: string; includeStreamworkSummary?: boolean }) =>
-      createSession(payload?.sourceSessionId, Boolean(payload?.includeStreamworkSummary)),
+    async (
+      _event,
+      payload?: {
+        sourceSessionId?: string;
+        includeStreamworkSummary?: boolean;
+        provider?: import('../src/data/types.js').SessionProvider;
+      },
+    ) =>
+      createSession(
+        payload?.sourceSessionId,
+        Boolean(payload?.includeStreamworkSummary),
+        payload?.provider,
+      ),
   );
   ipcMain.handle(
     'sessions:create-in-streamwork',
-    async (_event, payload: { streamworkId: string; name?: string; includeStreamworkSummary?: boolean }) =>
+    async (
+      _event,
+      payload: {
+        streamworkId: string;
+        name?: string;
+        includeStreamworkSummary?: boolean;
+        provider?: import('../src/data/types.js').SessionProvider;
+      },
+    ) =>
       createSessionInStreamwork(
         payload.streamworkId,
         payload.name,
         Boolean(payload.includeStreamworkSummary),
+        payload.provider,
       ),
   );
   ipcMain.handle('sessions:bootstrap-harness', async (_event, payload: { sessionId: string }) =>
@@ -269,6 +292,29 @@ app.whenReady().then(async () => {
     getFileDiff(payload.cwd, payload.filePath),
   );
   ipcMain.handle(
+    'claude:switch-model',
+    async (
+      _event,
+      payload: {
+        sessionId: string;
+        session?: SessionSummary;
+        model: string;
+        effort?: 'low' | 'medium' | 'high' | 'max';
+      },
+    ) => handleSwitchModel(ctx, state, payload),
+  );
+  ipcMain.handle(
+    'claude:switch-effort',
+    async (
+      _event,
+      payload: {
+        sessionId: string;
+        session?: SessionSummary;
+        effort: 'low' | 'medium' | 'high' | 'max';
+      },
+    ) => handleSwitchEffort(ctx, state, payload),
+  );
+  ipcMain.handle(
     'claude:send-message',
     async (
       _event,
@@ -301,6 +347,7 @@ app.whenReady().then(async () => {
 
 app.on('before-quit', () => {
   void flushPendingSave();
+  stopAllCodexRuns();
   state.activeRuns.forEach((run) => {
     if (!run.child.killed) {
       run.child.kill();
