@@ -2418,18 +2418,6 @@ export const runBtwPrompt = async (
 
       const buildBtwPrompt = (question: string, sessionContext?: string) =>
         [
-          `<system-reminder>This is a BTW side question from the user. Answer it directly and keep the response grounded in the conversation context you already have.
-
-IMPORTANT CONTEXT:
-- This BTW exchange is separate from the user's main conversation
-- The main conversation may still be active elsewhere
-- If supporting session context is provided below, use it carefully as background context
-
-CRITICAL CONSTRAINTS:
-- Do not use tools, request permissions, or ask the host to execute anything
-- Do not say you will inspect files, run commands, search, or take follow-up actions
-- If the answer is uncertain from the available context, say so plainly
-- Prefer a direct answer over a plan or an execution-oriented response</system-reminder>`,
           sessionContext,
           question.trim(),
         ]
