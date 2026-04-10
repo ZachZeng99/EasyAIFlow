@@ -112,15 +112,15 @@ export const buildDisplayItems = (messages: ConversationMessage[]): DisplayItem[
 
       if (systemRun.length > 0) {
         items.push({
-          type: 'trace-group',
-          id: `trace-group-${current.id}`,
-          items: systemRun,
-        });
-        items.push({
           type: 'message',
           message: current,
           relatedTraceItems: systemRun,
           codeChanges: extractCodeChangeSummaries(systemRun),
+        });
+        items.push({
+          type: 'trace-group',
+          id: `trace-group-${current.id}`,
+          items: systemRun,
         });
         index = nextIndex - 1;
         continue;

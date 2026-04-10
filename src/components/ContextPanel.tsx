@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import { DiffContent } from './DiffContent';
 import { extractCodeChangeSummaries } from '../data/codeChangeSummary';
 import type { SessionInteractionState } from '../data/sessionInteraction';
@@ -20,7 +20,7 @@ type ContextPanelProps = {
   isRunningHarness?: boolean;
 };
 
-export function ContextPanel({
+function ContextPanelComponent({
   session,
   messages,
   interaction,
@@ -316,3 +316,17 @@ export function ContextPanel({
     </aside>
   );
 }
+
+const areContextPanelPropsEqual = (current: ContextPanelProps, next: ContextPanelProps) =>
+  current.session === next.session &&
+  current.messages === next.messages &&
+  current.interaction === next.interaction &&
+  current.requestedEffort === next.requestedEffort &&
+  current.appVersion === next.appVersion &&
+  current.gitSnapshot === next.gitSnapshot &&
+  current.canBootstrapHarness === next.canBootstrapHarness &&
+  current.canRunHarness === next.canRunHarness &&
+  current.isBootstrappingHarness === next.isBootstrappingHarness &&
+  current.isRunningHarness === next.isRunningHarness;
+
+export const ContextPanel = memo(ContextPanelComponent, areContextPanelPropsEqual);

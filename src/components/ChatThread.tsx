@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { DiffContent } from './DiffContent';
@@ -63,7 +63,7 @@ type ChatThreadProps = {
   onSubmitPlanMode?: (payload: PlanModeResponsePayload) => void;
 };
 
-export function ChatThread({
+function ChatThreadComponent({
   session,
   messages,
   isLoadingHistory = false,
@@ -465,3 +465,12 @@ export function ChatThread({
     </section>
   );
 }
+
+const areChatThreadPropsEqual = (current: ChatThreadProps, next: ChatThreadProps) =>
+  current.session === next.session &&
+  current.messages === next.messages &&
+  current.isLoadingHistory === next.isLoadingHistory &&
+  current.isCliOnline === next.isCliOnline &&
+  current.interaction === next.interaction;
+
+export const ChatThread = memo(ChatThreadComponent, areChatThreadPropsEqual);

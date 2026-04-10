@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import type { TokenUsage } from '../data/types';
 
 export type BtwMessage = {
@@ -30,7 +31,7 @@ const formatTokens = (value: number) => {
   return `${value}`;
 };
 
-export function BtwPanel({
+function BtwPanelComponent({
   isOpen,
   draft,
   messages,
@@ -106,3 +107,13 @@ export function BtwPanel({
     </section>
   );
 }
+
+const areBtwPanelPropsEqual = (current: BtwPanelProps, next: BtwPanelProps) =>
+  current.isOpen === next.isOpen &&
+  current.draft === next.draft &&
+  current.messages === next.messages &&
+  current.isSending === next.isSending &&
+  current.tokenUsage === next.tokenUsage &&
+  current.inheritedContext === next.inheritedContext;
+
+export const BtwPanel = memo(BtwPanelComponent, areBtwPanelPropsEqual);
