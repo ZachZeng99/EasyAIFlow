@@ -340,10 +340,6 @@ export const buildPromptWithAttachments = (
   }
 
   const parts: string[] = [];
-  const hostBehaviorNote =
-    'Host behavior note: some UI mode transitions, including entering or exiting plan mode, may be handled automatically by EasyAIFlow. Do not claim that the user clicked approve, denied a prompt, or interacted manually unless the conversation explicitly contains that user action.';
-
-  parts.push(hostBehaviorNote);
 
   if (instructionPrompt?.trim()) {
     parts.push(instructionPrompt.trim());

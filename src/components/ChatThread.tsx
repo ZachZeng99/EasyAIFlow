@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { DiffContent } from './DiffContent';
@@ -52,6 +52,7 @@ const getTracePreview = (message: ConversationMessage) => {
 type ChatThreadProps = {
   session: SessionSummary;
   messages: ConversationMessage[];
+  isLoadingHistory?: boolean;
   isCliOnline?: boolean;
   onDisconnect?: () => void;
   onRequestPermission?: (request: PermissionRequest) => void;
@@ -63,9 +64,10 @@ type ChatThreadProps = {
   onSubmitPlanMode?: (payload: PlanModeResponsePayload) => void;
 };
 
-export function ChatThread({
+function ChatThreadComponent({
   session,
   messages,
+  isLoadingHistory = false,
   isCliOnline = false,
   onDisconnect,
   onRequestPermission,
@@ -213,6 +215,12 @@ export function ChatThread({
       </header>
 
       <div ref={streamRef} className="message-stream">
+        {displayItems.length === 0 && !activePermissionRequest && !interaction?.askUserQuestion && !interaction?.planModeRequest ? (
+          <div className="thread-placeholder">
+            {isLoadingHistory ? 'Loading session history...' : 'No saved messages in this session.'}
+          </div>
+        ) : null}
+
         {displayItems.map((item) =>
           item.type === 'trace-group' ? (
             (() => {
@@ -462,3 +470,12 @@ export function ChatThread({
     </section>
   );
 }
+
+const areChatThreadPropsEqual = (current: ChatThreadProps, next: ChatThreadProps) =>
+  current.session === next.session &&
+  current.messages === next.messages &&
+  current.isLoadingHistory === next.isLoadingHistory &&
+  current.isCliOnline === next.isCliOnline &&
+  current.interaction === next.interaction;
+
+export const ChatThread = memo(ChatThreadComponent, areChatThreadPropsEqual);

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import { getProviderBadgeLabel, normalizeSessionProvider } from '../data/sessionProvider';
 import { sortDreamsWithTemporaryFirst } from '../data/streamworkOrder';
 import type { DreamRecord, ProjectRecord, SessionActivityState, SessionSummary } from '../data/types';
@@ -70,7 +70,7 @@ function ActionButton({
   );
 }
 
-export function ChatHistory({
+function ChatHistoryComponent({
   projects,
   selectedSessionId,
   sessionIndicators,
@@ -334,6 +334,13 @@ export function ChatHistory({
     </aside>
   );
 }
+
+const areChatHistoryPropsEqual = (current: ChatHistoryProps, next: ChatHistoryProps) =>
+  current.projects === next.projects &&
+  current.selectedSessionId === next.selectedSessionId &&
+  current.sessionIndicators === next.sessionIndicators;
+
+export const ChatHistory = memo(ChatHistoryComponent, areChatHistoryPropsEqual);
 
 function DreamSection({
   dream,

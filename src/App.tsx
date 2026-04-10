@@ -121,6 +121,31 @@ const updateSessionInProjects = (
     })),
   }));
 
+const mergeProjectSnapshots = (currentProjects: ProjectRecord[], nextProjects: ProjectRecord[]) => {
+  const currentSessions = new Map(flattenSessions(currentProjects).map((session) => [session.id, session]));
+
+  return nextProjects.map((project) => ({
+    ...project,
+    dreams: project.dreams.map((dream) => ({
+      ...dream,
+      sessions: dream.sessions.map((session) => {
+        const incomingSession = session as SessionRecord;
+        const existingSession = currentSessions.get(incomingSession.id);
+
+        if (!existingSession || incomingSession.messagesLoaded !== false) {
+          return incomingSession;
+        }
+
+        return {
+          ...incomingSession,
+          messages: existingSession.messages ?? [],
+          messagesLoaded: existingSession.messagesLoaded,
+        };
+      }),
+    })),
+  }));
+};
+
 const applyClaudeEvent = (projects: ProjectRecord[], event: ClaudeStreamEvent) =>
   updateSessionInProjects(projects, event.sessionId, (session) => {
     const updatedAt = Date.now();
@@ -423,6 +448,18 @@ export default function App() {
       return next;
     });
   }, []);
+  const loadingSessionRecordIds = useRef(new Set<string>());
+  const replaceProjects = useCallback((nextProjects: ProjectRecord[]) => {
+    setProjects((current) => mergeProjectSnapshots(current, nextProjects));
+  }, []);
+  const hydrateSessionRecord = useCallback((sessionRecord: SessionRecord) => {
+    setProjects((current) =>
+      updateSessionInProjects(current, sessionRecord.id, () => ({
+        ...sessionRecord,
+        messagesLoaded: true,
+      })),
+    );
+  }, []);
   const [isMobileLayout, setIsMobileLayout] = useState(() =>
     globalThis.matchMedia ? globalThis.matchMedia('(max-width: 920px)').matches : false,
   );
@@ -456,6 +493,25 @@ export default function App() {
     () => allSessions.find((session) => session.id === selectedSessionId) ?? visibleSessions[0] ?? allSessions[0],
     [allSessions, selectedSessionId, visibleSessions],
   );
+  const ensureSessionRecordLoaded = useCallback((sessionId: string) => {
+    const existing = allSessions.find((session) => session.id === sessionId);
+    if (!existing || existing.messagesLoaded !== false || loadingSessionRecordIds.current.has(sessionId)) {
+      return;
+    }
+
+    loadingSessionRecordIds.current.add(sessionId);
+    void bridge
+      .getSessionRecord({ sessionId })
+      .then((sessionRecord) => {
+        hydrateSessionRecord(sessionRecord);
+      })
+      .catch((error) => {
+        setUiError(error instanceof Error ? error.message : 'Failed to load session history.');
+      })
+      .finally(() => {
+        loadingSessionRecordIds.current.delete(sessionId);
+      });
+  }, [allSessions, hydrateSessionRecord]);
   const selectedInteractionState = useMemo(
     () => sessionInteractions.get(selectedSession?.id ?? ''),
     [selectedSession?.id, sessionInteractions],
@@ -463,6 +519,12 @@ export default function App() {
   useEffect(() => {
     setComposerNotice(null);
   }, [selectedSession?.id]);
+  useEffect(() => {
+    if (!selectedSession || selectedSession.messagesLoaded !== false) {
+      return;
+    }
+    ensureSessionRecordLoaded(selectedSession.id);
+  }, [ensureSessionRecordLoaded, selectedSession?.id, selectedSession?.messagesLoaded]);
   useEffect(() => {
     const appliedEffort = selectedInteractionState?.runtime?.appliedEffort;
     if (!composerNotice || !appliedEffort) {
@@ -767,7 +829,7 @@ export default function App() {
         }
 
         const nextProjects = bootstrap?.projects ?? [];
-        setProjects(nextProjects);
+        replaceProjects(nextProjects);
         setSessionInteractions(new Map(Object.entries(bootstrap?.interactions ?? {})));
         const firstSession = flattenVisibleSessions(nextProjects)[0];
         if (firstSession) {
@@ -781,7 +843,7 @@ export default function App() {
     };
 
     void loadMeta();
-  }, []);
+  }, [replaceProjects]);
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
@@ -1079,7 +1141,7 @@ export default function App() {
       sessionId,
       references,
     });
-    setProjects(result.projects);
+    replaceProjects(result.projects);
   };
 
   const handleUpdateContextReferences = (
@@ -1248,7 +1310,7 @@ export default function App() {
       });
 
       if (result?.projects) {
-        setProjects(result.projects);
+        replaceProjects(result.projects);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to send message.';
@@ -1281,7 +1343,7 @@ export default function App() {
           sessionId: selectedSession.id,
           references: [],
         }).then((next) => {
-          setProjects(next.projects);
+          replaceProjects(next.projects);
         });
       }
 
@@ -1307,7 +1369,7 @@ export default function App() {
         sessionId: selectedSession.id,
       });
       if (result?.projects) {
-        setProjects(result.projects);
+        replaceProjects(result.projects);
       }
     } catch (error) {
       setUiError(error instanceof Error ? error.message : `Failed to stop ${selectedProviderName}.`);
@@ -1414,7 +1476,7 @@ export default function App() {
       setIsSending(false);
       const result = await bridge.disconnectSession({ sessionId });
       if (result?.projects) {
-        setProjects(result.projects);
+        replaceProjects(result.projects);
       }
     } catch (error) {
       setUiError(error instanceof Error ? error.message : `Failed to disconnect ${selectedProviderName}.`);
@@ -1430,7 +1492,7 @@ export default function App() {
     try {
       const result = await bridge.openProjectDirectory();
       if (result) {
-        setProjects(result.projects);
+        replaceProjects(result.projects);
         setSelectedSessionId(result.session.id);
         setUiError(null);
       }
@@ -1535,7 +1597,7 @@ export default function App() {
         });
 
         if (result?.projects) {
-          setProjects(result.projects);
+          replaceProjects(result.projects);
         }
       }
 
@@ -1585,7 +1647,7 @@ export default function App() {
         });
 
         if (result?.projects) {
-          setProjects(result.projects);
+          replaceProjects(result.projects);
         }
       }
 
@@ -1607,7 +1669,7 @@ export default function App() {
         projectId,
         name: name.trim(),
       });
-      setProjects(result.projects);
+      replaceProjects(result.projects);
       setSelectedSessionId(result.session.id);
       setUiError(null);
     } catch (error) {
@@ -1639,7 +1701,7 @@ export default function App() {
         id: defaults.id,
         name: nextName.trim(),
       });
-      setProjects(result.projects);
+      replaceProjects(result.projects);
       setUiError(null);
     } catch (error) {
       setUiError(error instanceof Error ? error.message : `Failed to rename ${defaults.label.toLowerCase()}.`);
@@ -1657,7 +1719,7 @@ export default function App() {
         sourceId,
         targetId,
       });
-      setProjects(result.projects);
+      replaceProjects(result.projects);
       setUiError(null);
     } catch (error) {
       setUiError(error instanceof Error ? error.message : 'Failed to reorder streamworks.');
@@ -1685,7 +1747,7 @@ export default function App() {
       const result = await bridge.bootstrapHarness({
         sessionId: selectedSession.id,
       });
-      setProjects(result.projects);
+      replaceProjects(result.projects);
       setSelectedSessionId(result.rootSessionId);
       setUiError(null);
     } catch (error) {
@@ -1710,7 +1772,7 @@ export default function App() {
         model: resolveRequestedModelArg(model, modelSelectionSource),
         effort,
       });
-      setProjects(result.projects);
+      replaceProjects(result.projects);
       setSelectedSessionId(result.rootSessionId);
       setUiError(null);
     } catch (error) {
@@ -1723,7 +1785,7 @@ export default function App() {
   const handleCloseProject = async (projectId: string) => {
     try {
       const result = await bridge.closeProject({ projectId });
-      setProjects(result.projects);
+      replaceProjects(result.projects);
       const nextSession = flattenVisibleSessions(result.projects)[0];
       if (nextSession) {
         setSelectedSessionId(nextSession.id);
@@ -1737,7 +1799,7 @@ export default function App() {
   const handleDeleteStreamwork = async (streamworkId: string) => {
     try {
       const result = await bridge.deleteStreamwork({ streamworkId });
-      setProjects(result.projects);
+      replaceProjects(result.projects);
       const nextSession = flattenVisibleSessions(result.projects)[0];
       if (nextSession) {
         setSelectedSessionId(nextSession.id);
@@ -1751,7 +1813,7 @@ export default function App() {
   const handleDeleteSession = async (sessionId: string) => {
     try {
       const result = await bridge.deleteSession({ sessionId });
-      setProjects(result.projects);
+      replaceProjects(result.projects);
       clearSessionInteraction(sessionId);
       const nextSession = flattenVisibleSessions(result.projects)[0];
       if (nextSession) {
@@ -1804,7 +1866,7 @@ export default function App() {
           name: fallbackName,
           rootPath,
         });
-        setProjects(result.projects);
+        replaceProjects(result.projects);
         setSelectedSessionId(result.session.id);
       } else if (dialogState.kind === 'create-streamwork') {
         await handleCreateStreamwork(dialogState.targetId, name);
@@ -1815,7 +1877,7 @@ export default function App() {
           includeStreamworkSummary: Boolean(dialogState.toggles.includeStreamworkSummary),
           provider,
         });
-        setProjects(result.projects);
+        replaceProjects(result.projects);
         setSelectedSessionId(result.session.id);
       } else if (dialogState.kind === 'close-project') {
         await handleCloseProject(dialogState.targetId);
@@ -1987,6 +2049,7 @@ export default function App() {
             void handleReorderStreamworks(projectId, sourceId, targetId);
           }}
           onSelectSession={(session) => {
+            ensureSessionRecordLoaded(session.id);
             setSelectedSessionId(session.id);
             setUnreadSessionIds((current) => current.filter((sessionId) => sessionId !== session.id));
             setDraft('');
@@ -2053,7 +2116,7 @@ export default function App() {
                           effort,
                         });
                         if (result?.projects) {
-                          setProjects(result.projects);
+                          replaceProjects(result.projects);
                         }
                       } catch (error) {
                         setUiError(error instanceof Error ? error.message : 'Failed to send message.');
@@ -2065,7 +2128,7 @@ export default function App() {
                       try {
                         const result = await bridge.stopSessionRun({ sessionId: sid });
                         if (result?.projects) {
-                          setProjects(result.projects);
+                          replaceProjects(result.projects);
                         }
                       } catch (error) {
                         setUiError(error instanceof Error ? error.message : 'Failed to stop session.');
@@ -2092,6 +2155,7 @@ export default function App() {
                 <ChatThread
                   session={selectedSession}
                   messages={selectedSession.messages ?? []}
+                  isLoadingHistory={selectedSession.messagesLoaded === false}
                   isCliOnline={canDisconnectSelectedSession}
                   onDisconnect={() => {
                     void handleDisconnect(selectedSession.id);

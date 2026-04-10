@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { gzipSync } from 'node:zlib';
 import { stopAllCodexRuns } from '../backend/codexInteraction.js';
 import {
   configureRuntimePaths,
@@ -39,7 +40,7 @@ import {
   createSession,
   createSessionInStreamwork,
   createStreamwork,
-  getProjects,
+  findSession,
   renameEntity,
   reorderStreamworks,
   updateSessionContextReferences,
@@ -50,6 +51,8 @@ import type {
   ClaudeStreamEvent,
   ContextReference,
   PendingAttachment,
+  ProjectRecord,
+  SessionRecord,
   SessionSummary,
 } from '../src/data/types.js';
 import type { PlanModeResponsePayload } from '../src/data/planMode.js';
@@ -95,6 +98,37 @@ const deriveProjectNameFromPath = (rootPath: string) => {
   return parts[parts.length - 1] ?? 'Project';
 };
 
+const summarizeProjectsForWebBootstrap = (projects: ProjectRecord[]) => {
+  let includedInitialVisibleSession = false;
+
+  return projects.map((project) => ({
+    ...project,
+    dreams: project.dreams.map((dream) => ({
+      ...dream,
+      sessions: dream.sessions.map((session) => {
+        const current = session as SessionRecord;
+        const isVisible = !current.hidden && current.sessionKind !== 'harness_role';
+        const shouldIncludeMessages = isVisible && !includedInitialVisibleSession;
+
+        if (shouldIncludeMessages) {
+          includedInitialVisibleSession = true;
+        }
+
+        return {
+          ...current,
+          messages: shouldIncludeMessages ? (current.messages ?? []) : [],
+          messagesLoaded: shouldIncludeMessages,
+        };
+      }),
+    })),
+  }));
+};
+
+const summarizeProjectsInResult = <T extends { projects: ProjectRecord[] }>(result: T): T => ({
+  ...result,
+  projects: summarizeProjectsForWebBootstrap(result.projects),
+});
+
 const rpcHandlers = {
   'clipboard:write-text': async (payload: { value: string }) => {
     await writeTextToSystemClipboard(payload.value);
@@ -106,7 +140,24 @@ const rpcHandlers = {
     platform: 'web',
     defaultModel: await getConfiguredClaudeModel(ctx),
   }),
-  getProjects: async () => handleBootstrapSessions(state),
+  getProjects: async () => {
+    const bootstrap = await handleBootstrapSessions(state);
+    return {
+      ...bootstrap,
+      projects: summarizeProjectsForWebBootstrap(bootstrap.projects),
+    };
+  },
+  getSessionRecord: async (payload: { sessionId: string }) => {
+    const session = await findSession(payload.sessionId);
+    if (!session) {
+      throw new Error('Session not found.');
+    }
+
+    return {
+      ...session,
+      messagesLoaded: true,
+    };
+  },
   getGitSnapshot: async (payload: { cwd: string }) => getGitSnapshot(payload.cwd),
   getSlashCommands: async (payload: { cwd: string; model?: string }) =>
     handleGetSlashCommands(ctx, state, payload),
@@ -162,24 +213,30 @@ const rpcHandlers = {
     notes?: string;
   }) => handleRespondToPlanMode(ctx, state, payload),
   createProject: async (payload: { name?: string; rootPath: string }) =>
-    createProject(payload.name?.trim() || deriveProjectNameFromPath(payload.rootPath), payload.rootPath),
+    summarizeProjectsInResult(
+      await createProject(payload.name?.trim() || deriveProjectNameFromPath(payload.rootPath), payload.rootPath),
+    ),
   closeProject: async (payload: { projectId: string }) =>
-    handleCloseProject(ctx, state, payload),
+    summarizeProjectsInResult(await handleCloseProject(ctx, state, payload)),
   createStreamwork: async (payload: { projectId: string; name: string }) =>
-    createStreamwork(payload.projectId, payload.name),
+    summarizeProjectsInResult(await createStreamwork(payload.projectId, payload.name)),
   deleteStreamwork: async (payload: { streamworkId: string }) =>
-    handleDeleteStreamwork(ctx, state, payload),
+    summarizeProjectsInResult(await handleDeleteStreamwork(ctx, state, payload)),
   reorderStreamworks: async (payload: { projectId: string; sourceId: string; targetId: string }) =>
-    reorderStreamworks(payload.projectId, payload.sourceId, payload.targetId),
+    summarizeProjectsInResult(
+      await reorderStreamworks(payload.projectId, payload.sourceId, payload.targetId),
+    ),
   createSession: async (payload?: {
     sourceSessionId?: string;
     includeStreamworkSummary?: boolean;
     provider?: import('../src/data/types.js').SessionProvider;
   }) =>
-    createSession(
-      payload?.sourceSessionId,
-      Boolean(payload?.includeStreamworkSummary),
-      payload?.provider,
+    summarizeProjectsInResult(
+      await createSession(
+        payload?.sourceSessionId,
+        Boolean(payload?.includeStreamworkSummary),
+        payload?.provider,
+      ),
     ),
   createSessionInStreamwork: async (payload: {
     streamworkId: string;
@@ -187,11 +244,13 @@ const rpcHandlers = {
     includeStreamworkSummary?: boolean;
     provider?: import('../src/data/types.js').SessionProvider;
   }) =>
-    createSessionInStreamwork(
-      payload.streamworkId,
-      payload.name,
-      Boolean(payload.includeStreamworkSummary),
-      payload.provider,
+    summarizeProjectsInResult(
+      await createSessionInStreamwork(
+        payload.streamworkId,
+        payload.name,
+        Boolean(payload.includeStreamworkSummary),
+        payload.provider,
+      ),
     ),
   bootstrapHarness: async (payload: { sessionId: string }) =>
     handleBootstrapHarness(ctx, state, payload),
@@ -204,11 +263,11 @@ const rpcHandlers = {
     effort?: 'low' | 'medium' | 'high' | 'max';
   }) => handleRunHarness(ctx, state, payload),
   deleteSession: async (payload: { sessionId: string }) =>
-    handleDeleteSession(ctx, state, payload),
+    summarizeProjectsInResult(await handleDeleteSession(ctx, state, payload)),
   updateSessionContextReferences: async (payload: { sessionId: string; references: ContextReference[] }) =>
-    updateSessionContextReferences(payload.sessionId, payload.references),
+    summarizeProjectsInResult(await updateSessionContextReferences(payload.sessionId, payload.references)),
   renameEntity: async (payload: { kind: 'project' | 'streamwork' | 'session'; id: string; name: string }) =>
-    renameEntity(payload.kind, payload.id, payload.name),
+    summarizeProjectsInResult(await renameEntity(payload.kind, payload.id, payload.name)),
   sendMessage: async (payload: {
     sessionId: string;
     prompt: string;
@@ -257,14 +316,69 @@ const parseJsonBody = async (request: IncomingMessage) => {
   };
 };
 
-const respondJson = (response: ServerResponse<IncomingMessage>, statusCode: number, payload: unknown) => {
+const canUseGzip = (request: IncomingMessage) =>
+  typeof request.headers['accept-encoding'] === 'string' &&
+  request.headers['accept-encoding'].includes('gzip');
+
+const isCompressibleContentType = (contentType: string) =>
+  /^(text\/|application\/(?:json|javascript)|image\/svg\+xml)/i.test(contentType);
+
+const mergeVaryHeader = (existing: string | number | string[] | undefined, value: string) => {
+  const values = new Set(
+    String(existing ?? '')
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter(Boolean),
+  );
+  values.add(value);
+  return [...values].join(', ');
+};
+
+const sendBody = (
+  request: IncomingMessage,
+  response: ServerResponse<IncomingMessage>,
+  statusCode: number,
+  headers: Record<string, string>,
+  body: Buffer | string,
+) => {
+  const normalizedBody = Buffer.isBuffer(body) ? body : Buffer.from(body, 'utf8');
+  const contentType = headers['Content-Type'] ?? 'application/octet-stream';
+  const shouldCompress =
+    normalizedBody.length >= 1024 &&
+    canUseGzip(request) &&
+    isCompressibleContentType(contentType);
+
+  if (shouldCompress) {
+    const compressed = gzipSync(normalizedBody);
+    response.writeHead(statusCode, {
+      ...headers,
+      'Content-Encoding': 'gzip',
+      'Content-Length': String(compressed.length),
+      Vary: mergeVaryHeader(headers.Vary, 'Accept-Encoding'),
+    });
+    response.end(compressed);
+    return;
+  }
+
   response.writeHead(statusCode, {
+    ...headers,
+    'Content-Length': String(normalizedBody.length),
+  });
+  response.end(normalizedBody);
+};
+
+const respondJson = (
+  request: IncomingMessage,
+  response: ServerResponse<IncomingMessage>,
+  statusCode: number,
+  payload: unknown,
+) => {
+  sendBody(request, response, statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type',
     'Cache-Control': 'no-store',
-  });
-  response.end(JSON.stringify(payload));
+  }, JSON.stringify(payload));
 };
 
 const MIME_TYPES: Record<string, string> = {
@@ -280,7 +394,11 @@ const MIME_TYPES: Record<string, string> = {
 
 const staticRoot = path.resolve(process.cwd(), 'dist');
 
-const serveStatic = async (requestPath: string, response: ServerResponse<IncomingMessage>) => {
+const serveStatic = async (
+  request: IncomingMessage,
+  requestPath: string,
+  response: ServerResponse<IncomingMessage>,
+) => {
   const sanitizedPath = requestPath === '/' ? '/index.html' : requestPath;
   const targetPath = path.resolve(staticRoot, `.${sanitizedPath}`);
   const isInsideDist = targetPath.startsWith(staticRoot);
@@ -290,11 +408,10 @@ const serveStatic = async (requestPath: string, response: ServerResponse<Incomin
       const info = await stat(targetPath);
       if (info.isFile()) {
         const body = await readFile(targetPath);
-        response.writeHead(200, {
+        sendBody(request, response, 200, {
           'Content-Type': MIME_TYPES[path.extname(targetPath)] ?? 'application/octet-stream',
           'Cache-Control': 'no-cache',
-        });
-        response.end(body);
+        }, body);
         return true;
       }
     } catch {
@@ -304,17 +421,15 @@ const serveStatic = async (requestPath: string, response: ServerResponse<Incomin
 
   try {
     const indexHtml = await readFile(path.join(staticRoot, 'index.html'));
-    response.writeHead(200, {
+    sendBody(request, response, 200, {
       'Content-Type': 'text/html; charset=utf-8',
       'Cache-Control': 'no-cache',
-    });
-    response.end(indexHtml);
+    }, indexHtml);
     return true;
   } catch {
-    response.writeHead(200, {
+    sendBody(request, response, 200, {
       'Content-Type': 'text/plain; charset=utf-8',
-    });
-    response.end('EasyAIFlow web API is running. Build the client with "npm run build:web" to serve the UI here.');
+    }, 'EasyAIFlow web API is running. Build the client with "npm run build:web" to serve the UI here.');
     return true;
   }
 };
@@ -365,22 +480,22 @@ createServer(async (request, response) => {
       const parsed = await parseJsonBody(request);
       const method = parsed?.method;
       if (!method || !(method in rpcHandlers)) {
-        respondJson(response, 400, { error: 'Unknown RPC method.' });
+        respondJson(request, response, 400, { error: 'Unknown RPC method.' });
         return;
       }
 
       const handler = rpcHandlers[method];
       const result = await handler(parsed?.payload as never);
-      respondJson(response, 200, result);
+      respondJson(request, response, 200, result);
     } catch (error) {
-      respondJson(response, 500, {
+      respondJson(request, response, 500, {
         error: error instanceof Error ? error.message : 'Internal server error.',
       });
     }
     return;
   }
 
-  await serveStatic(url.pathname, response);
+  await serveStatic(request, url.pathname, response);
 }).listen(port, host, () => {
   console.log(`EasyAIFlow web server listening on http://${host}:${port}`);
 });

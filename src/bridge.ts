@@ -17,6 +17,7 @@ import type {
   SessionContextUpdateResult,
   SessionCreateResult,
   SessionProvider,
+  SessionRecord,
   SessionSummary,
   StreamworkCreateResult,
 } from './data/types';
@@ -69,6 +70,7 @@ export type EasyAIFlowBridge = {
     projects: ProjectRecord[];
     interactions?: Record<string, SessionInteractionState>;
   }>;
+  getSessionRecord: (payload: { sessionId: string }) => Promise<SessionRecord>;
   grantPathPermission: (payload: { projectRoot: string; targetPath: string }) => Promise<void>;
   respondToPermissionRequest: (payload: {
     requestId: string;
@@ -220,6 +222,7 @@ const webBridge: EasyAIFlowBridge = {
   getFileDiff: (payload) => callWebRpc('getFileDiff', payload),
   getPathForFile: () => '',
   getProjects: () => callWebRpc('getProjects'),
+  getSessionRecord: (payload) => callWebRpc('getSessionRecord', payload),
   grantPathPermission: (payload) => callWebRpc('grantPathPermission', payload),
   respondToPermissionRequest: (payload) => callWebRpc('respondToPermissionRequest', payload),
   respondToPlanModeRequest: (payload) => callWebRpc('respondToPlanModeRequest', payload),

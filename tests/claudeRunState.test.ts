@@ -7,6 +7,7 @@ import {
   markClaudeRunCompleted,
   markRunSessionRuntimePersisted,
   noteBackgroundTaskNotificationInRunState,
+  stripLeadingBackgroundTaskFollowupText,
   shouldCompleteClaudeRunOnClose,
 } from '../electron/claudeRunState.ts';
 
@@ -79,6 +80,23 @@ run('cleanup-only background follow-up text is ignorable', () => {
     isIgnorableBackgroundTaskFollowupText('后台任务清理完了。需要我帮你做什么就说。'),
     true,
   );
+  assert.equal(
+    isIgnorableBackgroundTaskFollowupText(
+      '(Background task completed - the ue_capture_query.py script finished, but we already got all the data we needed via direct grep on the CSVs.)',
+    ),
+    true,
+  );
+});
+
+run('stripLeadingBackgroundTaskFollowupText removes a leading background note when a real answer follows', () => {
+  const stripped = stripLeadingBackgroundTaskFollowupText(
+    '(Background task completed - the ue_capture_query.py script finished, but we already got all the data we needed via direct grep on the CSVs.)\n\n上面的分析已经找到了根因：UseHardwareRayTracedRadianceCache() 中有 OR 条件会绕过 CVar。',
+  );
+
+  assert.equal(
+    stripped,
+    '上面的分析已经找到了根因：UseHardwareRayTracedRadianceCache() 中有 OR 条件会绕过 CVar。',
+  );
 });
 
 run('cleanup follow-up text does not overwrite an unfinished assistant reply', () => {
@@ -132,6 +150,23 @@ run('background task follow-up text updates unfinished assistant messages', () =
   assert.equal(
     updated.content,
     'light 的 batch 条件是可以提前预测多个动作的结果，不需要每步都重新观察页面。',
+  );
+  assert.equal(updated.backgroundTaskNotificationPending, false);
+});
+
+run('background task follow-up prefix is stripped when the assistant continues with a fresh answer', () => {
+  const withNotification = noteBackgroundTaskNotificationInRunState(
+    createClaudeRunState(),
+    '<task-notification>\n<task-id>bpu4pygpy</task-id>\n<status>completed</status>\n</task-notification>',
+  );
+  const updated = applyAssistantTextToRunState(
+    withNotification,
+    '(Background task completed - the ue_capture_query.py script finished, but we already got all the data we needed via direct grep on the CSVs.)\n\n上面的分析已经找到了根因：UseHardwareRayTracedRadianceCache() 中有 OR 条件会绕过 CVar。',
+  );
+
+  assert.equal(
+    updated.content,
+    '上面的分析已经找到了根因：UseHardwareRayTracedRadianceCache() 中有 OR 条件会绕过 CVar。',
   );
   assert.equal(updated.backgroundTaskNotificationPending, false);
 });
