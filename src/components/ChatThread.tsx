@@ -51,6 +51,7 @@ const getTracePreview = (message: ConversationMessage) => {
 type ChatThreadProps = {
   session: SessionSummary;
   messages: ConversationMessage[];
+  isLoadingHistory?: boolean;
   isCliOnline?: boolean;
   onDisconnect?: () => void;
   onRequestPermission?: (request: PermissionRequest) => void;
@@ -65,6 +66,7 @@ type ChatThreadProps = {
 export function ChatThread({
   session,
   messages,
+  isLoadingHistory = false,
   isCliOnline = false,
   onDisconnect,
   onRequestPermission,
@@ -208,6 +210,12 @@ export function ChatThread({
       </header>
 
       <div ref={streamRef} className="message-stream">
+        {displayItems.length === 0 && !activePermissionRequest && !interaction?.askUserQuestion && !interaction?.planModeRequest ? (
+          <div className="thread-placeholder">
+            {isLoadingHistory ? 'Loading session history...' : 'No saved messages in this session.'}
+          </div>
+        ) : null}
+
         {displayItems.map((item) =>
           item.type === 'trace-group' ? (
             (() => {

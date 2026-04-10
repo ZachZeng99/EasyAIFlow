@@ -149,6 +149,7 @@ export type SessionSummary = {
   preview: string;
   timeLabel: string;
   updatedAt?: number;
+  messagesLoaded?: boolean;
   model: string;
   workspace: string;
   projectId: string;

@@ -630,6 +630,26 @@ const registerBackgroundTaskOwner = (
   });
 };
 
+const handoffResidentTurnToBackground = (
+  resident: ResidentClaudeSession,
+  assistantMessageId: string,
+  runState: ClaudeRunState,
+) => {
+  const currentTurn = resident.currentTurn;
+  if (
+    !currentTurn ||
+    currentTurn.assistantMessageId !== assistantMessageId ||
+    currentTurn.runState !== runState
+  ) {
+    return;
+  }
+
+  resident.activeOutputTurn = currentTurn;
+  resident.currentTurn = undefined;
+  currentTurn.releaseQueuedTurn();
+  currentTurn.resolveCompletion();
+};
+
 const finalizeBackgroundOwnersIfSettled = async (
   ctx: ClaudeInteractionContext,
   sessionId: string,
@@ -672,6 +692,9 @@ const residentHasActiveBackgroundTasks = (resident: ResidentClaudeSession) =>
     ),
   );
 
+const residentHasForegroundTurn = (resident: ResidentClaudeSession | undefined) =>
+  Boolean(resident?.currentTurn && !hasActiveBackgroundTasks(resident.currentTurn.runState));
+
 const collectResidentBackgroundTasks = (resident: ResidentClaudeSession): BackgroundTaskRecord[] => {
   const tasks = new Map<string, BackgroundTaskRecord>();
 
@@ -710,8 +733,12 @@ const deriveResidentRuntimePhase = (
     return 'awaiting_reply';
   }
 
-  if (resident.currentTurn || resident.activeOutputTurn) {
-    return 'running';
+  if (resident.currentTurn) {
+    return hasActiveBackgroundTasks(resident.currentTurn.runState) ? 'background' : 'running';
+  }
+
+  if (resident.activeOutputTurn) {
+    return hasActiveBackgroundTasks(resident.activeOutputTurn.runState) ? 'background' : 'running';
   }
 
   if (residentHasActiveBackgroundTasks(resident)) {
@@ -1066,6 +1093,39 @@ const resolveAssistantVisibleContent = (
   return '';
 };
 
+export const getAssistantMessageSnapshot = (runState: ClaudeRunState) => {
+  const content = runState.content.trim();
+  if (!content) {
+    return null;
+  }
+
+  const status = hasActiveBackgroundTasks(runState) ? ('background' as const) : ('streaming' as const);
+  return {
+    content: runState.content,
+    status,
+    title: buildMessageTitle(runState.content, 'Claude response'),
+  };
+};
+
+export const getResidentIdleTurnOutcome = (runState: ClaudeRunState) => {
+  if (hasActiveBackgroundTasks(runState)) {
+    return null;
+  }
+
+  const content = resolveAssistantVisibleContent(runState);
+  if (runState.receivedResult || content.trim()) {
+    return {
+      kind: 'complete' as const,
+      content,
+    };
+  }
+
+  return {
+    kind: 'error' as const,
+    content: 'Claude finished without returning a visible response.',
+  };
+};
+
 const mergeBackgroundTaskRecord = (
   previous: BackgroundTaskRecord | undefined,
   next: BackgroundTaskRecord,
@@ -1183,7 +1243,7 @@ export const handleClaudeLine = async (
   options?: {
     persistentSession?: boolean;
     onBackgroundTaskOwner?: (taskId: string, assistantMessageId: string, runState: ClaudeRunState) => void;
-    onBackgroundActivated?: () => void;
+    onBackgroundActivated?: (assistantMessageId: string, runState: ClaudeRunState) => void;
     appliedEffort?: 'low' | 'medium' | 'high' | 'max';
   },
 ) => {
@@ -1214,7 +1274,7 @@ export const handleClaudeLine = async (
     options?.onBackgroundTaskOwner?.(mergedBackgroundTask.taskId, assistantMessageId, runState);
     if (mergedBackgroundTask.status === 'pending' || mergedBackgroundTask.status === 'running') {
       emitRuntimeState(ctx, sessionId, 'background', true, options?.appliedEffort);
-      options?.onBackgroundActivated?.();
+      options?.onBackgroundActivated?.(assistantMessageId, runState);
       await updateAssistantMessage(sessionId, assistantMessageId, (message) => {
         if (
           message.role === 'assistant' &&
@@ -1428,11 +1488,28 @@ export const handleClaudeLine = async (
     // earlier text when the assistant event carries only the current turn.
     const finalText = runState.content || turnText || '';
     Object.assign(runState, applyAssistantTextToRunState(runState, finalText));
+    const assistantSnapshot = getAssistantMessageSnapshot(runState);
+    if (assistantSnapshot) {
+      await updateAssistantMessage(sessionId, assistantMessageId, (message) => {
+        message.content = assistantSnapshot.content;
+        message.status = assistantSnapshot.status;
+        message.title = assistantSnapshot.title;
+      });
+      ctx.broadcastEvent({
+        type: 'status',
+        sessionId,
+        messageId: assistantMessageId,
+        status: assistantSnapshot.status,
+        title: assistantSnapshot.title,
+        content: assistantSnapshot.content,
+      });
+    }
     emitRuntimeState(
       ctx,
       sessionId,
-      hasActiveBackgroundTasks(runState) ? 'background' : 'running',
+      assistantSnapshot?.status === 'background' ? 'background' : 'running',
       true,
+      options?.appliedEffort,
     );
 
     for (const block of message?.content ?? []) {
@@ -1527,7 +1604,7 @@ export const handleClaudeLine = async (
             if (backgroundLaunch) {
               runState.backgroundTasks.set(backgroundLaunch.taskId, backgroundLaunch);
               options?.onBackgroundTaskOwner?.(backgroundLaunch.taskId, assistantMessageId, runState);
-              options?.onBackgroundActivated?.();
+              options?.onBackgroundActivated?.(assistantMessageId, runState);
               await updateAssistantMessage(sessionId, assistantMessageId, (message) => {
                 if (
                   message.role === 'assistant' &&
@@ -2047,13 +2124,16 @@ const ensureResidentClaudeSession = async (
           persistentSession: true,
           onBackgroundTaskOwner: (taskId, ownerAssistantMessageId, ownerRunState) =>
             registerBackgroundTaskOwner(currentResident, taskId, ownerAssistantMessageId, ownerRunState),
-          onBackgroundActivated: () => {
+          onBackgroundActivated: (backgroundAssistantMessageId, backgroundRunState) => {
             // Background-capable tools (for example async Agent/Bash launches)
-            // should be allowed to finish their current turn naturally.
-            // Forcing an interrupt here races the tool launch itself and can
-            // turn a successful background handoff into a synthetic
-            // "[Request interrupted by user for tool use]" error.
+            // should immediately yield the foreground turn so the next user
+            // message can start without being queued behind background work.
             emitRuntimeState(ctx, session.id, 'background', true, currentResident.configuredEffort);
+            handoffResidentTurnToBackground(
+              currentResident,
+              backgroundAssistantMessageId,
+              backgroundRunState,
+            );
           },
           appliedEffort: currentResident.configuredEffort,
         },
@@ -2090,6 +2170,58 @@ const ensureResidentClaudeSession = async (
         (parsed.subtype === 'task_notification' ||
           (parsed.subtype === 'session_state_changed' && parsed.state === 'idle'))
       ) {
+        const matchedTurn =
+          currentResident.currentTurn?.assistantMessageId === assistantMessageId &&
+          currentResident.currentTurn.runState === runState
+            ? currentResident.currentTurn
+            : currentResident.activeOutputTurn?.assistantMessageId === assistantMessageId &&
+                currentResident.activeOutputTurn.runState === runState
+              ? currentResident.activeOutputTurn
+              : undefined;
+        const idleTurnOutcome =
+          parsed.subtype === 'session_state_changed' && parsed.state === 'idle' && matchedTurn
+            ? getResidentIdleTurnOutcome(matchedTurn.runState)
+            : null;
+        if (matchedTurn && idleTurnOutcome) {
+          if (idleTurnOutcome.kind === 'complete') {
+            await completeAssistantRun(
+              ctx,
+              session.id,
+              matchedTurn.assistantMessageId,
+              matchedTurn.runState,
+              idleTurnOutcome.content,
+            );
+          } else {
+            await finalizeToolTraces(ctx, session.id, matchedTurn.runState);
+            await updateAssistantMessage(session.id, matchedTurn.assistantMessageId, (message) => {
+              message.content = idleTurnOutcome.content;
+              message.status = 'error';
+              message.title = 'Claude error';
+            });
+            await setSessionRuntime(session.id, {
+              claudeSessionId: matchedTurn.runState.claudeSessionId,
+              model: matchedTurn.runState.model,
+              preview: idleTurnOutcome.content,
+              timeLabel: 'Just now',
+              tokenUsage: matchedTurn.runState.tokenUsage,
+            });
+            ctx.broadcastEvent({
+              type: 'error',
+              sessionId: session.id,
+              messageId: matchedTurn.assistantMessageId,
+              error: idleTurnOutcome.content,
+            });
+          }
+
+          if (currentResident.currentTurn === matchedTurn) {
+            currentResident.currentTurn = undefined;
+          }
+          if (currentResident.activeOutputTurn === matchedTurn) {
+            currentResident.activeOutputTurn = undefined;
+          }
+          matchedTurn.releaseQueuedTurn();
+          matchedTurn.resolveCompletion();
+        }
         if (
           !(
             parsed.subtype === 'task_notification' &&
@@ -2171,7 +2303,7 @@ export const runClaudePrint = async (
   fallbackSession?: SessionSummary,
   options?: ClaudePrintOptions,
 ) => {
-  const queued = Boolean(getResidentSession(state, sessionId)?.currentTurn);
+  const queued = residentHasForegroundTurn(getResidentSession(state, sessionId));
   const scheduledRun = enqueueSessionRun(state.sessionRunQueue, sessionId);
   const preparedRun = prepareClaudeRun(
     ctx,
@@ -2244,7 +2376,7 @@ export const runClaudePrintAndWait = async (
   fallbackSession?: SessionSummary,
   options?: ClaudePrintOptions,
 ) => {
-  const queued = Boolean(getResidentSession(state, sessionId)?.currentTurn);
+  const queued = residentHasForegroundTurn(getResidentSession(state, sessionId));
   const scheduledRun = enqueueSessionRun(state.sessionRunQueue, sessionId);
   try {
     const prepared = await prepareClaudeRun(

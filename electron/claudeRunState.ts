@@ -54,6 +54,31 @@ export const noteBackgroundTaskNotificationInRunState = <T extends ClaudeRunStat
   backgroundTaskNotificationPending: isBackgroundTaskNotificationContent(content),
 });
 
+const unwrapBackgroundFollowupParagraph = (content: string) => {
+  const normalized = content.trim();
+  if (
+    (normalized.startsWith('(') && normalized.endsWith(')')) ||
+    (normalized.startsWith('（') && normalized.endsWith('）'))
+  ) {
+    return normalized.slice(1, -1).trim();
+  }
+
+  return normalized;
+};
+
+const isBackgroundTaskFollowupLeadParagraph = (content: string) => {
+  const normalized = unwrapBackgroundFollowupParagraph(content);
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    /^Background task (?:completed|cleaned up)\b/i.test(normalized) ||
+    /^Last background task\b/i.test(normalized) ||
+    /^后台任务\b/.test(normalized)
+  );
+};
+
 export const isIgnorableBackgroundTaskFollowupText = (content: string) => {
   const normalized = content.trim();
   if (!normalized) {
@@ -63,17 +88,52 @@ export const isIgnorableBackgroundTaskFollowupText = (content: string) => {
   return (
     /^No response requested\.?$/i.test(normalized) ||
     /^\(?Background task (?:completed|cleaned up)\b[\s\S]*?(?:no action needed|nothing new)[\s\S]*\)?$/i.test(normalized) ||
+    /^\(?Background task (?:completed|cleaned up)\b[\s\S]*?(?:already got (?:all the )?data we needed|already got what we needed|already had (?:all the )?data we needed)[\s\S]*\)?$/i.test(normalized) ||
     /^后台任务清理完了.*$/i.test(normalized) ||
     (/^Last background task\b/i.test(normalized) &&
-      (/already incorporated/i.test(normalized) || /nothing new/i.test(normalized)))
+      (
+        /already incorporated/i.test(normalized) ||
+        /nothing new/i.test(normalized) ||
+        /already got (?:all the )?data we needed/i.test(normalized) ||
+        /already got what we needed/i.test(normalized)
+      ))
   );
+};
+
+export const stripLeadingBackgroundTaskFollowupText = (content: string) => {
+  const normalized = content.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const paragraphs = normalized
+    .split(/\r?\n\s*\r?\n/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+
+  if (paragraphs.length < 2) {
+    return null;
+  }
+
+  const [firstParagraph, ...rest] = paragraphs;
+  if (!isBackgroundTaskFollowupLeadParagraph(firstParagraph)) {
+    return null;
+  }
+
+  const remainder = rest.join('\n\n').trim();
+  return remainder || null;
 };
 
 export const applyAssistantTextToRunState = <T extends ClaudeRunStateCompletion>(
   state: T,
   incomingText: string,
 ): T => {
-  if (!incomingText.trim()) {
+  let nextText = incomingText;
+  if (state.backgroundTaskNotificationPending) {
+    nextText = stripLeadingBackgroundTaskFollowupText(incomingText) ?? incomingText;
+  }
+
+  if (!nextText.trim()) {
     return state;
   }
 
@@ -86,7 +146,7 @@ export const applyAssistantTextToRunState = <T extends ClaudeRunStateCompletion>
         (state as T & { lastToolResultContent?: string }).lastToolResultContent?.trim());
     if (
       hasMeaningfulExistingContent &&
-      isIgnorableBackgroundTaskFollowupText(incomingText)
+      isIgnorableBackgroundTaskFollowupText(nextText)
     ) {
       return {
         ...state,
@@ -97,8 +157,8 @@ export const applyAssistantTextToRunState = <T extends ClaudeRunStateCompletion>
 
   return {
     ...state,
-    content: incomingText,
-    needsCompletionRefresh: state.receivedResult && state.completedContent !== incomingText,
+    content: nextText,
+    needsCompletionRefresh: state.receivedResult && state.completedContent !== nextText,
     backgroundTaskNotificationPending: false,
   };
 };

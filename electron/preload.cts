@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('easyAIFlow', {
   getFileDiff: (payload: { cwd: string; filePath: string }) => ipcRenderer.invoke('git:file-diff', payload),
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
   getProjects: () => ipcRenderer.invoke('sessions:bootstrap'),
+  getSessionRecord: (payload: { sessionId: string }) => ipcRenderer.invoke('sessions:get-record', payload),
   grantPathPermission: (payload: { projectRoot: string; targetPath: string }) =>
     ipcRenderer.invoke('permissions:grant-path', payload),
   respondToPermissionRequest: (payload: { requestId: string; behavior: 'allow' | 'deny' }) =>

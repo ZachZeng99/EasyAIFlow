@@ -18,7 +18,10 @@ import {
   isBackgroundTaskNotificationContent,
   parseBackgroundTaskNotificationContent,
 } from './backgroundTaskNotification.js';
-import { isIgnorableBackgroundTaskFollowupText } from './claudeRunState.js';
+import {
+  isIgnorableBackgroundTaskFollowupText,
+  stripLeadingBackgroundTaskFollowupText as stripLeadingBackgroundTaskFollowupFromAssistantText,
+} from './claudeRunState.js';
 import { normalizeClaudeModelSelection } from './claudeModel.js';
 import { mergeNativeImportedSessions } from './nativeSessionMerge.js';
 import { mergeNativeSessionIntoExisting, shouldRecoverSessionFromNative } from './nativeSessionRecovery.js';
@@ -661,7 +664,11 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
         model = messageObj.model;
       }
       if (!Array.isArray(messageObj?.content)) {
-        const content = extractTextFromContent(messageObj?.content);
+        const rawContent = extractTextFromContent(messageObj?.content);
+        const content =
+          backgroundTaskNotificationPending
+            ? stripLeadingBackgroundTaskFollowupFromAssistantText(rawContent) ?? rawContent
+            : rawContent;
         const text = firstMeaningfulLine(content);
         if (!text) {
           continue;
@@ -701,7 +708,11 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
         const blockType = (block as { type?: string }).type;
 
         if (blockType === 'text') {
-          const content = (block as { text?: string }).text ?? '';
+          const rawContent = (block as { text?: string }).text ?? '';
+          const content =
+            backgroundTaskNotificationPending
+              ? stripLeadingBackgroundTaskFollowupFromAssistantText(rawContent) ?? rawContent
+              : rawContent;
           const text = firstMeaningfulLine(content);
           if (!text) {
             continue;
