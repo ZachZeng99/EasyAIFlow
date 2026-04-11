@@ -1,27 +1,17 @@
 import type { ClaudeInteractionContext } from './claudeInteractionContext.js';
 import type { ClaudeInteractionState } from './claudeInteractionState.js';
-import {
-  disconnectCodexRun,
-  runCodexPrint,
-  stopCodexRun,
-  switchCodexSessionEffort,
-  switchCodexSessionModel,
-} from './codexInteraction.js';
+import { sendGroupMessage, stopGroupSessionRuns } from './groupChat.js';
+import { resolveProviderSessionRuntime } from './providerSessionRuntime.js';
 import {
   grantPathPermission,
   getSessionInteractionSnapshots,
   runClaudePrint,
   stopSessions,
-  interruptSessionTurn,
-  disconnectSession,
   respondToPlanModeRequest,
   runBtwPrompt,
   deleteNativeClaudeSession,
   getConfiguredClaudeModel,
   getSlashCommands,
-  runHarnessForSession,
-  switchClaudeSessionModel,
-  switchClaudeSessionEffort,
 } from './claudeInteraction.js';
 import { isWritableStdin } from './claudeHelpers.js';
 import {
@@ -29,7 +19,6 @@ import {
   buildClaudeControlResponseLine,
 } from '../electron/claudeControlMessages.js';
 import {
-  bootstrapHarnessFromSession,
   closeProject,
   createProject,
   createSession,
@@ -37,6 +26,7 @@ import {
   createStreamwork,
   deleteSession,
   deleteStreamwork,
+  ensureGroupRoomSession,
   findSession,
   getProjects,
   renameEntity,
@@ -52,10 +42,11 @@ import type {
   SessionSummary,
 } from '../src/data/types.js';
 import type { PlanModeResponsePayload } from '../src/data/planMode.js';
-import { normalizeSessionProvider } from '../src/data/sessionProvider.js';
 
-const resolveSessionProvider = async (sessionId: string, fallbackSession?: SessionSummary) =>
-  normalizeSessionProvider((await findSession(sessionId))?.provider ?? fallbackSession?.provider);
+const resolveSessionKind = async (sessionId: string, fallbackSession?: SessionSummary) =>
+  (await findSession(sessionId))?.sessionKind ?? fallbackSession?.sessionKind ?? 'standard';
+
+const hasGroupMention = (prompt: string) => /(^|\s)@(claude|codex|all)\b/i.test(prompt);
 
 export const handleRespondToPermission = async (
   ctx: ClaudeInteractionContext,
@@ -188,13 +179,11 @@ export const handleStopSession = async (
   state: ClaudeInteractionState,
   payload: { sessionId: string },
 ) => {
-  if ((await resolveSessionProvider(payload.sessionId)) === 'codex') {
-    return stopCodexRun(ctx, payload.sessionId);
+  if ((await resolveSessionKind(payload.sessionId)) === 'group') {
+    return stopGroupSessionRuns(ctx, state, payload.sessionId, 'stop');
   }
-  const result = await interruptSessionTurn(ctx, state, payload.sessionId);
-  return {
-    projects: result.projects,
-  };
+  const runtime = await resolveProviderSessionRuntime(payload.sessionId);
+  return runtime.stopSession(ctx, state, payload);
 };
 
 export const handleDisconnectSession = async (
@@ -202,32 +191,11 @@ export const handleDisconnectSession = async (
   state: ClaudeInteractionState,
   payload: { sessionId: string },
 ) => {
-  if ((await resolveSessionProvider(payload.sessionId)) === 'codex') {
-    return disconnectCodexRun(ctx, payload.sessionId);
+  if ((await resolveSessionKind(payload.sessionId)) === 'group') {
+    return stopGroupSessionRuns(ctx, state, payload.sessionId, 'disconnect');
   }
-  const result = await disconnectSession(ctx, state, payload.sessionId);
-  result.changedMessages.forEach((message) => {
-    if (message.role === 'assistant') {
-      ctx.broadcastEvent({
-        type: 'status',
-        sessionId: payload.sessionId,
-        messageId: message.id,
-        status: message.status,
-        title: message.title,
-        content: message.content,
-      });
-      return;
-    }
-
-    ctx.broadcastEvent({
-      type: 'trace',
-      sessionId: payload.sessionId,
-      message,
-    });
-  });
-  return {
-    projects: result.projects,
-  };
+  const runtime = await resolveProviderSessionRuntime(payload.sessionId);
+  return runtime.disconnectSession(ctx, state, payload);
 };
 
 export const handleSendMessage = async (
@@ -243,18 +211,20 @@ export const handleSendMessage = async (
     effort?: 'low' | 'medium' | 'high' | 'max';
   },
 ) => {
-  if ((await resolveSessionProvider(payload.sessionId, payload.session)) === 'codex') {
-    return runCodexPrint(ctx, payload.sessionId, payload.prompt, payload.attachments ?? [], payload.session, {
-      references: payload.references,
-      model: payload.model,
+  const resolvedKind = await resolveSessionKind(payload.sessionId, payload.session);
+  if (resolvedKind === 'standard' && hasGroupMention(payload.prompt)) {
+    const roomSession = await ensureGroupRoomSession(payload.sessionId);
+    return sendGroupMessage(ctx, state, {
+      ...payload,
+      sessionId: roomSession.id,
+      session: roomSession,
     });
   }
-
-  return runClaudePrint(ctx, state, payload.sessionId, payload.prompt, payload.attachments ?? [], payload.session, {
-    references: payload.references,
-    model: payload.model,
-    effort: payload.effort,
-  });
+  if (resolvedKind === 'group') {
+    return sendGroupMessage(ctx, state, payload);
+  }
+  const runtime = await resolveProviderSessionRuntime(payload.sessionId, payload.session);
+  return runtime.sendMessage(ctx, state, payload);
 };
 
 export const handleSwitchModel = async (
@@ -267,11 +237,8 @@ export const handleSwitchModel = async (
     effort?: 'low' | 'medium' | 'high' | 'max';
   },
 ) => {
-  if ((await resolveSessionProvider(payload.sessionId, payload.session)) === 'codex') {
-    return switchCodexSessionModel(payload);
-  }
-
-  return switchClaudeSessionModel(ctx, state, payload);
+  const runtime = await resolveProviderSessionRuntime(payload.sessionId, payload.session);
+  return runtime.switchModel(ctx, state, payload);
 };
 
 export const handleSwitchEffort = async (
@@ -283,42 +250,8 @@ export const handleSwitchEffort = async (
     effort: 'low' | 'medium' | 'high' | 'max';
   },
 ) => {
-  if ((await resolveSessionProvider(payload.sessionId, payload.session)) === 'codex') {
-    return switchCodexSessionEffort(payload);
-  }
-
-  return switchClaudeSessionEffort(ctx, state, payload);
-};
-
-export const handleBootstrapHarness = async (
-  _ctx: ClaudeInteractionContext,
-  _state: ClaudeInteractionState,
-  payload: { sessionId: string },
-) => {
-  if ((await resolveSessionProvider(payload.sessionId)) !== 'claude') {
-    throw new Error('Harness is currently available only for Claude sessions.');
-  }
-
-  return bootstrapHarnessFromSession(payload.sessionId);
-};
-
-export const handleRunHarness = async (
-  ctx: ClaudeInteractionContext,
-  state: ClaudeInteractionState,
-  payload: {
-    sessionId: string;
-    maxSprints?: number;
-    maxContractRounds?: number;
-    maxImplementationRounds?: number;
-    model?: string;
-    effort?: 'low' | 'medium' | 'high' | 'max';
-  },
-) => {
-  if ((await resolveSessionProvider(payload.sessionId)) !== 'claude') {
-    throw new Error('Harness is currently available only for Claude sessions.');
-  }
-
-  return runHarnessForSession(ctx, state, payload.sessionId, payload);
+  const runtime = await resolveProviderSessionRuntime(payload.sessionId, payload.session);
+  return runtime.switchEffort(ctx, state, payload);
 };
 
 export const handleBtwMessage = async (

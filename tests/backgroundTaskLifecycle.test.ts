@@ -305,13 +305,9 @@ run('ContextPanel renders background task state in the right rail', () => {
       requestedEffort: 'max',
       appVersion: 'desktop',
       gitSnapshot,
-      canBootstrapHarness: false,
-      canRunHarness: false,
       onRequestDiff: async () => {
         throw new Error('not needed');
       },
-      onBootstrapHarness: () => undefined,
-      onRunHarness: () => undefined,
     }),
   );
 

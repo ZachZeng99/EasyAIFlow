@@ -18,10 +18,13 @@ import {
   setSessionRuntime,
   updateSessionContextReferences,
   updateAssistantMessage,
+  upsertSessionMessage,
 } from '../electron/sessionStore.js';
+import { buildRecordedCodeChangeDiff } from '../electron/recordedCodeChangeDiff.js';
 import { stopPendingSessionMessages } from '../electron/sessionStop.js';
 import { getProviderDisplayName, normalizeSessionProvider } from '../src/data/sessionProvider.js';
 import type {
+  ConversationMessage,
   ContextReference,
   MessageAttachment,
   PendingAttachment,
@@ -32,6 +35,13 @@ import type {
 type CodexRunOptions = {
   model?: string;
   references?: ContextReference[];
+  fullAuto?: boolean;
+  resumeThread?: boolean;
+  disabledFeatures?: string[];
+  outputSchemaPath?: string;
+  parseFinalMessage?: (raw: string) => string;
+  transformAgentMessage?: (message: string) => string;
+  stopOnAgentMessage?: (message: string) => boolean;
 };
 
 type ActiveCodexRun = {
@@ -40,13 +50,15 @@ type ActiveCodexRun = {
   child: ReturnType<typeof spawn>;
   stopped: boolean;
   completed: boolean;
+  replyCaptured?: boolean;
+  traceMessages: Map<string, ConversationMessage>;
 };
 
 const activeRuns = new Map<string, ActiveCodexRun>();
 
 const isImageAttachment = (attachment: MessageAttachment) => attachment.mimeType.startsWith('image/');
 
-const toCodexTokenUsage = (usage: {
+export const toCodexTokenUsage = (usage: {
   input_tokens?: number;
   cached_input_tokens?: number;
   output_tokens?: number;
@@ -64,7 +76,7 @@ const toCodexTokenUsage = (usage: {
   };
 };
 
-const emitRuntimeState = (
+export const emitRuntimeState = (
   ctx: ClaudeInteractionContext,
   sessionId: string,
   phase: import('../src/data/types.js').SessionRuntimePhase,
@@ -78,6 +90,19 @@ const emitRuntimeState = (
       processActive,
       updatedAt: Date.now(),
     },
+  });
+};
+
+export const emitTraceMessage = async (
+  ctx: ClaudeInteractionContext,
+  sessionId: string,
+  message: ConversationMessage,
+) => {
+  await upsertSessionMessage(sessionId, message);
+  ctx.broadcastEvent({
+    type: 'trace',
+    sessionId,
+    message,
   });
 };
 
@@ -147,7 +172,163 @@ export const buildCodexPromptWithAttachments = (
   return parts.join('\n\n');
 };
 
-const prepareCodexRun = async (
+type CodexCommandExecutionItem = {
+  id?: unknown;
+  type?: unknown;
+  command?: unknown;
+  aggregated_output?: unknown;
+  exit_code?: unknown;
+  status?: unknown;
+};
+
+type CodexFunctionCallItem = {
+  call_id?: unknown;
+  name?: unknown;
+  arguments?: unknown;
+};
+
+type CodexFunctionCallOutputItem = {
+  call_id?: unknown;
+  output?: unknown;
+};
+
+const getString = (value: unknown) => (typeof value === 'string' ? value : '');
+
+const normalizeCodexFunctionToolName = (value: string) =>
+  value.trim().startsWith('functions.') ? value.trim().slice('functions.'.length) : value.trim();
+
+const parseCodexFunctionArguments = (value: string) => {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('{')) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const buildCodexCodeChangeSuccessLine = (toolName: string) => {
+  switch (normalizeCodexFunctionToolName(toolName)) {
+    case 'Edit':
+    case 'MultiEdit':
+      return 'The file has been updated successfully.';
+    case 'Write':
+      return 'The file has been written successfully.';
+    case 'ApplyPatch':
+    case 'apply_patch':
+      return 'The file has been patched successfully.';
+    default:
+      return '';
+  }
+};
+
+export const buildCodexCommandTraceMessage = (payload: {
+  item: CodexCommandExecutionItem;
+  status: 'running' | 'success' | 'error';
+  previous?: ConversationMessage;
+  timestamp?: string;
+}) => {
+  if (payload.item.type !== 'command_execution' || typeof payload.item.command !== 'string') {
+    return null;
+  }
+
+  const command = payload.item.command.trim();
+  if (!command) {
+    return null;
+  }
+
+  const output =
+    typeof payload.item.aggregated_output === 'string'
+      ? payload.item.aggregated_output.trim()
+      : '';
+  const exitCode =
+    typeof payload.item.exit_code === 'number' && Number.isFinite(payload.item.exit_code)
+      ? payload.item.exit_code
+      : null;
+  const contentParts = [command];
+  if (output) {
+    contentParts.push(output);
+  }
+  if (payload.status === 'error' && exitCode !== null) {
+    contentParts.push(`Exit code: ${exitCode}`);
+  }
+
+  return {
+    id: payload.previous?.id ?? randomUUID(),
+    role: 'system' as const,
+    kind: 'tool_use' as const,
+    timestamp: payload.previous?.timestamp ?? payload.timestamp ?? nowLabel(),
+    title: 'Command',
+    content: contentParts.join('\n\n'),
+    status: payload.status,
+  };
+};
+
+export const buildCodexFunctionCallTraceMessage = (payload: {
+  item: CodexFunctionCallItem | CodexFunctionCallOutputItem;
+  status: 'running' | 'success' | 'error';
+  previous?: ConversationMessage;
+  timestamp?: string;
+  title?: string;
+}) => {
+  const callId =
+    typeof (payload.item as { call_id?: unknown }).call_id === 'string'
+      ? (payload.item as { call_id: string }).call_id
+      : undefined;
+  if (!callId) {
+    return null;
+  }
+
+  const rawName =
+    payload.title ??
+    (typeof (payload.item as { name?: unknown }).name === 'string'
+      ? (payload.item as { name: string }).name
+      : 'Tool');
+  const name = normalizeCodexFunctionToolName(rawName);
+  const argumentsText =
+    typeof (payload.item as { arguments?: unknown }).arguments === 'string'
+      ? (payload.item as { arguments: string }).arguments.trim()
+      : '';
+  const outputText =
+    typeof (payload.item as { output?: unknown }).output === 'string'
+      ? (payload.item as { output: string }).output.trim()
+      : '';
+  const parsedArguments = argumentsText ? parseCodexFunctionArguments(argumentsText) : undefined;
+  const recordedDiff =
+    payload.previous?.recordedDiff ??
+    (parsedArguments ? buildRecordedCodeChangeDiff(name, parsedArguments) : undefined);
+  const filePath = recordedDiff?.filePath || getString(parsedArguments?.file_path).trim();
+  const contentParts = [payload.previous?.content?.trim() ?? ''].filter(Boolean);
+
+  if (!payload.previous && argumentsText) {
+    contentParts.push(filePath || argumentsText);
+  }
+  if (recordedDiff && payload.status === 'success') {
+    const successLine = buildCodexCodeChangeSuccessLine(name);
+    if (successLine && !contentParts.includes(successLine)) {
+      contentParts.push(successLine);
+    }
+  } else if (outputText) {
+    contentParts.push(outputText);
+  }
+
+  return {
+    id: payload.previous?.id ?? callId,
+    role: 'system' as const,
+    kind: 'tool_use' as const,
+    timestamp: payload.previous?.timestamp ?? payload.timestamp ?? nowLabel(),
+    title: payload.previous?.title ?? name,
+    content: contentParts.join('\n\n'),
+    recordedDiff,
+    status: payload.status,
+  };
+};
+
+export const prepareCodexRun = async (
   ctx: ClaudeInteractionContext,
   sessionId: string,
   prompt: string,
@@ -229,12 +410,28 @@ export const buildCodexArgs = (
   prompt: string,
   attachments: MessageAttachment[],
   model?: string,
+  fullAuto = true,
+  resumeThread = true,
+  disabledFeatures: string[] = [],
+  outputSchemaPath?: string,
 ) => {
   const imagePaths = attachments.filter(isImageAttachment).map((attachment) => attachment.path);
-  const args: string[] = ['exec'];
+  const args: string[] = [];
 
-  if (session.codexThreadId?.trim()) {
-    args.push('resume', '--json', '--full-auto');
+  disabledFeatures
+    .map((feature) => feature.trim())
+    .filter(Boolean)
+    .forEach((feature) => {
+      args.push('--disable', feature);
+    });
+
+  args.push('exec');
+
+  if (resumeThread && session.codexThreadId?.trim()) {
+    args.push('resume', '--json');
+    if (fullAuto) {
+      args.push('--full-auto');
+    }
     if (model?.trim()) {
       args.push('-m', model.trim());
     }
@@ -245,13 +442,19 @@ export const buildCodexArgs = (
     return args;
   }
 
-  args.push('--json', '--full-auto');
+  args.push('--json');
+  if (fullAuto) {
+    args.push('--full-auto');
+  }
   if (model?.trim()) {
     args.push('-m', model.trim());
   }
   imagePaths.forEach((imagePath) => {
     args.push('-i', imagePath);
   });
+  if (outputSchemaPath?.trim()) {
+    args.push('--output-schema', outputSchemaPath.trim());
+  }
   args.push(prompt);
   return args;
 };
@@ -287,11 +490,16 @@ export const runCodexPrint = async (
 
   const prepared = await prepareCodexRun(ctx, sessionId, prompt, pendingAttachments, fallbackSession, options);
   const requestedModel = options?.model?.trim() || prepared.session.model;
+  const resumeThread = options?.resumeThread ?? true;
   const codexArgs = buildCodexArgs(
     prepared.session,
     prepared.resolvedPrompt,
     prepared.attachments,
     requestedModel,
+    options?.fullAuto ?? true,
+    resumeThread,
+    options?.disabledFeatures ?? [],
+    options?.outputSchemaPath,
   );
   const codexSpawn = buildCodexSpawnSpec(codexArgs);
   const child = spawn(codexSpawn.command, codexSpawn.args, {
@@ -307,6 +515,8 @@ export const runCodexPrint = async (
     child,
     stopped: false,
     completed: false,
+    replyCaptured: false,
+    traceMessages: new Map(),
   };
   activeRuns.set(sessionId, activeRun);
   emitRuntimeState(ctx, sessionId, 'running', true);
@@ -329,16 +539,84 @@ export const runCodexPrint = async (
     const type = typeof parsed.type === 'string' ? parsed.type : '';
     if (type === 'thread.started' && typeof parsed.thread_id === 'string' && parsed.thread_id.trim()) {
       threadId = parsed.thread_id.trim();
-      await setSessionRuntime(sessionId, {
-        codexThreadId: threadId,
-      });
+      if (resumeThread) {
+        await setSessionRuntime(sessionId, {
+          codexThreadId: threadId,
+        });
+      }
       return;
+    }
+
+    if (type === 'response_item') {
+      const payload = parsed.payload as { type?: unknown; name?: unknown; call_id?: unknown; arguments?: unknown; output?: unknown } | undefined;
+      if (payload?.type === 'function_call' && typeof payload.call_id === 'string') {
+        const previous = activeRun.traceMessages.get(payload.call_id);
+        const traceMessage = buildCodexFunctionCallTraceMessage({
+          item: payload,
+          status: 'running',
+          previous,
+          title: typeof payload.name === 'string' ? payload.name : 'Tool',
+        });
+        if (traceMessage) {
+          activeRun.traceMessages.set(payload.call_id, traceMessage);
+          await emitTraceMessage(ctx, sessionId, traceMessage);
+        }
+        return;
+      }
+
+      if (payload?.type === 'function_call_output' && typeof payload.call_id === 'string') {
+        const previous = activeRun.traceMessages.get(payload.call_id);
+        const traceMessage = buildCodexFunctionCallTraceMessage({
+          item: payload,
+          status: 'success',
+          previous,
+        });
+        if (traceMessage) {
+          activeRun.traceMessages.set(payload.call_id, traceMessage);
+          await emitTraceMessage(ctx, sessionId, traceMessage);
+        }
+        return;
+      }
+    }
+
+    if (type === 'item.started' || type === 'item.completed') {
+      const item = parsed.item as CodexCommandExecutionItem | undefined;
+      const itemId = typeof item?.id === 'string' ? item.id : undefined;
+      if (item?.type === 'command_execution' && itemId) {
+        const previous = activeRun.traceMessages.get(itemId);
+        const traceMessage = buildCodexCommandTraceMessage({
+          item,
+          status:
+            type === 'item.started'
+              ? 'running'
+              : typeof item.exit_code === 'number' && item.exit_code !== 0
+                ? 'error'
+                : 'success',
+          previous,
+        });
+        if (traceMessage) {
+          activeRun.traceMessages.set(itemId, traceMessage);
+          await emitTraceMessage(ctx, sessionId, traceMessage);
+        }
+      }
     }
 
     if (type === 'item.completed') {
       const item = parsed.item as { type?: unknown; text?: unknown } | undefined;
       if (item?.type === 'agent_message' && typeof item.text === 'string') {
-        finalContent = finalContent ? `${finalContent}\n\n${item.text}` : item.text;
+        const visibleText = options?.transformAgentMessage
+          ? options.transformAgentMessage(item.text)
+          : item.text;
+        finalContent = visibleText ? (finalContent ? `${finalContent}\n\n${visibleText}` : visibleText) : finalContent;
+        if (
+          visibleText &&
+          options?.stopOnAgentMessage?.(visibleText) &&
+          !activeRun.replyCaptured &&
+          !child.killed
+        ) {
+          activeRun.replyCaptured = true;
+          child.kill();
+        }
       }
       return;
     }
@@ -395,7 +673,7 @@ export const runCodexPrint = async (
       return;
     }
 
-    if (!failureMessage && code && code !== 0) {
+    if (!activeRun.replyCaptured && !failureMessage && code && code !== 0) {
       failureMessage = stderrBuffer.trim() || `Codex exited with code ${code}.`;
     }
 
@@ -405,12 +683,15 @@ export const runCodexPrint = async (
         message.content = failureMessage;
         message.status = 'error';
       });
-      await setSessionRuntime(sessionId, {
-        codexThreadId: threadId,
+      const runtimeUpdate: Parameters<typeof setSessionRuntime>[1] = {
         model: requestedModel,
         preview: failureMessage,
         timeLabel: 'Just now',
-      });
+      };
+      if (resumeThread && threadId) {
+        runtimeUpdate.codexThreadId = threadId;
+      }
+      await setSessionRuntime(sessionId, runtimeUpdate);
       ctx.broadcastEvent({
         type: 'status',
         sessionId,
@@ -423,20 +704,26 @@ export const runCodexPrint = async (
       return;
     }
 
-    const content = finalContent.trim() || 'No response.';
+    const rawContent = finalContent.trim() || 'No response.';
+    const content = options?.parseFinalMessage
+      ? options.parseFinalMessage(rawContent)
+      : rawContent;
     activeRun.completed = true;
     await updateAssistantMessage(sessionId, prepared.assistantMessageId, (message) => {
       message.title = buildMessageTitle(content, 'Codex response');
       message.content = content;
       message.status = 'complete';
     });
-    await setSessionRuntime(sessionId, {
-      codexThreadId: threadId,
+    const runtimeUpdate: Parameters<typeof setSessionRuntime>[1] = {
       model: requestedModel,
       tokenUsage,
       preview: content,
       timeLabel: 'Just now',
-    });
+    };
+    if (resumeThread && threadId) {
+      runtimeUpdate.codexThreadId = threadId;
+    }
+    await setSessionRuntime(sessionId, runtimeUpdate);
     ctx.broadcastEvent({
       type: 'complete',
       sessionId,
@@ -541,4 +828,5 @@ export const stopAllCodexRuns = () => {
     }
   });
   activeRuns.clear();
+  void import('./codexAppServer.js').then((m) => m.appServerManager.closeAll());
 };

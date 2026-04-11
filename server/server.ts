@@ -23,8 +23,6 @@ import {
   handleSendMessage,
   handleSwitchEffort,
   handleSwitchModel,
-  handleBootstrapHarness,
-  handleRunHarness,
   handleBtwMessage,
   handleBtwDiscard,
   handleGetSlashCommands,
@@ -35,7 +33,6 @@ import {
 } from '../backend/claudeRpcOperations.js';
 import { writeTextToSystemClipboard } from '../backend/systemClipboard.js';
 import {
-  bootstrapHarnessFromSession,
   createProject,
   createSession,
   createSessionInStreamwork,
@@ -107,7 +104,7 @@ const summarizeProjectsForWebBootstrap = (projects: ProjectRecord[]) => {
       ...dream,
       sessions: dream.sessions.map((session) => {
         const current = session as SessionRecord;
-        const isVisible = !current.hidden && current.sessionKind !== 'harness_role';
+        const isVisible = !current.hidden;
         const shouldIncludeMessages = isVisible && !includedInitialVisibleSession;
 
         if (shouldIncludeMessages) {
@@ -230,12 +227,14 @@ const rpcHandlers = {
     sourceSessionId?: string;
     includeStreamworkSummary?: boolean;
     provider?: import('../src/data/types.js').SessionProvider;
+    sessionKind?: import('../src/data/types.js').SessionKind;
   }) =>
     summarizeProjectsInResult(
       await createSession(
         payload?.sourceSessionId,
         Boolean(payload?.includeStreamworkSummary),
         payload?.provider,
+        payload?.sessionKind,
       ),
     ),
   createSessionInStreamwork: async (payload: {
@@ -243,6 +242,7 @@ const rpcHandlers = {
     name?: string;
     includeStreamworkSummary?: boolean;
     provider?: import('../src/data/types.js').SessionProvider;
+    sessionKind?: import('../src/data/types.js').SessionKind;
   }) =>
     summarizeProjectsInResult(
       await createSessionInStreamwork(
@@ -250,18 +250,9 @@ const rpcHandlers = {
         payload.name,
         Boolean(payload.includeStreamworkSummary),
         payload.provider,
+        payload.sessionKind,
       ),
     ),
-  bootstrapHarness: async (payload: { sessionId: string }) =>
-    handleBootstrapHarness(ctx, state, payload),
-  runHarness: async (payload: {
-    sessionId: string;
-    maxSprints?: number;
-    maxContractRounds?: number;
-    maxImplementationRounds?: number;
-    model?: string;
-    effort?: 'low' | 'medium' | 'high' | 'max';
-  }) => handleRunHarness(ctx, state, payload),
   deleteSession: async (payload: { sessionId: string }) =>
     summarizeProjectsInResult(await handleDeleteSession(ctx, state, payload)),
   updateSessionContextReferences: async (payload: { sessionId: string; references: ContextReference[] }) =>
@@ -439,7 +430,7 @@ const serveStatic = async (
 // ---------------------------------------------------------------------------
 
 const host = process.env.HOST ?? '0.0.0.0';
-const port = Number(process.env.PORT ?? 8787);
+const port = Number(process.env.PORT ?? process.env.EASYAIFLOW_WEB_SERVER_PORT ?? 8887);
 
 createServer(async (request, response) => {
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? `localhost:${port}`}`);

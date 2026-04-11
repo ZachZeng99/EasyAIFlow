@@ -53,21 +53,14 @@ contextBridge.exposeInMainWorld('easyAIFlow', {
     name?: string;
     includeStreamworkSummary?: boolean;
     provider?: import('../src/data/types.js').SessionProvider;
+    sessionKind?: import('../src/data/types.js').SessionKind;
   }) =>
     ipcRenderer.invoke('sessions:create-in-streamwork', payload),
-  bootstrapHarness: (payload: { sessionId: string }) => ipcRenderer.invoke('sessions:bootstrap-harness', payload),
-  runHarness: (payload: {
-    sessionId: string;
-    maxSprints?: number;
-    maxContractRounds?: number;
-    maxImplementationRounds?: number;
-    model?: string;
-    effort?: 'low' | 'medium' | 'high' | 'max';
-  }) => ipcRenderer.invoke('sessions:run-harness', payload),
   createSession: (payload?: {
     sourceSessionId?: string;
     includeStreamworkSummary?: boolean;
     provider?: import('../src/data/types.js').SessionProvider;
+    sessionKind?: import('../src/data/types.js').SessionKind;
   }) =>
     ipcRenderer.invoke('sessions:create', payload),
   deleteSession: (payload: { sessionId: string }) => ipcRenderer.invoke('sessions:delete', payload),

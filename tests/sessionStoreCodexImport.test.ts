@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { configureRuntimePaths } from '../backend/runtimePaths.ts';
@@ -156,6 +156,104 @@ await run('createProject imports Codex CLI sessions under the opened project tre
         { role: 'assistant', content: '已记录，后续继续处理。' },
       ],
     );
+  } finally {
+    if (previousUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = previousUserProfile;
+    }
+  }
+});
+
+await run('renameEntity persists Codex thread titles and keeps them after reload', async () => {
+  const tempBase = path.resolve('.tmp-tests');
+  await mkdir(tempBase, { recursive: true });
+  const tempRoot = await mkdtemp(path.join(tempBase, 'session-store-codex-rename-'));
+  const userDataPath = path.join(tempRoot, 'userData');
+  const homePath = path.join(tempRoot, 'home');
+  const projectRoot = path.join(tempRoot, 'PBZ');
+  const childWorkspace = path.join(projectRoot, 'ProjectPBZ');
+  const codexSessionsDir = path.join(homePath, '.codex', 'sessions', '2026', '04', '06');
+  const codexIndexPath = path.join(homePath, '.codex', 'session_index.jsonl');
+
+  await mkdir(userDataPath, { recursive: true });
+  await mkdir(childWorkspace, { recursive: true });
+  await mkdir(codexSessionsDir, { recursive: true });
+  await mkdir(path.dirname(codexIndexPath), { recursive: true });
+
+  await writeFile(
+    codexIndexPath,
+    `${JSON.stringify({
+      id: 'rename-thread',
+      thread_name: 'Original Codex title',
+      updated_at: '2026-04-06T12:00:05.000Z',
+    })}\n`,
+    'utf8',
+  );
+
+  await writeFile(
+    path.join(codexSessionsDir, 'rollout-2026-04-06T12-00-00-rename-thread.jsonl'),
+    [
+      JSON.stringify({
+        timestamp: '2026-04-06T12:00:00.000Z',
+        type: 'session_meta',
+        payload: {
+          id: 'rename-thread',
+          cwd: childWorkspace,
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-04-06T12:00:01.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: '把导入标题改掉' }],
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-04-06T12:00:02.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: '已收到。' }],
+        },
+      }),
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  const previousUserProfile = process.env.USERPROFILE;
+  process.env.USERPROFILE = homePath;
+  configureRuntimePaths({ mode: 'web', userDataPath, homePath });
+
+  try {
+    const sessionStore = await importFreshSessionStore();
+    const created = await sessionStore.createProject('PBZ', projectRoot);
+    const temporary = created.projects[0]?.dreams.find((dream: { isTemporary?: boolean }) => dream.isTemporary);
+    const imported = temporary?.sessions.find(
+      (session: { codexThreadId?: string }) => session.codexThreadId === 'rename-thread',
+    ) as { id: string; title?: string } | undefined;
+
+    assert.equal(imported?.title, 'Original Codex title');
+
+    await sessionStore.renameEntity('session', imported!.id, 'Renamed in EasyAIFlow');
+    await sessionStore.flushPendingSave();
+
+    const updatedIndex = await readFile(codexIndexPath, 'utf8');
+    assert.match(updatedIndex, /"id":"rename-thread"/);
+    assert.match(updatedIndex, /"thread_name":"Renamed in EasyAIFlow"/);
+
+    const reloadedStore = await importFreshSessionStore();
+    const projects = await reloadedStore.getProjects();
+    const reloadedTemporary = projects[0]?.dreams.find((dream: { isTemporary?: boolean }) => dream.isTemporary);
+    const reloaded = reloadedTemporary?.sessions.find(
+      (session: { codexThreadId?: string }) => session.codexThreadId === 'rename-thread',
+    ) as { title?: string } | undefined;
+
+    assert.equal(reloaded?.title, 'Renamed in EasyAIFlow');
   } finally {
     if (previousUserProfile === undefined) {
       delete process.env.USERPROFILE;

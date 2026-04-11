@@ -5,9 +5,6 @@ import type {
   ContextReference,
   DeleteEntityResult,
   DiffPayload,
-  HarnessBootstrapResult,
-  HarnessRunOptions,
-  HarnessRunResult,
   PendingAttachment,
   ProjectCreateResult,
   ProjectOpenResult,
@@ -16,6 +13,7 @@ import type {
   SessionStopResult,
   SessionContextUpdateResult,
   SessionCreateResult,
+  SessionKind,
   SessionProvider,
   SessionRecord,
   SessionSummary,
@@ -116,13 +114,13 @@ export type EasyAIFlowBridge = {
     name?: string;
     includeStreamworkSummary?: boolean;
     provider?: SessionProvider;
+    sessionKind?: SessionKind;
   }) => Promise<SessionCreateResult>;
-  bootstrapHarness: (payload: { sessionId: string }) => Promise<HarnessBootstrapResult>;
-  runHarness: (payload: { sessionId: string } & HarnessRunOptions) => Promise<HarnessRunResult>;
   createSession: (payload?: {
     sourceSessionId?: string;
     includeStreamworkSummary?: boolean;
     provider?: SessionProvider;
+    sessionKind?: SessionKind;
   }) => Promise<SessionCreateResult>;
   deleteSession: (payload: { sessionId: string }) => Promise<DeleteEntityResult>;
   updateSessionContextReferences: (payload: {
@@ -237,8 +235,6 @@ const webBridge: EasyAIFlowBridge = {
   deleteStreamwork: (payload) => callWebRpc('deleteStreamwork', payload),
   reorderStreamworks: (payload) => callWebRpc('reorderStreamworks', payload),
   createSessionInStreamwork: (payload) => callWebRpc('createSessionInStreamwork', payload),
-  bootstrapHarness: (payload) => callWebRpc('bootstrapHarness', payload),
-  runHarness: (payload) => callWebRpc('runHarness', payload),
   createSession: (payload) => callWebRpc('createSession', payload),
   deleteSession: (payload) => callWebRpc('deleteSession', payload),
   updateSessionContextReferences: (payload) => callWebRpc('updateSessionContextReferences', payload),

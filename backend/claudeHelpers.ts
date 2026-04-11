@@ -291,7 +291,6 @@ export const buildSessionSummaryContext = (session: SessionRecord) => {
     `Session ID: ${session.id}`,
     `Project: ${session.projectName}`,
     `Streamwork: ${session.dreamName}`,
-    session.harness ? `Harness role: ${session.harness.role}` : '',
     `Updated: ${session.timeLabel}`,
     `Model: ${session.model}`,
     `Messages: ${userCount} user / ${assistantCount} assistant`,

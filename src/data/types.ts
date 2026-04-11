@@ -10,42 +10,39 @@ export type LinkedGroup = {
   workspace: string;
 };
 
-export type HarnessRole = 'planner' | 'generator' | 'evaluator';
 export type PlanModeAllowedPrompt = {
   tool: string;
   prompt: string;
 };
 
-export type HarnessMetadata = {
-  role: HarnessRole;
-  rootSessionId: string;
-  artifactDir: string;
-};
-
 export type SessionProvider = 'claude' | 'codex';
 
-export type SessionKind = 'standard' | 'harness' | 'harness_role';
+export type GroupParticipantId = 'claude' | 'codex';
 
-export type HarnessLifecycleStatus = 'ready' | 'running' | 'completed' | 'failed' | 'cancelled';
-
-export type HarnessSessionState = {
-  plannerSessionId: string;
-  generatorSessionId: string;
-  evaluatorSessionId: string;
-  artifactDir: string;
-  status: HarnessLifecycleStatus;
-  currentOwner?: HarnessRole;
-  currentStage: string;
-  currentSprint: number;
-  currentRound: number;
-  completedSprints: number;
-  maxSprints: number;
-  completedTurns: number;
-  totalTurns: number;
-  lastDecision: string;
-  summary?: string;
-  updatedAt?: number;
+export type GroupParticipant = {
+  id: GroupParticipantId;
+  label: string;
+  provider: SessionProvider;
+  backingSessionId: string;
+  enabled: boolean;
+  model?: string;
+  lastAppliedRoomSeq: number;
 };
+
+export type GroupSessionMetadata =
+  | {
+      kind: 'room';
+      nextMessageSeq: number;
+      participants: GroupParticipant[];
+    }
+  | {
+      kind: 'member';
+      roomSessionId: string;
+      participantId: GroupParticipantId;
+      speakerLabel: string;
+    };
+
+export type SessionKind = 'standard' | 'group' | 'group_member';
 
 export type TokenUsage = {
   contextWindow: number;
@@ -164,8 +161,7 @@ export type SessionSummary = {
   sessionKind?: SessionKind;
   hidden?: boolean;
   instructionPrompt?: string;
-  harness?: HarnessMetadata;
-  harnessState?: HarnessSessionState;
+  group?: GroupSessionMetadata;
   groups: LinkedGroup[];
   contextReferences?: ContextReference[];
   tokenUsage: TokenUsage;
@@ -206,9 +202,15 @@ export type ConversationMessage = {
   id: string;
   role: 'user' | 'assistant' | 'system';
   kind?: ConversationMessageKind;
+  seq?: number;
   timestamp: string;
   title: string;
   content: string;
+  speakerId?: string;
+  speakerLabel?: string;
+  provider?: SessionProvider;
+  sourceSessionId?: string;
+  targetParticipantIds?: string[];
   recordedDiff?: DiffPayload;
   status?: 'queued' | 'streaming' | 'running' | 'background' | 'success' | 'complete' | 'error';
   contextReferences?: ContextReference[];
@@ -228,35 +230,6 @@ export type GitSnapshot = BranchSnapshot & {
 export type SessionCreateResult = {
   projects: ProjectRecord[];
   session: SessionRecord;
-};
-
-export type HarnessBootstrapResult = {
-  projects: ProjectRecord[];
-  rootSessionId: string;
-  plannerSessionId: string;
-  generatorSessionId: string;
-  evaluatorSessionId: string;
-  artifactDir: string;
-};
-
-export type HarnessRunOptions = {
-  maxSprints?: number;
-  maxContractRounds?: number;
-  maxImplementationRounds?: number;
-  model?: string;
-  effort?: 'low' | 'medium' | 'high' | 'max';
-};
-
-export type HarnessRunResult = {
-  projects: ProjectRecord[];
-  rootSessionId: string;
-  plannerSessionId: string;
-  generatorSessionId: string;
-  evaluatorSessionId: string;
-  artifactDir: string;
-  status: 'completed' | 'failed';
-  completedSprints: number;
-  lastDecision: string;
 };
 
 export type ProjectCreateResult = {
@@ -300,6 +273,7 @@ export type ClaudeStreamEvent =
   | {
       type: 'status';
       sessionId: string;
+      sourceSessionId?: string;
       messageId: string;
       status: ConversationMessage['status'];
       title?: string;
@@ -308,17 +282,20 @@ export type ClaudeStreamEvent =
   | {
       type: 'delta';
       sessionId: string;
+      sourceSessionId?: string;
       messageId: string;
       delta: string;
     }
   | {
       type: 'trace';
       sessionId: string;
+      sourceSessionId?: string;
       message: ConversationMessage;
     }
   | {
       type: 'permission-request';
       sessionId: string;
+      sourceSessionId?: string;
       requestId: string;
       toolName: string;
       targetPath?: string;
@@ -330,40 +307,41 @@ export type ClaudeStreamEvent =
   | {
       type: 'ask-user-question';
       sessionId: string;
+      sourceSessionId?: string;
       toolUseId: string;
       questions: AskUserQuestion[];
     }
   | {
       type: 'plan-mode-request';
       sessionId: string;
+      sourceSessionId?: string;
       request: PlanModeRequest;
     }
   | {
       type: 'background-task';
       sessionId: string;
+      sourceSessionId?: string;
       task: BackgroundTaskRecord;
     }
   | {
       type: 'runtime-state';
       sessionId: string;
+      sourceSessionId?: string;
       runtime: SessionRuntimeState;
     }
   | {
       type: 'complete';
       sessionId: string;
+      sourceSessionId?: string;
       messageId: string;
       content: string;
       claudeSessionId?: string;
       tokenUsage?: TokenUsage;
     }
   | {
-      type: 'harness-state';
-      sessionId: string;
-      state: HarnessSessionState;
-    }
-  | {
       type: 'error';
       sessionId: string;
+      sourceSessionId?: string;
       messageId: string;
       error: string;
     };

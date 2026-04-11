@@ -18,6 +18,9 @@ const CHANGE_TOOL_LABELS: Record<string, string> = {
   apply_patch: 'Patched',
 };
 
+const normalizeChangeToolTitle = (title: string) =>
+  title.startsWith('functions.') ? title.slice('functions.'.length) : title;
+
 const looksLikeFilePath = (value: string) => {
   const normalized = value.trim();
   if (!normalized) {
@@ -63,6 +66,7 @@ const isBoilerplateResultLine = (line: string) =>
   /^the file(?: .+)? has been (?:updated|written|created|patched) successfully\.?$/i.test(line);
 
 const buildSummary = (message: ConversationMessage, filePath: string) => {
+  const normalizedTitle = normalizeChangeToolTitle(message.title);
   const meaningfulLines = message.content
     .split(/\r?\n/)
     .map(compactLine)
@@ -80,18 +84,23 @@ const buildSummary = (message: ConversationMessage, filePath: string) => {
     return firstDetail;
   }
 
-  return `${CHANGE_TOOL_LABELS[message.title] ?? message.title} ${filePath.split(/[\\/]/).pop() ?? 'file'}`;
+  return `${CHANGE_TOOL_LABELS[normalizedTitle] ?? normalizedTitle} ${filePath.split(/[\\/]/).pop() ?? 'file'}`;
 };
 
 export const extractCodeChangeSummaries = (messages: ConversationMessage[]) =>
   messages
     .filter(
-      (message) =>
-        message.role === 'system' &&
-        message.kind === 'tool_use' &&
-        Boolean(CHANGE_TOOL_LABELS[message.title]),
+      (message) => {
+        const normalizedTitle = normalizeChangeToolTitle(message.title);
+        return (
+          message.role === 'system' &&
+          message.kind === 'tool_use' &&
+          Boolean(CHANGE_TOOL_LABELS[normalizedTitle])
+        );
+      },
     )
     .map((message) => {
+      const normalizedTitle = normalizeChangeToolTitle(message.title);
       const filePath = extractFilePath(message.content);
       if (!filePath) {
         return null;
@@ -100,7 +109,7 @@ export const extractCodeChangeSummaries = (messages: ConversationMessage[]) =>
       return {
         id: message.id,
         toolTitle: message.title,
-        operationLabel: CHANGE_TOOL_LABELS[message.title] ?? message.title,
+        operationLabel: CHANGE_TOOL_LABELS[normalizedTitle] ?? normalizedTitle,
         filePath,
         summary: buildSummary(message, filePath),
         details: message.content.trim(),

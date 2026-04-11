@@ -9,7 +9,7 @@
     "dev": "concurrently -k \"npm:dev:web:client\" \"npm:dev:desktop\"",
     "dev:web": "concurrently -k \"npm:dev:web:client\" \"npm:dev:server\"",
     "dev:web:client": "vite",
-    "dev:desktop": "wait-on http-get://127.0.0.1:4173 && npm run build:electron && electron .",
+    "dev:desktop": "wait-on http-get://127.0.0.1:4273 && npm run build:electron && electron .",
     "dev:server": "tsx server/server.ts",
     "build": "npm run check && vite build && npm run build:electron",
     "build:electron": "tsc -p tsconfig.electron.json",

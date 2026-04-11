@@ -19,8 +19,6 @@ import {
   handleSendMessage,
   handleSwitchEffort,
   handleSwitchModel,
-  handleBootstrapHarness,
-  handleRunHarness,
   handleBtwMessage,
   handleBtwDiscard,
   handleGetAppMeta,
@@ -31,7 +29,6 @@ import {
   handleDeleteSession,
 } from '../backend/claudeRpcOperations.js';
 import {
-  bootstrapHarnessFromSession,
   createProject,
   createSession,
   createSessionInStreamwork,
@@ -193,12 +190,14 @@ app.whenReady().then(async () => {
         sourceSessionId?: string;
         includeStreamworkSummary?: boolean;
         provider?: import('../src/data/types.js').SessionProvider;
+        sessionKind?: import('../src/data/types.js').SessionKind;
       },
     ) =>
       createSession(
         payload?.sourceSessionId,
         Boolean(payload?.includeStreamworkSummary),
         payload?.provider,
+        payload?.sessionKind,
       ),
   );
   ipcMain.handle(
@@ -210,6 +209,7 @@ app.whenReady().then(async () => {
         name?: string;
         includeStreamworkSummary?: boolean;
         provider?: import('../src/data/types.js').SessionProvider;
+        sessionKind?: import('../src/data/types.js').SessionKind;
       },
     ) =>
       createSessionInStreamwork(
@@ -217,24 +217,8 @@ app.whenReady().then(async () => {
         payload.name,
         Boolean(payload.includeStreamworkSummary),
         payload.provider,
+        payload.sessionKind,
       ),
-  );
-  ipcMain.handle('sessions:bootstrap-harness', async (_event, payload: { sessionId: string }) =>
-    handleBootstrapHarness(ctx, state, payload),
-  );
-  ipcMain.handle(
-    'sessions:run-harness',
-    async (
-      _event,
-      payload: {
-        sessionId: string;
-        maxSprints?: number;
-        maxContractRounds?: number;
-        maxImplementationRounds?: number;
-        model?: string;
-        effort?: 'low' | 'medium' | 'high' | 'max';
-      },
-    ) => handleRunHarness(ctx, state, payload),
   );
   ipcMain.handle('projects:create', async (_event, payload: { name: string; rootPath: string }) =>
     createProject(payload.name, payload.rootPath),

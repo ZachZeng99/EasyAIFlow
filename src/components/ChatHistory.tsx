@@ -140,7 +140,7 @@ function ChatHistoryComponent({
         ...project,
         dreams: sortDreamsWithTemporaryFirst(project.dreams).map((dream) => ({
           ...dream,
-          sessions: sortSessionsByLatest(dream.sessions.filter((session) => !(session as SessionSummary).hidden && (session as SessionSummary).sessionKind !== 'harness_role')),
+          sessions: sortSessionsByLatest(dream.sessions.filter((session) => !(session as SessionSummary).hidden)),
         })),
       }));
     }
@@ -155,7 +155,7 @@ function ChatHistoryComponent({
             const dreamMatch = matches(dream.name);
             const sessions = dream.sessions.filter(
               (session) =>
-                !(session as SessionSummary).hidden && (session as SessionSummary).sessionKind !== 'harness_role' &&
+                !(session as SessionSummary).hidden &&
                 (projectMatch ||
                   dreamMatch ||
                   matches(session.title) ||
@@ -171,7 +171,7 @@ function ChatHistoryComponent({
               ...dream,
               sessions: sortSessionsByLatest(
                 (projectMatch || dreamMatch ? dream.sessions : sessions).filter(
-                  (session) => !(session as SessionSummary).hidden && (session as SessionSummary).sessionKind !== 'harness_role',
+                  (session) => !(session as SessionSummary).hidden,
                 ),
               ),
             };
@@ -187,7 +187,7 @@ function ChatHistoryComponent({
           dreams: sortDreamsWithTemporaryFirst(
             (projectMatch ? project.dreams : dreams).map((dream) => ({
               ...dream,
-              sessions: dream.sessions.filter((session) => !(session as SessionSummary).hidden && (session as SessionSummary).sessionKind !== 'harness_role'),
+              sessions: dream.sessions.filter((session) => !(session as SessionSummary).hidden),
             })),
           ),
         };
@@ -473,8 +473,12 @@ function DreamSection({
                   key={session.id}
                   role="button"
                   tabIndex={0}
-                  className={`session-card provider-${normalizeSessionProvider(session.provider)}${selected ? ' selected' : ''} ${indicator.state}${session.sessionKind === 'harness' ? ' harness' : ''}`}
-                  data-provider-label={getProviderBadgeLabel(session.provider)}
+                  className={`session-card ${
+                    session.sessionKind === 'group'
+                      ? 'provider-group'
+                      : `provider-${normalizeSessionProvider(session.provider)}`
+                  }${selected ? ' selected' : ''} ${indicator.state}`}
+                  data-provider-label={session.sessionKind === 'group' ? 'GROUP' : getProviderBadgeLabel(session.provider)}
                   onClick={() => onSelectSession(session)}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' || event.key === ' ') {
@@ -523,9 +527,6 @@ function DreamSection({
                           {session.title}
                         </strong>
                       )}
-                      {session.sessionKind === 'harness' ? (
-                        <span className="session-kind-badge">HARNESS</span>
-                      ) : null}
                     </div>
                     <div className="session-actions-inline">
                       <ActionButton
@@ -556,7 +557,6 @@ function DreamSection({
                   ) : null}
                   <div className="session-card-meta">
                     <span>{session.timeLabel}</span>
-                    {session.harness ? <span>{session.harness.role}</span> : null}
                     <span>{formatTokenCount(session.tokenUsage.used)} tk</span>
                   </div>
                 </div>

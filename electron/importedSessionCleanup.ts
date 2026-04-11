@@ -1,10 +1,18 @@
 import type { SessionRecord } from '../src/data/types.js';
+import { normalizeSessionProvider } from '../src/data/sessionProvider.js';
+
+const buildTemporaryImportKey = (session: SessionRecord) =>
+  `${normalizeSessionProvider(session.provider)}::${session.title.trim()}`;
 
 export const pruneTemporaryImportedDuplicates = (sessions: SessionRecord[]) => {
   const grouped = new Map<string, SessionRecord[]>();
 
   sessions.forEach((session) => {
-    const key = session.title.trim();
+    if (session.sessionKind && session.sessionKind !== 'standard') {
+      grouped.set(`__nonstandard__${session.id}`, [session]);
+      return;
+    }
+    const key = buildTemporaryImportKey(session);
     const bucket = grouped.get(key) ?? [];
     bucket.push(session);
     grouped.set(key, bucket);
@@ -14,7 +22,15 @@ export const pruneTemporaryImportedDuplicates = (sessions: SessionRecord[]) => {
   const result: SessionRecord[] = [];
 
   for (const session of sessions) {
-    const key = session.title.trim();
+    if (session.sessionKind && session.sessionKind !== 'standard') {
+      if (!kept.has(session.id)) {
+        kept.add(session.id);
+        result.push(session);
+      }
+      continue;
+    }
+
+    const key = buildTemporaryImportKey(session);
     if (kept.has(session.id)) {
       continue;
     }

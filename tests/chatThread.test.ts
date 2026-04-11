@@ -75,6 +75,7 @@ run('ChatThread keeps process groups collapsed by default', () => {
   assert.match(html, /1 steps/);
   assert.doesNotMatch(html, /trace-group-list/);
   assert.doesNotMatch(html, />Read</);
+  assert.ok(html.indexOf('Process') < html.indexOf('Implemented.'));
 });
 
 run('ChatThread expands failed process groups and shows an inline failure reason', () => {
@@ -107,4 +108,5 @@ run('ChatThread expands failed process groups and shows an inline failure reason
   assert.match(html, /trace-group-list/);
   assert.match(html, />Agent</);
   assert.match(html, /\[Request interrupted by user for tool use\]/);
+  assert.ok(html.indexOf('Process') < html.indexOf('好问题，让我确认一下源码。'));
 });

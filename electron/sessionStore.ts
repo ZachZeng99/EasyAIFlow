@@ -48,9 +48,9 @@ import type {
   ContextReference,
   DeleteEntityResult,
   DreamRecord,
-  HarnessBootstrapResult,
-  HarnessSessionState,
-  HarnessRole,
+  GroupParticipant,
+  GroupParticipantId,
+  GroupSessionMetadata,
   ProjectCreateResult,
   ProjectRecord,
   SessionProvider,
@@ -79,13 +79,53 @@ const normalizeSessionModel = (model: string, provider: SessionProvider) =>
   provider === 'claude' ? normalizeClaudeModelSelection(model) ?? model.trim() : model.trim();
 
 const normalizeSessionKind = (value: SessionKind | undefined): SessionKind =>
-  value === 'harness' || value === 'harness_role' ? value : 'standard';
+  value === 'group' || value === 'group_member' ? value : 'standard';
 
-const sanitizeHarnessFileSegment = (value: string) =>
-  value.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'session';
+const getDefaultPreviewForSessionKind = (
+  sessionKind: SessionKind,
+  provider?: SessionProvider,
+) =>
+  sessionKind === 'group'
+    ? 'Start a group conversation with @claude and @codex.'
+    : getDefaultPreviewForProvider(provider);
+
+const getGroupBackingSessionTitle = (roomTitle: string) => `[Group] ${roomTitle}`;
 
 const cloneContextReferences = (references: ContextReference[] | undefined) =>
   (references ?? []).map((reference) => ({ ...reference }));
+
+const cloneGroupParticipants = (participants: GroupParticipant[] | undefined) =>
+  (participants ?? []).map((participant) => ({ ...participant }));
+
+const normalizeGroupMetadata = (
+  value: GroupSessionMetadata | undefined,
+): GroupSessionMetadata | undefined => {
+  if (!value) {
+    return undefined;
+  }
+
+  if (value.kind === 'member') {
+    if (!value.roomSessionId || !value.participantId || !value.speakerLabel?.trim()) {
+      return undefined;
+    }
+
+    return {
+      kind: 'member',
+      roomSessionId: value.roomSessionId,
+      participantId: value.participantId,
+      speakerLabel: value.speakerLabel.trim(),
+    };
+  }
+
+  return {
+    kind: 'room',
+    nextMessageSeq:
+      typeof value.nextMessageSeq === 'number' && Number.isFinite(value.nextMessageSeq) && value.nextMessageSeq > 0
+        ? Math.floor(value.nextMessageSeq)
+        : 1,
+    participants: cloneGroupParticipants(value.participants),
+  };
+};
 
 const normalizeContextReference = (reference: ContextReference): ContextReference | null => {
   if (reference.kind === 'session' && reference.sessionId) {
@@ -134,210 +174,6 @@ const normalizeTokenUsage = (tokenUsage: TokenUsage | undefined, model: string):
   };
 };
 
-const normalizeHarnessState = (state: HarnessSessionState | undefined): HarnessSessionState | undefined => {
-  if (!state) {
-    return undefined;
-  }
-
-  return {
-    plannerSessionId: state.plannerSessionId,
-    generatorSessionId: state.generatorSessionId,
-    evaluatorSessionId: state.evaluatorSessionId,
-    artifactDir: state.artifactDir,
-    status:
-      state.status === 'running' ||
-      state.status === 'completed' ||
-      state.status === 'failed' ||
-      state.status === 'cancelled'
-        ? state.status
-        : 'ready',
-    currentOwner: state.currentOwner,
-    currentStage: state.currentStage ?? 'idle',
-    currentSprint: state.currentSprint ?? 0,
-    currentRound: state.currentRound ?? 0,
-    completedSprints: state.completedSprints ?? 0,
-    maxSprints: state.maxSprints ?? 0,
-    completedTurns: state.completedTurns ?? 0,
-    totalTurns: state.totalTurns ?? 0,
-    lastDecision: state.lastDecision ?? 'NOT_STARTED',
-    summary: state.summary,
-    updatedAt: state.updatedAt,
-  };
-};
-
-const buildHarnessArtifactDir = (workspace: string, rootSessionId: string) =>
-  path.join(workspace, '.easyaiflow', 'harness', sanitizeHarnessFileSegment(rootSessionId));
-
-const buildHarnessArtifactPaths = (artifactDir: string) => ({
-  spec: path.join(artifactDir, 'product-spec.md'),
-  contract: path.join(artifactDir, 'sprint-contract.md'),
-  evaluation: path.join(artifactDir, 'evaluation-report.md'),
-  handoff: path.join(artifactDir, 'handoff.md'),
-  manifest: path.join(artifactDir, 'manifest.json'),
-});
-
-const buildHarnessInstructionPrompt = (
-  role: HarnessRole,
-  artifactDir: string,
-  workspace: string,
-) => {
-  const files = buildHarnessArtifactPaths(artifactDir);
-
-  const shared = [
-    'You are part of a long-running multi-agent coding harness inside EasyAIFlow.',
-    `Workspace root: ${workspace}`,
-    `Artifact directory: ${artifactDir}`,
-    `Shared files: spec=${files.spec}, contract=${files.contract}, evaluation=${files.evaluation}, handoff=${files.handoff}`,
-    'Treat the shared files as the source of truth for handoff between sessions.',
-    'When you make progress, update the relevant shared file before you finish your turn.',
-    'Keep outputs structured, terse, and easy for the next agent to continue from.',
-  ];
-
-  if (role === 'planner') {
-    return [
-      ...shared,
-      'Role: planner.',
-      'Expand short product asks into an ambitious but still coherent product spec.',
-      'Stay at product scope and high-level technical design. Do not lock in fragile low-level implementation details too early.',
-      'Write the working spec into product-spec.md and write actionable next steps for generator and evaluator into handoff.md.',
-    ].join('\n');
-  }
-
-  if (role === 'generator') {
-    return [
-      ...shared,
-      'Role: generator.',
-      'Implement the product in small, testable sprints instead of trying to finish everything in one pass.',
-      'Before coding, refine sprint-contract.md so it states what this sprint will deliver, how done will be verified, and what is explicitly out of scope.',
-      'After coding, update handoff.md with what changed, remaining risks, and the next recommended sprint.',
-      'Prefer incremental, verifiable progress over broad but fragile scope.',
-    ].join('\n');
-  }
-
-  return [
-    ...shared,
-    'Role: evaluator.',
-    'Be skeptical. Do not praise incomplete or brittle work.',
-    'Review the current sprint against four criteria: product depth, functionality, visual design, and code quality.',
-    'If a criterion is below bar, explain the failure concretely and write the blocking issues into evaluation-report.md.',
-    'Use sprint-contract.md to verify the agreed definition of done and write precise retry guidance into handoff.md.',
-  ].join('\n');
-};
-
-const buildHarnessArtifactTemplate = (
-  type: keyof ReturnType<typeof buildHarnessArtifactPaths>,
-  session: SessionRecord,
-) => {
-  if (type === 'spec') {
-    return `# Product Spec
-
-Source session: ${session.title}
-Source session id: ${session.id}
-Workspace: ${session.workspace}
-
-## Product goal
-- Capture the user request at product level.
-
-## User journeys
-- List the primary flows the app must support.
-
-## Scope
-- Core features
-- Stretch features
-- Explicit non-goals
-
-## Technical direction
-- Architecture
-- Data/storage
-- Runtime/tooling
-
-## Risks and open questions
-- Unknowns
-- Tradeoffs
-`;
-  }
-
-  if (type === 'contract') {
-    return `# Sprint Contract
-
-## Current sprint
-- Objective:
-- Why this sprint now:
-
-## Done means
-- [ ] User-visible behavior
-- [ ] Tests/checks
-- [ ] Data/state expectations
-
-## Out of scope
-- 
-
-## Verification plan
-- Manual checks:
-- Automated checks:
-`;
-  }
-
-  if (type === 'evaluation') {
-    return `# Evaluation Report
-
-## Overall status
-- Pass/Fail:
-
-## Scorecard
-- Product depth:
-- Functionality:
-- Visual design:
-- Code quality:
-
-## Bugs and regressions
-- 
-
-## Required fixes before next pass
-- 
-`;
-  }
-
-  if (type === 'handoff') {
-    return `# Handoff
-
-## Latest state
-- 
-
-## Next recommended owner
-- Planner / Generator / Evaluator
-
-## Next action
-- 
-
-## Risks
-- 
-`;
-  }
-
-  return JSON.stringify(
-    {
-      sourceSessionId: session.id,
-      sourceSessionTitle: session.title,
-      workspace: session.workspace,
-      createdAt: new Date().toISOString(),
-    },
-    null,
-    2,
-  );
-};
-
-const ensureFileWithTemplate = async (
-  filePath: string,
-  content: string,
-) => {
-  try {
-    await readFile(filePath, 'utf8');
-  } catch {
-    await writeFile(filePath, content, 'utf8');
-  }
-};
-
 const normalizeProjects = (projects: ProjectRecord[]) =>
   projects.map((project) =>
     cleanupProjectSessions({
@@ -352,17 +188,24 @@ const normalizeProjects = (projects: ProjectRecord[]) =>
 const normalizeDreamSessions = (dream: DreamRecord) => {
   const sessions = dream.sessions.map((session) => {
     const current = session as SessionRecord;
-    const provider = normalizeSessionProvider(current.provider);
-    const model = normalizeSessionModel(current.model, provider);
+    const sessionKind = normalizeSessionKind(current.sessionKind);
+    const provider = sessionKind === 'group' ? undefined : normalizeSessionProvider(current.provider);
+    const model = provider ? normalizeSessionModel(current.model, provider) : current.model ?? '';
+    const legacyKind = (session as { sessionKind?: string }).sessionKind;
+    const wasUnknownLegacySessionKind =
+      legacyKind !== undefined &&
+      legacyKind !== 'standard' &&
+      legacyKind !== 'group' &&
+      legacyKind !== 'group_member';
 
     return {
       ...current,
       provider,
       model,
-      sessionKind: normalizeSessionKind(current.sessionKind),
-      hidden: Boolean(current.hidden),
+      sessionKind,
+      hidden: wasUnknownLegacySessionKind ? false : Boolean(current.hidden),
+      group: normalizeGroupMetadata(current.group),
       contextReferences: normalizeContextReferences(current.contextReferences),
-      harnessState: normalizeHarnessState(current.harnessState),
       tokenUsage: normalizeTokenUsage(current.tokenUsage, model),
       messages: current.messages ?? [],
       updatedAt: current.updatedAt,
@@ -1179,6 +1022,77 @@ const renameNativeClaudeSession = async (rootPath: string, claudeSessionId: stri
   await writeFile(filePath, `${output.join('\n')}\n`, 'utf8');
 };
 
+const renameNativeCodexThread = async (codexThreadId: string, nextName: string) => {
+  const threadId = codexThreadId.trim();
+  const title = nextName.trim();
+  if (!threadId || !title) {
+    return;
+  }
+
+  let raw = '';
+  try {
+    raw = await readFile(codexSessionIndexPath(), 'utf8');
+  } catch {
+    raw = '';
+  }
+
+  const updatedAt = new Date().toISOString();
+  let found = false;
+  const lines = raw
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        const parsed = JSON.parse(line) as Record<string, unknown>;
+        if (typeof parsed.id === 'string' && parsed.id.trim() === threadId) {
+          found = true;
+          return JSON.stringify({
+            ...parsed,
+            id: threadId,
+            thread_name: title,
+            updated_at: updatedAt,
+          });
+        }
+      } catch {
+        return line;
+      }
+
+      return line;
+    });
+
+  if (!found) {
+    lines.push(
+      JSON.stringify({
+        id: threadId,
+        thread_name: title,
+        updated_at: updatedAt,
+      }),
+    );
+  }
+
+  await mkdir(path.dirname(codexSessionIndexPath()), { recursive: true });
+  await writeFile(codexSessionIndexPath(), `${lines.join('\n')}\n`, 'utf8');
+};
+
+const applySessionTitleRename = (
+  session: SessionSummary,
+  nextName: string,
+  nativeRenameTasks: Array<Promise<void>>,
+) => {
+  const title = nextName.trim();
+  if (!title) {
+    return;
+  }
+
+  session.title = title;
+  if (session.claudeSessionId) {
+    nativeRenameTasks.push(renameNativeClaudeSession(session.workspace, session.claudeSessionId, title));
+  }
+  if (session.codexThreadId) {
+    nativeRenameTasks.push(renameNativeCodexThread(session.codexThreadId, title));
+  }
+};
+
 const importNativeClaudeSessions = async (project: ProjectRecord) => {
   const temporary = project.dreams.find((dream) => dream.isTemporary);
   if (!temporary) {
@@ -1228,7 +1142,7 @@ const importNativeClaudeSessions = async (project: ProjectRecord) => {
 
     seenNativeIds.add(parsed.nativeSessionId);
     const existing =
-      findImportedSessionTarget(projectSessions, parsed.nativeSessionId, parsed.title, workspace) ??
+      findImportedSessionTarget(projectSessions, parsed.nativeSessionId, parsed.title, workspace, 'claudeSessionId', 'claude') ??
       existingByClaudeSessionId.get(parsed.nativeSessionId);
     const display = resolveImportedSessionDisplay(existing, parsed);
     const targetDreamId = existing?.dreamId ?? temporary.id;
@@ -1238,6 +1152,7 @@ const importNativeClaudeSessions = async (project: ProjectRecord) => {
       title: display.title,
       preview: display.preview,
       timeLabel: display.timeLabel,
+      provider: existing?.provider ?? 'claude',
       model: parsed.model,
       workspace,
       projectId: project.id,
@@ -1249,8 +1164,6 @@ const importNativeClaudeSessions = async (project: ProjectRecord) => {
       sessionKind: existing?.sessionKind ?? 'standard',
       hidden: existing?.hidden ?? false,
       instructionPrompt: existing?.instructionPrompt,
-      harness: existing?.harness,
-      harnessState: normalizeHarnessState(existing?.harnessState),
       groups: existing?.groups ?? [],
       contextReferences: normalizeContextReferences(existing?.contextReferences),
       tokenUsage: existing?.tokenUsage ?? {
@@ -1354,6 +1267,7 @@ const importNativeCodexSessions = async (project: ProjectRecord) => {
         parsed.title,
         workspace,
         'codexThreadId',
+        'codex',
       ) ?? existingByCodexThreadId.get(parsed.nativeSessionId);
     const display = resolveImportedSessionDisplay(existing, parsed);
     const importedSession: SessionRecord = {
@@ -1374,8 +1288,6 @@ const importNativeCodexSessions = async (project: ProjectRecord) => {
       sessionKind: existing?.sessionKind ?? 'standard',
       hidden: existing?.hidden ?? false,
       instructionPrompt: existing?.instructionPrompt,
-      harness: existing?.harness,
-      harnessState: normalizeHarnessState(existing?.harnessState),
       groups: existing?.groups ?? [],
       contextReferences: normalizeContextReferences(existing?.contextReferences),
       tokenUsage: parsed.tokenUsage,
@@ -1657,6 +1569,36 @@ export const findSession = async (sessionId: string): Promise<SessionRecord | nu
   return found;
 };
 
+const assignGroupMessageSeq = (
+  session: SessionRecord,
+  message: ConversationMessage,
+) => {
+  if (session.sessionKind !== 'group' || session.group?.kind !== 'room') {
+    return message;
+  }
+
+  const nextSeq = session.group.nextMessageSeq > 0 ? session.group.nextMessageSeq : 1;
+  const assignedSeq =
+    typeof message.seq === 'number' && Number.isFinite(message.seq) && message.seq > 0
+      ? Math.floor(message.seq)
+      : nextSeq;
+
+  session.group = {
+    ...session.group,
+    nextMessageSeq: Math.max(nextSeq, assignedSeq + 1),
+  };
+
+  return typeof message.seq === 'number' && Number.isFinite(message.seq) && message.seq > 0
+    ? message
+    : {
+        ...message,
+        seq: assignedSeq,
+      };
+};
+
+const assignMessagesForSession = (session: SessionRecord, messages: ConversationMessage[]) =>
+  messages.map((message) => assignGroupMessageSeq(session, message));
+
 export const ensureSessionRecord = async (session: SessionSummary): Promise<SessionRecord> => {
   const state = await loadState();
   let found: SessionRecord | null = null;
@@ -1680,6 +1622,7 @@ export const ensureSessionRecord = async (session: SessionSummary): Promise<Sess
   const record: SessionRecord = {
     ...session,
     updatedAt: session.updatedAt ?? Date.now(),
+    group: normalizeGroupMetadata(session.group),
     contextReferences: normalizeContextReferences(session.contextReferences),
     messages: [],
   };
@@ -1687,6 +1630,35 @@ export const ensureSessionRecord = async (session: SessionSummary): Promise<Sess
   dream.sessions.unshift(record);
   await saveState(state);
   return record;
+};
+
+export const updateSessionRecord = async (
+  sessionId: string,
+  updater: (session: SessionRecord) => void,
+) => {
+  const state = await loadState();
+  let updatedSession: SessionRecord | null = null;
+
+  forEachSession(state.projects, (session) => {
+    if (session.id !== sessionId) {
+      return;
+    }
+
+    updater(session);
+    session.updatedAt = Date.now();
+    updatedSession = JSON.parse(JSON.stringify(session)) as SessionRecord;
+  });
+
+  if (!updatedSession) {
+    throw new Error('Session not found.');
+  }
+
+  await saveState(state);
+
+  return {
+    projects: cloneVisibleProjects(state.projects),
+    session: updatedSession,
+  };
 };
 
 export const appendMessagesToSession = async (
@@ -1699,7 +1671,8 @@ export const appendMessagesToSession = async (
 
   forEachSession(state.projects, (session) => {
     if (session.id === sessionId) {
-      session.messages = [...(session.messages ?? []), ...messages];
+      const nextMessages = assignMessagesForSession(session, messages);
+      session.messages = [...(session.messages ?? []), ...nextMessages];
       session.preview = preview;
       session.timeLabel = timeLabel;
       session.updatedAt = Date.now();
@@ -1718,7 +1691,8 @@ export const appendTraceMessagesToSession = async (
 
   forEachSession(state.projects, (session) => {
     if (session.id === sessionId) {
-      session.messages = [...(session.messages ?? []), ...messages];
+      const nextMessages = assignMessagesForSession(session, messages);
+      session.messages = [...(session.messages ?? []), ...nextMessages];
       session.updatedAt = Date.now();
     }
   });
@@ -1741,7 +1715,8 @@ export const upsertSessionMessage = async (
     if (index >= 0) {
       session.messages[index] = message;
     } else {
-      session.messages = [...(session.messages ?? []), message];
+      const nextMessage = assignGroupMessageSeq(session, message);
+      session.messages = [...(session.messages ?? []), nextMessage];
     }
     session.updatedAt = Date.now();
   });
@@ -1860,10 +1835,32 @@ const makeStreamworkHistoryReference = (streamwork: DreamRecord): ContextReferen
   auto: true,
 });
 
+const buildGroupParticipantRecord = (
+  id: GroupParticipantId,
+  provider: SessionProvider,
+  backingSessionId: string,
+  model: string,
+): GroupParticipant => ({
+  id,
+  label: provider === 'codex' ? 'Codex' : 'Claude',
+  provider,
+  backingSessionId,
+  enabled: true,
+  model,
+  lastAppliedRoomSeq: 0,
+});
+
+const getParticipantIdForProvider = (provider: SessionProvider): GroupParticipantId =>
+  provider === 'codex' ? 'codex' : 'claude';
+
+const getSpeakerLabelForProvider = (provider: SessionProvider) =>
+  provider === 'codex' ? 'Codex' : 'Claude';
+
 export const createSession = async (
   sourceSessionId?: string,
   includeStreamworkSummary = false,
   provider?: SessionProvider,
+  sessionKind: SessionKind = 'standard',
 ): Promise<SessionCreateResult> => {
   const state = await loadState();
 
@@ -1887,6 +1884,26 @@ export const createSession = async (
   const fallbackDream = fallbackProject?.dreams[sourceDreamIndex >= 0 ? sourceDreamIndex : 0];
   if (!fallbackProject || !fallbackDream) {
     throw new Error('No project or streamwork is available to create a session.');
+  }
+
+  const hadExistingSessions = fallbackDream.sessions.length > 0;
+  if (sessionKind === 'group') {
+    const nextIndex = fallbackDream.sessions.filter((session) => (session as SessionRecord).sessionKind === 'group').length + 1;
+    const session = createGroupSessionInStreamwork(
+      fallbackProject,
+      fallbackDream,
+      `New Group ${nextIndex}`,
+      (sourceSession ?? (fallbackDream.sessions[0] as SessionRecord | undefined))?.workspace ?? fallbackProject.rootPath,
+    );
+    if (includeStreamworkSummary && hadExistingSessions) {
+      session.contextReferences = [makeStreamworkHistoryReference(fallbackDream)];
+    }
+    await saveState(state);
+
+    return {
+      projects: cloneVisibleProjects(state.projects),
+      session: JSON.parse(JSON.stringify(session)) as SessionRecord,
+    };
   }
 
   const templateSession = (sourceSession ?? fallbackDream.sessions[0]) as SessionRecord | undefined;
@@ -1919,8 +1936,7 @@ export const createSession = async (
     sessionKind: 'standard',
     hidden: false,
     instructionPrompt: undefined,
-    harness: undefined,
-    harnessState: undefined,
+    group: undefined,
     groups: templateSession?.groups ?? [],
     contextReferences:
       includeStreamworkSummary && fallbackDream.sessions.length > 0
@@ -1952,14 +1968,18 @@ const createBaseSession = (
   streamwork: DreamRecord,
   title: string,
   workspace: string,
-  provider: SessionProvider = 'claude',
+  provider?: SessionProvider,
+  sessionKind: SessionKind = 'standard',
 ): SessionRecord => {
   const now = new Date();
+  const normalizedKind = normalizeSessionKind(sessionKind);
+  const normalizedProvider =
+    normalizedKind === 'group' ? undefined : normalizeSessionProvider(provider);
 
   return {
     id: randomUUID(),
     title,
-    preview: getDefaultPreviewForProvider(provider),
+    preview: getDefaultPreviewForSessionKind(normalizedKind, normalizedProvider),
     timeLabel: new Intl.DateTimeFormat('zh-CN', {
       hour: '2-digit',
       minute: '2-digit',
@@ -1967,8 +1987,8 @@ const createBaseSession = (
       day: 'numeric',
     }).format(now),
     updatedAt: now.getTime(),
-    provider,
-    model: getDefaultModelForProvider(provider),
+    provider: normalizedProvider,
+    model: normalizedProvider ? getDefaultModelForProvider(normalizedProvider) : '',
     workspace,
     projectId: project.id,
     projectName: project.name,
@@ -1976,11 +1996,10 @@ const createBaseSession = (
     dreamName: streamwork.name,
     claudeSessionId: undefined,
     codexThreadId: undefined,
-    sessionKind: 'standard',
-    hidden: false,
+    sessionKind: normalizedKind,
+    hidden: normalizedKind === 'group_member',
     instructionPrompt: undefined,
-    harness: undefined,
-    harnessState: undefined,
+    group: undefined,
     groups: [],
     contextReferences: [],
     tokenUsage: {
@@ -1996,191 +2015,272 @@ const createBaseSession = (
   };
 };
 
-const ensureHarnessArtifacts = async (session: SessionRecord, artifactDir: string) => {
-  const files = buildHarnessArtifactPaths(artifactDir);
-  await mkdir(artifactDir, { recursive: true });
-  await Promise.all([
-    ensureFileWithTemplate(files.spec, buildHarnessArtifactTemplate('spec', session)),
-    ensureFileWithTemplate(files.contract, buildHarnessArtifactTemplate('contract', session)),
-    ensureFileWithTemplate(files.evaluation, buildHarnessArtifactTemplate('evaluation', session)),
-    ensureFileWithTemplate(files.handoff, buildHarnessArtifactTemplate('handoff', session)),
-    writeFile(files.manifest, buildHarnessArtifactTemplate('manifest', session), 'utf8'),
-  ]);
-};
-
-const ensureHarnessSession = (
+const createGroupMemberSession = (
   project: ProjectRecord,
   streamwork: DreamRecord,
-  rootSession: SessionRecord,
-  role: HarnessRole,
-  artifactDir: string,
+  roomSession: SessionRecord,
+  participantId: GroupParticipantId,
+  provider: SessionProvider,
 ) => {
-  const existing = streamwork.sessions.find(
-    (session) =>
-      (session as SessionRecord).harness?.rootSessionId === rootSession.id &&
-      (session as SessionRecord).harness?.role === role,
-  ) as SessionRecord | undefined;
-
-  const instructionPrompt = buildHarnessInstructionPrompt(role, artifactDir, rootSession.workspace);
-  const title = `[${role}] ${rootSession.title}`;
-  const harness = {
-    role,
-    rootSessionId: rootSession.id,
-    artifactDir,
-  } as const;
-  const references = [
-    {
-      id: randomUUID(),
-      kind: 'session' as const,
-      label: rootSession.title,
-      mode: 'summary' as const,
-      sessionId: rootSession.id,
-      auto: true,
-    },
-  ];
-
-  if (existing) {
-    existing.title = title;
-    existing.workspace = rootSession.workspace;
-    existing.projectId = project.id;
-    existing.projectName = project.name;
-    existing.dreamId = streamwork.id;
-    existing.dreamName = streamwork.name;
-    existing.sessionKind = 'harness_role';
-    existing.hidden = true;
-    existing.instructionPrompt = instructionPrompt;
-    existing.harness = harness;
-    existing.harnessState = undefined;
-    existing.contextReferences = references;
-    existing.updatedAt = Date.now();
-    return existing;
-  }
-
-  const nextSession = createBaseSession(
+  const speakerLabel = provider === 'codex' ? 'Codex' : 'Claude';
+  const memberSession = createBaseSession(
     project,
     streamwork,
-    title,
-    rootSession.workspace,
-    normalizeSessionProvider(rootSession.provider),
+    getGroupBackingSessionTitle(roomSession.title),
+    roomSession.workspace,
+    provider,
+    'group_member',
   );
-  nextSession.preview = `${role} harness session`;
-  nextSession.sessionKind = 'harness_role';
-  nextSession.hidden = true;
-  nextSession.instructionPrompt = instructionPrompt;
-  nextSession.harness = harness;
-  nextSession.harnessState = undefined;
-  nextSession.contextReferences = references;
-  streamwork.sessions.unshift(nextSession);
-  return nextSession;
+  memberSession.hidden = true;
+  memberSession.preview = `${speakerLabel} group member session.`;
+  memberSession.instructionPrompt = undefined;
+  memberSession.group = {
+    kind: 'member',
+    roomSessionId: roomSession.id,
+    participantId,
+    speakerLabel,
+  };
+  return memberSession;
 };
 
-export const bootstrapHarnessFromSession = async (sessionId: string): Promise<HarnessBootstrapResult> => {
+const createGroupSessionInStreamwork = (
+  project: ProjectRecord,
+  streamwork: DreamRecord,
+  title: string,
+  workspace: string,
+) => {
+  const roomSession = createBaseSession(project, streamwork, title, workspace, undefined, 'group');
+  const claudeSession = createGroupMemberSession(project, streamwork, roomSession, 'claude', 'claude');
+  const codexSession = createGroupMemberSession(project, streamwork, roomSession, 'codex', 'codex');
+
+  roomSession.group = {
+    kind: 'room',
+    nextMessageSeq: 1,
+    participants: [
+      buildGroupParticipantRecord('claude', 'claude', claudeSession.id, claudeSession.model),
+      buildGroupParticipantRecord('codex', 'codex', codexSession.id, codexSession.model),
+    ],
+  };
+
+  streamwork.sessions.unshift(codexSession);
+  streamwork.sessions.unshift(claudeSession);
+  streamwork.sessions.unshift(roomSession);
+
+  return roomSession;
+};
+
+export const ensureGroupRoomBackingSessions = async (sessionId: string): Promise<SessionRecord> => {
   const state = await loadState();
-  let sourceSession: SessionRecord | undefined;
-  let sourceProject: ProjectRecord | undefined;
-  let sourceStreamwork: DreamRecord | undefined;
+  let targetProject: ProjectRecord | undefined;
+  let targetDream: DreamRecord | undefined;
+  let targetSession: SessionRecord | undefined;
 
   state.projects.forEach((project) => {
     project.dreams.forEach((dream) => {
       dream.sessions.forEach((session) => {
-        const current = session as SessionRecord;
-        if (current.id === sessionId) {
-          sourceSession = current;
-          sourceProject = project;
-          sourceStreamwork = dream;
+        if (session.id === sessionId) {
+          targetProject = project;
+          targetDream = dream;
+          targetSession = session as SessionRecord;
         }
       });
     });
   });
 
-  if (!sourceSession || !sourceProject || !sourceStreamwork) {
+  if (!targetProject || !targetDream || !targetSession) {
     throw new Error('Session not found.');
   }
-  if (normalizeSessionProvider(sourceSession.provider) !== 'claude') {
-    throw new Error('Harness is currently available only for Claude sessions.');
+
+  const project = targetProject;
+  const dream = targetDream;
+  const roomSession = targetSession;
+
+  if (roomSession.sessionKind !== 'group' || roomSession.group?.kind !== 'room') {
+    return JSON.parse(JSON.stringify(roomSession)) as SessionRecord;
   }
 
-  const rootSessionId = sourceSession.harness?.rootSessionId ?? sourceSession.id;
-  const rootSession =
-    state.projects
-      .flatMap((project) => project.dreams.flatMap((dream) => dream.sessions as SessionRecord[]))
-      .find((session) => session.id === rootSessionId) ?? sourceSession;
-  const artifactDir = buildHarnessArtifactDir(rootSession.workspace, rootSessionId);
-  await ensureHarnessArtifacts(rootSession, artifactDir);
+  const existingSessions = new Map(
+    state.projects.flatMap((project) =>
+      project.dreams.flatMap((dream) =>
+        dream.sessions.map((session) => [session.id, session as SessionRecord] as const),
+      ),
+    ),
+  );
 
-  // Root session doubles as the planner — it already holds the full conversation,
-  // so there is no need for a separate planner session or a self-referencing context reference.
-  const generator = ensureHarnessSession(sourceProject, sourceStreamwork, rootSession, 'generator', artifactDir);
-  const evaluator = ensureHarnessSession(sourceProject, sourceStreamwork, rootSession, 'evaluator', artifactDir);
+  const roomIndex = dream.sessions.findIndex((session) => session.id === roomSession.id);
+  if (roomIndex === -1) {
+    throw new Error('Failed to locate the group room inside its streamwork.');
+  }
 
-  rootSession.sessionKind = 'harness';
-  rootSession.hidden = false;
-  rootSession.instructionPrompt = buildHarnessInstructionPrompt('planner', artifactDir, rootSession.workspace);
-  rootSession.preview = 'Harness bootstrapped. Ready to run.';
-  rootSession.timeLabel = 'Just now';
-  rootSession.updatedAt = Date.now();
-  rootSession.harnessState = {
-    plannerSessionId: rootSession.id,
-    generatorSessionId: generator.id,
-    evaluatorSessionId: evaluator.id,
-    artifactDir,
-    status: 'ready',
-    currentOwner: undefined,
-    currentStage: 'ready',
-    currentSprint: 0,
-    currentRound: 0,
-    completedSprints: 0,
-    maxSprints: 0,
-    completedTurns: 0,
-    totalTurns: 0,
-    lastDecision: 'READY',
-    summary: 'Harness bootstrapped. Ready to run.',
-    updatedAt: Date.now(),
-  };
-
-  await saveState(state);
-
-  return {
-    projects: cloneVisibleProjects(state.projects),
-    rootSessionId: rootSession.id,
-    plannerSessionId: rootSession.id,
-    generatorSessionId: generator.id,
-    evaluatorSessionId: evaluator.id,
-    artifactDir,
-  };
-};
-
-export const updateHarnessState = async (
-  sessionId: string,
-  updater: (current: HarnessSessionState | undefined) => HarnessSessionState,
-) => {
-  const state = await loadState();
-  let updatedState: HarnessSessionState | undefined;
-
-  forEachSession(state.projects, (session) => {
-    if (session.id !== sessionId) {
-      return;
+  let insertedCount = 0;
+  let changed = false;
+  const nativeRenameTasks: Array<Promise<void>> = [];
+  roomSession.group.participants = roomSession.group.participants.map((participant) => {
+    const existing = existingSessions.get(participant.backingSessionId);
+    if (
+      existing &&
+      existing.sessionKind === 'group_member' &&
+      existing.group?.kind === 'member' &&
+      existing.group.roomSessionId === roomSession.id &&
+      existing.group.participantId === participant.id
+    ) {
+      const expectedTitle = getGroupBackingSessionTitle(roomSession.title);
+      if (
+        existing.hidden !== true ||
+        existing.title !== expectedTitle ||
+        existing.model !== (participant.model || existing.model) ||
+        existing.instructionPrompt !== undefined
+      ) {
+        changed = true;
+      }
+      existing.hidden = true;
+      if (existing.title !== expectedTitle) {
+        existing.title = expectedTitle;
+        if (existing.claudeSessionId) {
+          nativeRenameTasks.push(
+            renameNativeClaudeSession(existing.workspace, existing.claudeSessionId, expectedTitle),
+          );
+        }
+        if (existing.codexThreadId) {
+          nativeRenameTasks.push(renameNativeCodexThread(existing.codexThreadId, expectedTitle));
+        }
+      }
+      existing.model = participant.model || existing.model;
+      existing.instructionPrompt = undefined;
+      return participant;
     }
 
-    const nextState = updater(normalizeHarnessState(session.harnessState));
-    session.sessionKind = 'harness';
-    session.hidden = false;
-    session.harnessState = nextState;
-    session.preview = nextState.summary ?? session.preview;
-    session.timeLabel = 'Just now';
-    session.updatedAt = Date.now();
-    updatedState = nextState;
+    const recreated = createGroupMemberSession(
+      project,
+      dream,
+      roomSession,
+      participant.id,
+      participant.provider,
+    );
+    recreated.model = participant.model || recreated.model;
+    dream.sessions.splice(roomIndex + 1 + insertedCount, 0, recreated);
+    insertedCount += 1;
+    changed = true;
+
+    return {
+      ...participant,
+      backingSessionId: recreated.id,
+      model: recreated.model,
+    };
   });
 
-  if (!updatedState) {
-    throw new Error('Harness root session not found.');
+  if (changed || nativeRenameTasks.length > 0) {
+    await Promise.allSettled(nativeRenameTasks);
+    await saveState(state);
   }
 
-  await saveState(state);
-  return {
-    projects: cloneVisibleProjects(state.projects),
-    state: updatedState,
+  return JSON.parse(JSON.stringify(roomSession)) as SessionRecord;
+};
+
+export const ensureGroupRoomSession = async (sessionId: string): Promise<SessionRecord> => {
+  const state = await loadState();
+  let targetProject: ProjectRecord | undefined;
+  let targetDream: DreamRecord | undefined;
+  let targetSession: SessionRecord | undefined;
+
+  state.projects.forEach((project) => {
+    project.dreams.forEach((dream) => {
+      dream.sessions.forEach((session) => {
+        if (session.id === sessionId) {
+          targetProject = project;
+          targetDream = dream;
+          targetSession = session as SessionRecord;
+        }
+      });
+    });
+  });
+
+  if (!targetProject || !targetDream || !targetSession) {
+    throw new Error('Session not found.');
+  }
+
+  if (targetSession.sessionKind === 'group') {
+    await saveState(state);
+    return JSON.parse(JSON.stringify(targetSession)) as SessionRecord;
+  }
+
+  if (targetSession.sessionKind === 'group_member') {
+    throw new Error('Cannot enter group mode from a hidden participant session.');
+  }
+
+  const baseProvider = normalizeSessionProvider(targetSession.provider);
+  const primaryParticipantId = getParticipantIdForProvider(baseProvider);
+  const primaryLabel = getSpeakerLabelForProvider(baseProvider);
+  const roomSessionId = targetSession.id;
+  const originalMessages = (targetSession.messages ?? []).map((message) => ({ ...message }));
+  const highestExistingSeq = originalMessages.length;
+
+  const primaryMemberSession = createGroupMemberSession(
+    targetProject,
+    targetDream,
+    targetSession,
+    primaryParticipantId,
+    baseProvider,
+  );
+  primaryMemberSession.model = targetSession.model || primaryMemberSession.model;
+
+  const secondaryProvider: SessionProvider = baseProvider === 'codex' ? 'claude' : 'codex';
+  const secondaryParticipantId = getParticipantIdForProvider(secondaryProvider);
+  const secondaryMemberSession = createGroupMemberSession(
+    targetProject,
+    targetDream,
+    targetSession,
+    secondaryParticipantId,
+    secondaryProvider,
+  );
+
+  targetSession.provider = undefined;
+  targetSession.model = '';
+  targetSession.claudeSessionId = undefined;
+  targetSession.codexThreadId = undefined;
+  targetSession.sessionKind = 'group';
+  targetSession.hidden = false;
+  targetSession.instructionPrompt = undefined;
+  targetSession.group = {
+    kind: 'room',
+    nextMessageSeq: highestExistingSeq + 1,
+    participants: [
+      {
+        ...buildGroupParticipantRecord(
+          primaryParticipantId,
+          baseProvider,
+          primaryMemberSession.id,
+          primaryMemberSession.model,
+        ),
+        lastAppliedRoomSeq: highestExistingSeq,
+      },
+      buildGroupParticipantRecord(
+        secondaryParticipantId,
+        secondaryProvider,
+        secondaryMemberSession.id,
+        secondaryMemberSession.model,
+      ),
+    ],
   };
+  targetSession.messages = originalMessages.map((message, index) => ({
+    ...message,
+    seq: index + 1,
+    speakerId: message.role === 'user' ? 'user' : primaryParticipantId,
+    speakerLabel: message.role === 'user' ? 'You' : primaryLabel,
+    provider: message.role === 'user' ? undefined : baseProvider,
+    sourceSessionId: message.role === 'user' ? undefined : primaryMemberSession.id,
+  }));
+  targetSession.preview = targetSession.preview || 'Group chat is ready.';
+
+  const insertionIndex = targetDream.sessions.findIndex((session) => session.id === roomSessionId);
+  if (insertionIndex === -1) {
+    throw new Error('Failed to locate the session inside its streamwork.');
+  }
+
+  targetDream.sessions.splice(insertionIndex + 1, 0, primaryMemberSession, secondaryMemberSession);
+  await saveState(state);
+
+  return JSON.parse(JSON.stringify(targetSession)) as SessionRecord;
 };
 
 export const createProject = async (name: string, rootPath: string): Promise<ProjectCreateResult> => {
@@ -2271,6 +2371,7 @@ export const createSessionInStreamwork = async (
   name?: string,
   includeStreamworkSummary = false,
   provider: SessionProvider = 'claude',
+  sessionKind: SessionKind = 'standard',
 ): Promise<SessionCreateResult> => {
   const state = await loadState();
   let foundProject: ProjectRecord | undefined;
@@ -2291,19 +2392,29 @@ export const createSessionInStreamwork = async (
 
   const targetProject = foundProject;
   const targetStreamwork = foundStreamwork;
-  const nextIndex = targetStreamwork.sessions.length + 1;
-  const session = createBaseSession(
-    targetProject,
-    targetStreamwork,
-    name?.trim() || `New Session ${nextIndex}`,
-    targetProject.rootPath,
-    normalizeSessionProvider(provider),
-  );
-  if (includeStreamworkSummary && targetStreamwork.sessions.length > 0) {
+  const hadExistingSessions = targetStreamwork.sessions.length > 0;
+  const nextIndex = targetStreamwork.sessions.filter((session) => !((session as SessionRecord).hidden)).length + 1;
+  const session =
+    sessionKind === 'group'
+      ? createGroupSessionInStreamwork(
+          targetProject,
+          targetStreamwork,
+          name?.trim() || `New Group ${nextIndex}`,
+          targetProject.rootPath,
+        )
+      : createBaseSession(
+          targetProject,
+          targetStreamwork,
+          name?.trim() || `New Session ${nextIndex}`,
+          targetProject.rootPath,
+          normalizeSessionProvider(provider),
+        );
+  if (includeStreamworkSummary && hadExistingSessions) {
     session.contextReferences = [makeStreamworkHistoryReference(targetStreamwork)];
   }
-
-  targetStreamwork.sessions.unshift(session);
+  if (sessionKind !== 'group') {
+    targetStreamwork.sessions.unshift(session);
+  }
   await saveState(state);
 
   return {
@@ -2335,16 +2446,18 @@ export const renameEntity = async (
 
       dream.sessions.forEach((session) => {
         if (kind === 'session' && session.id === id) {
-          session.title = nextName;
-          if (session.claudeSessionId) {
-            nativeRenameTasks.push(renameNativeClaudeSession(session.workspace, session.claudeSessionId, nextName));
-          }
-          // Sync harness role session titles when the root harness session is renamed.
-          if ((session as SessionRecord).sessionKind === 'harness') {
-            dream.sessions.forEach((sibling) => {
-              const role = (sibling as SessionRecord).harness;
-              if (role?.rootSessionId === id) {
-                sibling.title = `[${role.role}] ${nextName}`;
+          applySessionTitleRename(session, nextName, nativeRenameTasks);
+          if (session.sessionKind === 'group' && session.group?.kind === 'room') {
+            const backingSessionIds = new Set(
+              session.group.participants.map((participant) => participant.backingSessionId),
+            );
+            dream.sessions.forEach((candidate) => {
+              if (backingSessionIds.has(candidate.id)) {
+                applySessionTitleRename(
+                  candidate,
+                  getGroupBackingSessionTitle(nextName),
+                  nativeRenameTasks,
+                );
               }
             });
           }
@@ -2473,21 +2586,36 @@ export const deleteStreamwork = async (streamworkId: string): Promise<DeleteEnti
 
 export const deleteSession = async (sessionId: string): Promise<DeleteEntityResult> => {
   const state = await loadState();
-  let deleted = false;
+  const deletedSessionIds = new Set<string>();
   let deletedNativeSessions: Array<{ workspace: string; sessionId: string }> = [];
 
   state.projects.forEach((project) => {
     project.dreams.forEach((dream) => {
       const target = dream.sessions.find((session) => session.id === sessionId);
+      const extraDeletedIds =
+        target?.sessionKind === 'group' && target.group?.kind === 'room'
+          ? target.group.participants.map((participant) => participant.backingSessionId)
+          : [];
       if (target?.claudeSessionId) {
         deletedNativeSessions.push({
           workspace: target.workspace,
           sessionId: target.claudeSessionId,
         });
       }
-      const nextSessions = dream.sessions.filter((session) => session.id !== sessionId);
+      dream.sessions.forEach((session) => {
+        if (extraDeletedIds.includes(session.id) && session.claudeSessionId) {
+          deletedNativeSessions.push({
+            workspace: session.workspace,
+            sessionId: session.claudeSessionId,
+          });
+        }
+      });
+      const nextSessions = dream.sessions.filter(
+        (session) => session.id !== sessionId && !extraDeletedIds.includes(session.id),
+      );
       if (nextSessions.length !== dream.sessions.length) {
-        deleted = true;
+        deletedSessionIds.add(sessionId);
+        extraDeletedIds.forEach((id) => deletedSessionIds.add(id));
       }
       dream.sessions = nextSessions;
     });
@@ -2497,6 +2625,6 @@ export const deleteSession = async (sessionId: string): Promise<DeleteEntityResu
   await saveState(state);
   return {
     projects: cloneVisibleProjects(state.projects),
-    deletedSessionIds: deleted ? [sessionId] : [],
+    deletedSessionIds: [...deletedSessionIds],
   };
 };

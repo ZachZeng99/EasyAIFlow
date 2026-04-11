@@ -46,7 +46,7 @@ The frontend uses `src/bridge.ts` to abstract over both runtimes — it detects 
 ```
 ProjectRecord[]
   └─ DreamRecord[] (Streamworks)
-     └─ SessionSummary[] (standard | harness | harness_role)
+     └─ SessionSummary[] (standard)
         └─ ConversationMessage[]
 ```
 All types are in `src/data/types.ts`. Session data persists to a single JSON file via `electron/sessionStore.ts`.
@@ -66,10 +66,10 @@ All types are in `src/data/types.ts`. Session data persists to a single JSON fil
 5. `App.tsx` applies events to React state via `applyClaudeEvent()`
 
 ### Key Directories
-- `src/components/` — React components (ChatThread, ChatComposer, PlanModeDialog, AskUserQuestionDialog, HarnessDashboard, etc.)
+- `src/components/` — React components (ChatThread, ChatComposer, PlanModeDialog, AskUserQuestionDialog, etc.)
 - `src/data/` — Shared types and pure business logic (planMode, askUserQuestion, permissionRequest, codeChangeDiff, etc.)
 - `electron/` — Electron main process, IPC handlers, Claude CLI integration, session persistence
-- `backend/` — Shared backend logic used by both Electron and web server (harnessOrchestrator, runtimePaths)
+- `backend/` — Shared backend logic used by both Electron and web server (runtimePaths and interaction logic)
 - `server/` — Web server runtime (single file: server.ts)
 - `tests/` — Test files mirroring source structure, run individually with tsx
 
@@ -79,9 +79,6 @@ Multi-project setup with `tsc -b` (composite):
 - `tsconfig.electron.json` — Electron main (backend/, electron/, src/data/) → dist-electron/
 - `tsconfig.server.json` — Web server (backend/, server/, electron/, src/data/) → dist-server/
 - `tsconfig.node.json` — Build tooling (vite.config.ts)
-
-### Harness System
-Multi-agent orchestration (Planner → Generator → Evaluator) managed by `backend/harnessOrchestrator.ts`. Creates role-based sub-sessions coordinated through a manifest.json in an artifact directory. UI in `src/components/HarnessDashboard.tsx`.
 
 ### Interactive Dialog System
 Claude can pause execution and request user input through three mechanisms:

@@ -18,6 +18,7 @@ const makeSession = (id: string, title: string, used = 0): SessionRecord => ({
   preview: title,
   timeLabel: 'Imported',
   updatedAt: 1,
+  provider: 'claude',
   model: 'opus[1m]',
   workspace: 'X:\\PBZ\\ProjectPBZ',
   projectId: 'p',
@@ -62,4 +63,19 @@ run('pruneTemporaryImportedDuplicates keeps all duplicates when none has disting
   ]);
 
   assert.deepEqual(result.map((item) => item.id), ['a', 'b']);
+});
+
+run('pruneTemporaryImportedDuplicates keeps cross-provider sessions with the same title', () => {
+  const claude = makeSession('claude', '[Group] Room', 0);
+  const codex = {
+    ...makeSession('codex', '[Group] Room', 50),
+    provider: 'codex' as const,
+    codexThreadId: 'codex-room',
+    claudeSessionId: undefined,
+    model: 'gpt-5.4-mini',
+  };
+
+  const result = pruneTemporaryImportedDuplicates([claude, codex]);
+
+  assert.deepEqual(result.map((item) => item.id), ['claude', 'codex']);
 });

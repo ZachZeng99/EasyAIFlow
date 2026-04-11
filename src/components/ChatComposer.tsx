@@ -13,13 +13,19 @@ export type ComposerAttachment = {
   dataUrl?: string;
 };
 
+export type ComposerMentionOption = {
+  value: string;
+  label: string;
+};
+
 type ChatComposerProps = {
-  provider: SessionProvider;
+  provider?: SessionProvider;
   draft: string;
   tokenUsage: TokenUsage;
   sessionModel: string;
   contextReferences: ContextReference[];
   slashCommands: string[];
+  mentionOptions?: ComposerMentionOption[];
   attachments: ComposerAttachment[];
   isSending: boolean;
   isResponding: boolean;
@@ -28,6 +34,7 @@ type ChatComposerProps = {
   effort: 'low' | 'medium' | 'high' | 'max';
   appliedEffort?: 'low' | 'medium' | 'high' | 'max';
   notice?: string | null;
+  isGroupSession?: boolean;
   supportsPathDrop?: boolean;
   onDraftChange: (value: string) => void;
   onInsertDroppedPaths: (files: FileList | null) => void;
@@ -82,6 +89,7 @@ export function ChatComposer({
   sessionModel,
   contextReferences,
   slashCommands,
+  mentionOptions = [],
   attachments,
   isSending,
   isResponding,
@@ -90,6 +98,7 @@ export function ChatComposer({
   effort,
   appliedEffort,
   notice,
+  isGroupSession = false,
   supportsPathDrop = true,
   onDraftChange,
   onInsertDroppedPaths,
@@ -129,6 +138,7 @@ export function ChatComposer({
     : `${formatTokens(tokenUsage.used)} / --`;
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const slashItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const mentionItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const slashState = useMemo(() => {
     // Keep slash completion active only while the draft is a single slash token.
     // Once the user adds whitespace, Enter should send instead of re-applying the command.
@@ -147,10 +157,37 @@ export function ChatComposer({
       commands,
     };
   }, [draft, slashCommands]);
+  const mentionState = useMemo(() => {
+    if (mentionOptions.length === 0) {
+      return null;
+    }
+
+    const match = draft.match(/(^|\s)@([^\s@]*)$/);
+    if (!match) {
+      return null;
+    }
+
+    const query = match[2].toLowerCase();
+    const options = mentionOptions.filter((option) =>
+      query
+        ? option.value.toLowerCase().startsWith(query) || option.label.toLowerCase().startsWith(query)
+        : true,
+    );
+
+    return {
+      query,
+      options,
+    };
+  }, [draft, mentionOptions]);
   const [activeSlashIndex, setActiveSlashIndex] = useState(0);
+  const [activeMentionIndex, setActiveMentionIndex] = useState(0);
   const [isDragActive, setIsDragActive] = useState(false);
   const visibleSlashCommands = slashState?.commands ?? [];
+  const visibleMentionOptions = mentionState?.options ?? [];
   const modelOptions = useMemo(() => {
+    if (isGroupSession) {
+      return [];
+    }
     const baseOptions: Array<{ value: string; label: string }> = [...MODEL_OPTIONS[normalizedProvider]];
     const knownValues = new Set(baseOptions.map((option) => option.value));
     [model, sessionModel].forEach((value) => {
@@ -165,11 +202,15 @@ export function ChatComposer({
       knownValues.add(trimmed);
     });
     return baseOptions;
-  }, [model, normalizedProvider, sessionModel]);
+  }, [isGroupSession, model, normalizedProvider, sessionModel]);
 
   useEffect(() => {
     setActiveSlashIndex(0);
   }, [slashState?.query, draft]);
+
+  useEffect(() => {
+    setActiveMentionIndex(0);
+  }, [mentionState?.query, draft]);
 
   useEffect(() => {
     if (activeSlashIndex < visibleSlashCommands.length) {
@@ -179,15 +220,37 @@ export function ChatComposer({
   }, [activeSlashIndex, visibleSlashCommands.length]);
 
   useEffect(() => {
+    if (activeMentionIndex < visibleMentionOptions.length) {
+      return;
+    }
+    setActiveMentionIndex(0);
+  }, [activeMentionIndex, visibleMentionOptions.length]);
+
+  useEffect(() => {
     slashItemRefs.current[activeSlashIndex]?.scrollIntoView({
       block: 'nearest',
     });
   }, [activeSlashIndex]);
 
+  useEffect(() => {
+    mentionItemRefs.current[activeMentionIndex]?.scrollIntoView({
+      block: 'nearest',
+    });
+  }, [activeMentionIndex]);
+
   const applySlashCommand = (command: string) => {
     const firstWhitespace = draft.search(/\s/);
     const suffix = firstWhitespace >= 0 ? draft.slice(firstWhitespace) : ' ';
     onDraftChange(`/${command}${suffix || ' '}`);
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+    });
+  };
+
+  const applyMentionOption = (option: ComposerMentionOption) => {
+    onDraftChange(
+      draft.replace(/(^|\s)@([^\s@]*)$/, (_match, prefix: string) => `${prefix}@${option.value} `),
+    );
     requestAnimationFrame(() => {
       textareaRef.current?.focus();
     });
@@ -202,17 +265,24 @@ export function ChatComposer({
   return (
     <footer className="composer">
       <div className="composer-toolbar">
-        <label className="composer-control">
-          <span>Model</span>
-          <select value={model} onChange={(event) => onModelChange(event.target.value)}>
-            {modelOptions.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        {normalizedProvider === 'claude' ? (
+        {!isGroupSession ? (
+          <label className="composer-control">
+            <span>Model</span>
+            <select value={model} onChange={(event) => onModelChange(event.target.value)}>
+              {modelOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : (
+          <div className="composer-control">
+            <span>Room</span>
+            <strong>@claude / @codex / @all</strong>
+          </div>
+        )}
+        {!isGroupSession && normalizedProvider === 'claude' ? (
           <label className="composer-control">
             <span>Thinking</span>
             <select value={effort} onChange={(event) => onEffortChange(event.target.value as 'low' | 'medium' | 'high' | 'max')}>
@@ -341,7 +411,30 @@ export function ChatComposer({
             onInsertDroppedPaths(event.dataTransfer?.files ?? null);
           }}
         >
-          {slashState ? (
+          {mentionState ? (
+            <div className="slash-command-menu">
+              {visibleMentionOptions.length > 0 ? (
+                visibleMentionOptions.map((option, index) => (
+                  <button
+                    key={option.value}
+                    ref={(node) => {
+                      mentionItemRefs.current[index] = node;
+                    }}
+                    type="button"
+                    className={`slash-command-item${index === activeMentionIndex ? ' active' : ''}`}
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      applyMentionOption(option);
+                    }}
+                  >
+                    <strong>@{option.value}</strong> {option.label}
+                  </button>
+                ))
+              ) : (
+                <div className="slash-command-empty">No matching people.</div>
+              )}
+            </div>
+          ) : slashState ? (
             <div className="slash-command-menu">
               {visibleSlashCommands.length > 0 ? (
                 visibleSlashCommands.map((command, index) => (
@@ -370,6 +463,26 @@ export function ChatComposer({
             value={draft}
             onChange={(event) => onDraftChange(event.target.value)}
             onKeyDown={(event) => {
+              if (mentionState && visibleMentionOptions.length > 0) {
+                if (event.key === 'ArrowDown') {
+                  event.preventDefault();
+                  setActiveMentionIndex((current) => (current + 1) % visibleMentionOptions.length);
+                  return;
+                }
+
+                if (event.key === 'ArrowUp') {
+                  event.preventDefault();
+                  setActiveMentionIndex((current) => (current - 1 + visibleMentionOptions.length) % visibleMentionOptions.length);
+                  return;
+                }
+
+                if ((event.key === 'Enter' && !event.shiftKey) || event.key === 'Tab') {
+                  event.preventDefault();
+                  applyMentionOption(visibleMentionOptions[activeMentionIndex] ?? visibleMentionOptions[0]);
+                  return;
+                }
+              }
+
               if (slashState && visibleSlashCommands.length > 0) {
                 if (event.key === 'ArrowDown') {
                   event.preventDefault();

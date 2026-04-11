@@ -35,13 +35,11 @@ import {
 } from './claudeHelpers.js';
 import {
   appendMessagesToSession,
-  bootstrapHarnessFromSession,
   ensureSessionRecord,
   findSession,
   getProjects,
   setSessionRuntime,
   updateAssistantMessage,
-  updateHarnessState,
   updateSessionContextReferences,
   upsertSessionMessage,
 } from '../electron/sessionStore.js';
@@ -108,13 +106,11 @@ import {
   type PlanModeRequest,
   type PlanModeResponsePayload,
 } from '../src/data/planMode.js';
-import { runHarnessOrchestration } from './harnessOrchestrator.js';
 import type {
   BackgroundTaskRecord,
   BtwResponse,
   ConversationMessage,
   ContextReference,
-  HarnessSessionState,
   PendingAttachment,
   ProjectRecord,
   SessionRecord,
@@ -294,28 +290,6 @@ export const buildContextReferencePrompt = async (sessionId: string, overrideRef
 
       const detail = resolvedSessions.map(buildDetail).join('\n\n');
 
-      // When the referenced session is a harness, also include its role sessions.
-      const harnessRoleDetails: string[] = [];
-      for (const resolved of resolvedSessions) {
-        if (resolved.sessionKind !== 'harness' || !resolved.harnessState) {
-          continue;
-        }
-        const roleIds = [
-          resolved.harnessState.generatorSessionId,
-          resolved.harnessState.evaluatorSessionId,
-        ];
-        // plannerSessionId === root session id, already included above
-        for (const roleId of roleIds) {
-          if (!roleId || roleId === resolved.id || roleId === currentSession.id) {
-            continue;
-          }
-          const roleSession = sessionById.get(roleId);
-          if (roleSession && getConversationMessages(roleSession).length > 0) {
-            harnessRoleDetails.push(buildDetail(roleSession));
-          }
-        }
-      }
-
       const title =
         reference.kind === 'session'
           ? `Referenced session (${reference.mode})`
@@ -332,9 +306,6 @@ export const buildContextReferencePrompt = async (sessionId: string, overrideRef
         `Entries: ${resolvedSessions.length}`,
         detail,
       ];
-      if (harnessRoleDetails.length > 0) {
-        parts.push(`### Harness role sessions`, ...harnessRoleDetails);
-      }
 
       return truncateText(parts.join('\n'), reference.mode === 'full' ? 36000 : 22000);
     })
@@ -1125,6 +1096,24 @@ export const getResidentIdleTurnOutcome = (runState: ClaudeRunState) => {
     kind: 'error' as const,
     content: 'Claude finished without returning a visible response.',
   };
+};
+
+export const shouldForkResidentClaudeSession = (input: {
+  session: Pick<SessionSummary, 'claudeSessionId' | 'sessionKind'>;
+  persistedModel?: string;
+  resolvedModel?: string;
+  hasResident: boolean;
+  effortChanged: boolean;
+}) => {
+  const settingsChanged =
+    Boolean(input.persistedModel && input.resolvedModel && input.persistedModel !== input.resolvedModel) ||
+    (input.hasResident && input.effortChanged);
+
+  if (!input.session.claudeSessionId || !settingsChanged) {
+    return false;
+  }
+
+  return input.session.sessionKind !== 'group_member';
 };
 
 const mergeBackgroundTaskRecord = (
@@ -1973,11 +1962,13 @@ const ensureResidentClaudeSession = async (
     removeActiveClaudeRun(state.activeRuns, existing.runId);
   }
 
-  const forkSession = Boolean(
-    session.claudeSessionId &&
-      ((persistedModel && resolvedModel && persistedModel !== resolvedModel) ||
-        (existing && effortChanged)),
-  );
+  const forkSession = shouldForkResidentClaudeSession({
+    session,
+    persistedModel,
+    resolvedModel,
+    hasResident: Boolean(existing),
+    effortChanged,
+  });
   const args = buildClaudePrintArgs({
     model: resolvedModel,
     effort: options?.effort,
@@ -2466,15 +2457,6 @@ export const runClaudePrint = async (
   };
 };
 
-export const emitHarnessState = async (ctx: ClaudeInteractionContext, sessionId: string, harnessState: HarnessSessionState) => {
-  await updateHarnessState(sessionId, () => harnessState);
-  ctx.broadcastEvent({
-    type: 'harness-state',
-    sessionId,
-    state: harnessState,
-  });
-};
-
 export const getAssistantMessageContent = async (sessionId: string, messageId: string) => {
   const session = await findSession(sessionId);
   return session?.messages.find((message) => message.id === messageId)?.content ?? '';
@@ -2531,73 +2513,6 @@ export const runClaudePrintAndWait = async (
     };
   } catch (error) {
     scheduledRun.release();
-    throw error;
-  }
-};
-
-export const runHarnessForSession = async (
-  ctx: ClaudeInteractionContext,
-  state: ClaudeInteractionState,
-  sessionId: string,
-  options?: {
-    maxSprints?: number;
-    maxContractRounds?: number;
-    maxImplementationRounds?: number;
-    model?: string;
-    effort?: 'low' | 'medium' | 'high' | 'max';
-  },
-) => {
-  try {
-    const result = await runHarnessOrchestration({
-      entrySessionId: sessionId,
-      options,
-      bootstrapHarness: bootstrapHarnessFromSession,
-      findSession,
-      onProgress: async (harnessState) => {
-        await emitHarnessState(ctx, sessionId, harnessState);
-      },
-      runRoleTurn: async ({ sessionId: roleSessionId, prompt, model, effort }) => {
-        const session = await findSession(roleSessionId);
-        if (!session) {
-          throw new Error('Harness session not found.');
-        }
-
-        const turn = await runClaudePrintAndWait(ctx, state, roleSessionId, prompt, [], session, {
-          references: session.contextReferences ?? [],
-          model,
-          effort,
-        });
-
-        return {
-          content: turn.content,
-        };
-      },
-    });
-
-    return {
-      ...result,
-      projects: await getProjects(),
-    };
-  } catch (error) {
-    // Reset harness state to failed so the UI is not stuck at 'running'.
-    const errorMessage = error instanceof Error ? error.message : 'Harness orchestration failed.';
-    await emitHarnessState(ctx, sessionId, {
-      plannerSessionId: '',
-      generatorSessionId: '',
-      evaluatorSessionId: '',
-      artifactDir: '',
-      status: 'failed',
-      currentStage: 'error',
-      currentSprint: 0,
-      currentRound: 0,
-      completedSprints: 0,
-      maxSprints: 0,
-      completedTurns: 0,
-      totalTurns: 0,
-      lastDecision: 'ERROR',
-      summary: errorMessage,
-      updatedAt: Date.now(),
-    });
     throw error;
   }
 };

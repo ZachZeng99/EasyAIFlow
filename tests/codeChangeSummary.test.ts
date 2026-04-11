@@ -80,3 +80,16 @@ run('extractCodeChangeSummaries keeps recorded diff payloads for historical disp
 
   assert.deepEqual(summaries[0]?.recordedDiff, recordedDiff);
 });
+
+run('extractCodeChangeSummaries recognizes namespaced apply_patch tool traces', () => {
+  const summaries = extractCodeChangeSummaries([
+    makeTrace({
+      title: 'functions.apply_patch',
+      content: 'X:\\AITool\\EasyAIFlow\\src\\components\\ChatThread.tsx\nThe file has been patched successfully.',
+    }),
+  ]);
+
+  assert.equal(summaries.length, 1);
+  assert.equal(summaries[0]?.operationLabel, 'Patched');
+  assert.equal(summaries[0]?.summary, 'Patched ChatThread.tsx');
+});

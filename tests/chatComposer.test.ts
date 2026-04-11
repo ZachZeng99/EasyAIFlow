@@ -116,3 +116,40 @@ run('ChatComposer renders an inline notice when the host provides one', () => {
   assert.match(html, /Thinking changed to max/);
   assert.match(html, /session restarts/);
 });
+
+run('ChatComposer shows mention quick options in group chats when the user types @', () => {
+  const html = renderToStaticMarkup(
+    createElement(ChatComposer, {
+      draft: '@cl',
+      tokenUsage,
+      sessionModel: 'opus[1m]',
+      contextReferences: [],
+      slashCommands: [],
+      mentionOptions: [
+        { value: 'claude', label: 'Claude' },
+        { value: 'codex', label: 'Codex' },
+        { value: 'all', label: 'Everyone' },
+      ],
+      attachments: [],
+      isSending: false,
+      isResponding: false,
+      model: 'opus[1m]',
+      effort: 'medium',
+      isGroupSession: true,
+      onDraftChange: () => undefined,
+      onInsertDroppedPaths: () => undefined,
+      onAttachFiles: () => undefined,
+      onRemoveAttachment: () => undefined,
+      onModelChange: () => undefined,
+      onEffortChange: () => undefined,
+      onUpdateContextReferenceMode: () => undefined,
+      onRemoveContextReference: () => undefined,
+      onSend: () => undefined,
+      onStop: () => undefined,
+    }),
+  );
+
+  assert.match(html, /@claude/);
+  assert.match(html, /Claude/);
+  assert.doesNotMatch(html, /<button[^>]*><strong>@codex/);
+});

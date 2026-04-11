@@ -1,5 +1,9 @@
 import type { DreamRecord, ProjectRecord, SessionRecord } from '../src/data/types.js';
+import { normalizeSessionProvider } from '../src/data/sessionProvider.js';
 import { pruneTemporaryImportedDuplicates } from './importedSessionCleanup.js';
+
+const buildSessionTitleKey = (session: SessionRecord) =>
+  `${normalizeSessionProvider(session.provider)}::${session.title.trim()}`;
 
 const choosePreferredSession = (current: SessionRecord | undefined, candidate: SessionRecord, dream: DreamRecord) => {
   if (!current) {
@@ -27,7 +31,11 @@ export const cleanupProjectSessions = (project: ProjectRecord) => {
     dream.sessions.forEach((session) => {
       preferredById.set(session.id, choosePreferredSession(preferredById.get(session.id) as SessionRecord | undefined, session as SessionRecord, dream));
 
-      const titleKey = session.title.trim();
+      if ((session as SessionRecord).sessionKind && (session as SessionRecord).sessionKind !== 'standard') {
+        return;
+      }
+
+      const titleKey = buildSessionTitleKey(session as SessionRecord);
       const current = preferredByTitle.get(titleKey);
       const candidate = session as SessionRecord;
       const currentTemporary = current?.dreamName === 'Temporary';
@@ -49,17 +57,21 @@ export const cleanupProjectSessions = (project: ProjectRecord) => {
     const filtered = dream.sessions
       .filter((session) => preferredById.get(session.id) === session)
       .filter((session) => {
-        const preferred = preferredByTitle.get(session.title.trim());
+        if ((session as SessionRecord).sessionKind && (session as SessionRecord).sessionKind !== 'standard') {
+          return true;
+        }
+
+        const preferred = preferredByTitle.get(buildSessionTitleKey(session as SessionRecord));
         if (!preferred) {
           return true;
         }
 
-        if (session.title.trim() !== preferred.title.trim()) {
+        if (buildSessionTitleKey(session as SessionRecord) !== buildSessionTitleKey(preferred)) {
           return true;
         }
 
         if (session.dreamName === preferred.dreamName) {
-          return session.id === preferred.id || session.title.trim() !== preferred.title.trim();
+          return session.id === preferred.id || buildSessionTitleKey(session as SessionRecord) !== buildSessionTitleKey(preferred);
         }
 
         return session.dreamName !== 'Temporary';

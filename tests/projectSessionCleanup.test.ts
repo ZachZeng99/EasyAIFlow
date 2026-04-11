@@ -18,6 +18,7 @@ const makeSession = (id: string, title: string, used = 0, updatedAt = 1): Sessio
   preview: title,
   timeLabel: 'Imported',
   updatedAt,
+  provider: 'claude',
   model: 'opus[1m]',
   workspace: 'X:\\PBZ\\ProjectPBZ',
   projectId: 'p',
@@ -115,4 +116,35 @@ run('cleanupProjectSessions prefers non-temporary session when the same title ex
 
   assert.equal(cleaned.dreams[0].sessions.length, 0);
   assert.deepEqual(cleaned.dreams[1].sessions.map((session) => session.id), ['memory-total']);
+});
+
+run('cleanupProjectSessions keeps same-title Claude and Codex sessions as separate entries', () => {
+  const project: ProjectRecord = {
+    id: 'p',
+    name: 'ProjectPBZ',
+    rootPath: 'X:\\PBZ\\ProjectPBZ',
+    dreams: [
+      {
+        id: 'tmp',
+        name: 'Temporary',
+        isTemporary: true,
+        sessions: [
+          { ...makeSession('claude-group', '[Group] Room', 10, 30), dreamId: 'tmp', dreamName: 'Temporary' },
+          {
+            ...makeSession('codex-group', '[Group] Room', 11, 31),
+            provider: 'codex',
+            codexThreadId: 'codex-group-thread',
+            claudeSessionId: undefined,
+            model: 'gpt-5.4-mini',
+            dreamId: 'tmp',
+            dreamName: 'Temporary',
+          },
+        ],
+      },
+    ],
+  };
+
+  const cleaned = cleanupProjectSessions(project);
+
+  assert.deepEqual(cleaned.dreams[0].sessions.map((session) => session.id), ['claude-group', 'codex-group']);
 });

@@ -6,8 +6,8 @@ import { bridge } from './bridge';
 import { ManageDialog } from './components/ManageDialog';
 import { ChatThread } from './components/ChatThread';
 import { ContextPanel } from './components/ContextPanel';
-import { HarnessDashboard } from './components/HarnessDashboard';
 import { buildOptimisticSendState } from './data/optimisticSend';
+import { getLastGroupResponder } from './data/groupChat';
 import {
   buildAskUserQuestionFollowUpPrompt,
   buildAskUserQuestionResponsePayload,
@@ -35,7 +35,6 @@ import {
   getProviderDisplayName,
   normalizeSessionProvider,
   providerSupportsBtw,
-  providerSupportsHarness,
 } from './data/sessionProvider';
 import type {
   BtwResponse,
@@ -43,6 +42,7 @@ import type {
   ContextReference,
   ContextReferenceMode,
   DiffPayload,
+  GroupParticipant,
   GitSnapshot,
   PendingAttachment,
   ProjectRecord,
@@ -58,7 +58,7 @@ const flattenSessions = (projects: ProjectRecord[]) =>
   );
 
 const flattenVisibleSessions = (projects: ProjectRecord[]) =>
-  flattenSessions(projects).filter((session) => !session.hidden && session.sessionKind !== 'harness_role');
+  flattenSessions(projects).filter((session) => !session.hidden);
 
 const isTerminalBackgroundTaskStatus = (
   status: 'pending' | 'running' | 'completed' | 'failed' | 'stopped',
@@ -149,7 +149,7 @@ const mergeProjectSnapshots = (currentProjects: ProjectRecord[], nextProjects: P
 const applyClaudeEvent = (projects: ProjectRecord[], event: ClaudeStreamEvent) =>
   updateSessionInProjects(projects, event.sessionId, (session) => {
     const updatedAt = Date.now();
-    const providerName = getProviderDisplayName(session.provider);
+    const providerName = session.sessionKind === 'group' ? 'Group room' : getProviderDisplayName(session.provider);
 
     if (
       event.type === 'permission-request' ||
@@ -159,16 +159,6 @@ const applyClaudeEvent = (projects: ProjectRecord[], event: ClaudeStreamEvent) =
       event.type === 'runtime-state'
     ) {
       return session;
-    }
-
-    if (event.type === 'harness-state') {
-      return {
-        ...session,
-        harnessState: event.state,
-        preview: event.state.summary ?? session.preview,
-        timeLabel: 'Just now',
-        updatedAt,
-      };
     }
 
     if (event.type === 'trace') {
@@ -243,13 +233,19 @@ const applyClaudeEvent = (projects: ProjectRecord[], event: ClaudeStreamEvent) =
       };
     }
 
+    if (event.type === 'error' && session.sessionKind === 'group' && target.speakerLabel) {
+      target.title = `${target.speakerLabel} error`;
+    }
     target.content = event.type === 'error' ? event.error : target.content;
     target.status = 'error';
     messages[targetIndex] = target;
     return {
       ...session,
       messages,
-      preview: `${providerName} error`,
+      preview:
+        session.sessionKind === 'group' && target.speakerLabel
+          ? `${target.speakerLabel} error`
+          : `${providerName} error`,
       timeLabel: 'Just now',
       updatedAt,
     };
@@ -277,6 +273,8 @@ const referenceTokenPattern = /\[\[(session|streamwork):([^[\]|]+?)(?:\|(summary
 
 const makeContextReferenceId = () =>
   globalThis.crypto?.randomUUID?.() ?? `ctx-${Math.random().toString(36).slice(2, 10)}`;
+
+const hasGroupMentions = (prompt: string) => /(^|\s)@(claude|codex|all)\b/i.test(prompt);
 
 const getContextReferenceKey = (reference: ContextReference) =>
   reference.kind === 'session'
@@ -424,8 +422,6 @@ export default function App() {
   const [isResizingPane, setIsResizingPane] = useState(false);
   const [leftPaneWidth, setLeftPaneWidth] = useState(338);
   const [isDialogBusy, setIsDialogBusy] = useState(false);
-  const [isBootstrappingHarness, setIsBootstrappingHarness] = useState(false);
-  const [isRunningHarness, setIsRunningHarness] = useState(false);
   const [uiError, setUiError] = useState<string | null>(null);
   const [dialogState, setDialogState] = useState<DialogState | null>(null);
   const [sessionInteractions, setSessionInteractions] = useState<Map<string, SessionInteractionState>>(new Map());
@@ -536,31 +532,11 @@ export default function App() {
     }
   }, [composerNotice, effort, selectedInteractionState?.runtime?.appliedEffort]);
   const getSessionProvider = useCallback(
-    (session: Pick<SessionRecord, 'provider'> | undefined) => normalizeSessionProvider(session?.provider),
+    (session: Pick<SessionRecord, 'provider' | 'sessionKind'> | undefined) =>
+      session?.sessionKind === 'group' ? undefined : normalizeSessionProvider(session?.provider),
     [],
   );
   const activeSelectedSessionId = selectedSession?.id ?? selectedSessionId;
-  const harnessPlannerSession = useMemo(
-    () =>
-      selectedSession?.sessionKind === 'harness' && selectedSession.harnessState
-        ? allSessions.find((session) => session.id === selectedSession.harnessState?.plannerSessionId)
-        : undefined,
-    [allSessions, selectedSession],
-  );
-  const harnessGeneratorSession = useMemo(
-    () =>
-      selectedSession?.sessionKind === 'harness' && selectedSession.harnessState
-        ? allSessions.find((session) => session.id === selectedSession.harnessState?.generatorSessionId)
-        : undefined,
-    [allSessions, selectedSession],
-  );
-  const harnessEvaluatorSession = useMemo(
-    () =>
-      selectedSession?.sessionKind === 'harness' && selectedSession.harnessState
-        ? allSessions.find((session) => session.id === selectedSession.harnessState?.evaluatorSessionId)
-        : undefined,
-    [allSessions, selectedSession],
-  );
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedSession?.projectId) ?? projects[0],
     [projects, selectedSession],
@@ -584,32 +560,58 @@ export default function App() {
           sessionInteractions.get(selectedSession?.id ?? '')?.runtime?.phase === 'awaiting_reply' ||
           sessionInteractions.get(selectedSession?.id ?? '')?.runtime?.phase === 'terminating'
         : selectedSession
-          ? selectedSession.sessionKind === 'harness'
-            ? selectedSession.harnessState?.status === 'running'
-            : isAssistantPendingStatus(findLastAssistantMessage(selectedSession)?.status)
+          ? isAssistantPendingStatus(findLastAssistantMessage(selectedSession)?.status)
           : false,
     [selectedSession, sessionInteractions],
   );
+  const selectedGroupParticipants = useMemo<GroupParticipant[]>(
+    () =>
+      selectedSession?.sessionKind === 'group' && selectedSession.group?.kind === 'room'
+        ? selectedSession.group.participants.filter((participant) => participant.enabled)
+        : [],
+    [selectedSession],
+  );
+  const groupMentionOptions = useMemo(
+    () =>
+      selectedGroupParticipants.length > 0
+        ? [
+            ...selectedGroupParticipants.map((participant) => ({
+              value: participant.id,
+              label: participant.label,
+            })),
+            {
+              value: 'all',
+              label: 'Everyone',
+            },
+          ]
+        : [],
+    [selectedGroupParticipants],
+  );
+  const groupComposerNotice = useMemo(() => {
+    if (selectedSession?.sessionKind !== 'group') {
+      return composerNotice;
+    }
+
+    const lastResponderId = getLastGroupResponder(
+      selectedSession.messages ?? [],
+      selectedGroupParticipants,
+    );
+    const lastResponder = selectedGroupParticipants.find(
+      (participant) => participant.id === lastResponderId,
+    );
+
+    if (lastResponder) {
+      return `No @ defaults to ${lastResponder.label}. Type @ for quick options, or use @all.`;
+    }
+
+    return 'Type @ for quick options, or start with @claude, @codex, or @all.';
+  }, [composerNotice, selectedGroupParticipants, selectedSession]);
   const sessionIndicators = useMemo<Record<string, SessionIndicator>>(
     () =>
       Object.fromEntries(
         visibleSessions.map((session) => {
-          const relatedRoleSessions =
-            session.sessionKind === 'harness' && session.harnessState
-              ? allSessions.filter((candidate) =>
-                  [
-                    session.harnessState?.plannerSessionId,
-                    session.harnessState?.generatorSessionId,
-                    session.harnessState?.evaluatorSessionId,
-                  ].includes(candidate.id),
-                )
-              : [];
           const lastAssistant = findLastAssistantMessage(session);
-          const isResponding =
-            session.sessionKind === 'harness'
-              ? session.harnessState?.status === 'running' ||
-                relatedRoleSessions.some((candidate) => isAssistantPendingStatus(findLastAssistantMessage(candidate)?.status))
-              : isAssistantPendingStatus(lastAssistant?.status);
+          const isResponding = isAssistantPendingStatus(lastAssistant?.status);
           const hasUnread =
             session.id !== activeSelectedSessionId && unreadSessionIds.includes(session.id);
           const interaction = sessionInteractions.get(session.id);
@@ -668,8 +670,9 @@ export default function App() {
     ),
   );
   const canDisconnectSelectedSession = Boolean(selectedInteraction?.runtime?.processActive);
+  const isSelectedGroupSession = selectedSession?.sessionKind === 'group';
   const selectedProvider = getSessionProvider(selectedSession);
-  const selectedProviderName = getProviderDisplayName(selectedProvider);
+  const selectedProviderName = isSelectedGroupSession ? 'Group room' : getProviderDisplayName(selectedProvider);
 
   const getOriginalFilePath = (file: File) => {
     try {
@@ -869,7 +872,7 @@ export default function App() {
             path: event.targetPath ?? event.command ?? event.description ?? event.toolName,
             sensitive: event.sensitive,
             requestId: event.requestId,
-            sessionId: event.sessionId,
+            sessionId: event.sourceSessionId ?? event.sessionId,
           },
         }));
       }
@@ -877,7 +880,7 @@ export default function App() {
         updateSessionInteraction(event.sessionId, (state) => ({
           ...state,
           askUserQuestion: {
-            sessionId: event.sessionId,
+            sessionId: event.sourceSessionId ?? event.sessionId,
             toolUseId: event.toolUseId,
             questions: event.questions,
           },
@@ -888,7 +891,7 @@ export default function App() {
         updateSessionInteraction(event.sessionId, (state) => ({
           ...state,
           planModeRequest: {
-            sessionId: event.sessionId,
+            sessionId: event.sourceSessionId ?? event.sessionId,
             request: event.request,
           },
         }));
@@ -1036,7 +1039,7 @@ export default function App() {
       return;
     }
 
-    if (!providerSupportsBtw(selectedSession.provider)) {
+    if (selectedSession.sessionKind === 'group' || !providerSupportsBtw(selectedSession.provider)) {
       setSlashCommands([]);
       return;
     }
@@ -1069,11 +1072,6 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedSession) {
-      return;
-    }
-
-    // Harness sessions manage their own orchestration flow; skip stale plan trace detection.
-    if (selectedSession.sessionKind === 'harness') {
       return;
     }
 
@@ -1250,7 +1248,11 @@ export default function App() {
       return;
     }
 
-    if (providerSupportsBtw(selectedSession.provider) && prompt.startsWith('/btw')) {
+    if (
+      selectedSession.sessionKind !== 'group' &&
+      providerSupportsBtw(selectedSession.provider) &&
+      prompt.startsWith('/btw')
+    ) {
       const btwPrompt = prompt.replace(/^\/btw\b/, '').trim();
       setDraft('');
       clearAttachments();
@@ -1285,18 +1287,25 @@ export default function App() {
       dataUrl: attachment.dataUrl,
     }));
     let requestedModel = resolveRequestedModelArg(model, modelSelectionSource);
+    const requestsGroupMode =
+      selectedSession.sessionKind === 'group' || hasGroupMentions(outgoingPrompt);
 
-    const optimisticSend = buildOptimisticSendState({
-      projects,
-      sessionId: selectedSession.id,
-      prompt: outgoingPrompt,
-      attachments: pendingAttachments,
-      references: displayContextReferences,
-      queued: isSelectedSessionResponding,
-      provider: selectedSession.provider,
-    });
+    const optimisticSend =
+      requestsGroupMode
+        ? null
+        : buildOptimisticSendState({
+            projects,
+            sessionId: selectedSession.id,
+            prompt: outgoingPrompt,
+            attachments: pendingAttachments,
+            references: displayContextReferences,
+            queued: isSelectedSessionResponding,
+            provider: selectedSession.provider,
+          });
 
-    setProjects(optimisticSend.projects);
+    if (optimisticSend) {
+      setProjects(optimisticSend.projects);
+    }
 
     try {
       const result = await bridge.sendMessage({
@@ -1314,26 +1323,31 @@ export default function App() {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to send message.';
-      const providerName = getProviderDisplayName(selectedSession.provider);
+      const providerName =
+        selectedSession.sessionKind === 'group'
+          ? 'Group room'
+          : getProviderDisplayName(selectedSession.provider);
       setUiError(message);
-      setProjects((current) =>
-        updateSessionInProjects(current, selectedSession.id, (session) => ({
-          ...session,
-          preview: `${providerName} error`,
-          timeLabel: 'Just now',
-          updatedAt: Date.now(),
-          messages: (session.messages ?? []).map((entry) =>
-            entry.id === optimisticSend.assistantMessageId
-              ? {
-                  ...entry,
-                  title: `${providerName} error`,
-                  content: message,
-                  status: 'error',
-                }
-              : entry,
-          ),
-        })),
-      );
+      if (optimisticSend) {
+        setProjects((current) =>
+          updateSessionInProjects(current, selectedSession.id, (session) => ({
+            ...session,
+            preview: `${providerName} error`,
+            timeLabel: 'Just now',
+            updatedAt: Date.now(),
+            messages: (session.messages ?? []).map((entry) =>
+              entry.id === optimisticSend.assistantMessageId
+                ? {
+                    ...entry,
+                    title: `${providerName} error`,
+                    content: message,
+                    status: 'error',
+                  }
+                : entry,
+            ),
+          })),
+        );
+      }
       return;
     }
 
@@ -1381,7 +1395,7 @@ export default function App() {
       return;
     }
 
-    if (!providerSupportsBtw(selectedSession.provider)) {
+    if (selectedSession.sessionKind === 'group' || !providerSupportsBtw(selectedSession.provider)) {
       setUiError('BTW is only available for Claude sessions.');
       return;
     }
@@ -1737,51 +1751,6 @@ export default function App() {
     [selectedSession?.workspace],
   );
 
-  const handleBootstrapHarness = async () => {
-    if (!selectedSession) {
-      return;
-    }
-
-    setIsBootstrappingHarness(true);
-    try {
-      const result = await bridge.bootstrapHarness({
-        sessionId: selectedSession.id,
-      });
-      replaceProjects(result.projects);
-      setSelectedSessionId(result.rootSessionId);
-      setUiError(null);
-    } catch (error) {
-      setUiError(error instanceof Error ? error.message : 'Failed to bootstrap harness.');
-    } finally {
-      setIsBootstrappingHarness(false);
-    }
-  };
-
-  const handleRunHarness = async () => {
-    if (!selectedSession) {
-      return;
-    }
-
-    setIsRunningHarness(true);
-    try {
-      const result = await bridge.runHarness({
-        sessionId: selectedSession.id,
-        maxSprints: 3,
-        maxContractRounds: 2,
-        maxImplementationRounds: 2,
-        model: resolveRequestedModelArg(model, modelSelectionSource),
-        effort,
-      });
-      replaceProjects(result.projects);
-      setSelectedSessionId(result.rootSessionId);
-      setUiError(null);
-    } catch (error) {
-      setUiError(error instanceof Error ? error.message : 'Failed to run harness.');
-    } finally {
-      setIsRunningHarness(false);
-    }
-  };
-
   const handleCloseProject = async (projectId: string) => {
     try {
       const result = await bridge.closeProject({ projectId });
@@ -1840,7 +1809,9 @@ export default function App() {
     }
 
     const name = dialogState.fields.name?.trim() ?? '';
-    const provider = normalizeSessionProvider(dialogState.fields.provider);
+    const providerValue = dialogState.fields.provider?.trim() ?? 'claude';
+    const sessionKind = dialogState.kind === 'create-session' && providerValue === 'group' ? 'group' : 'standard';
+    const provider = sessionKind === 'group' ? undefined : normalizeSessionProvider(providerValue);
     const rootPath = dialogState.fields.rootPath?.trim() ?? '';
     const requiresName =
       dialogState.kind === 'create-streamwork' || dialogState.kind === 'create-session';
@@ -1876,6 +1847,7 @@ export default function App() {
           name,
           includeStreamworkSummary: Boolean(dialogState.toggles.includeStreamworkSummary),
           provider,
+          sessionKind,
         });
         replaceProjects(result.projects);
         setSelectedSessionId(result.session.id);
@@ -1943,11 +1915,12 @@ export default function App() {
           return {
             key,
             value,
-            label: 'Provider',
+            label: 'Mode',
             type: 'select' as const,
             options: [
               { label: 'Claude', value: 'claude' },
               { label: 'Codex', value: 'codex' },
+              { label: 'Group Chat', value: 'group' },
             ],
           };
         }
@@ -1973,20 +1946,6 @@ export default function App() {
       : [];
 
   const hasActiveSession = Boolean(selectedSession && selectedProject && selectedStreamwork);
-  const canBootstrapHarness = Boolean(
-    selectedSession &&
-      providerSupportsHarness(selectedSession.provider) &&
-      selectedSession.sessionKind !== 'harness' &&
-      selectedSession.sessionKind !== 'harness_role' &&
-      (selectedSession.messages ?? []).some(
-        (message) => (message.role === 'user' || message.role === 'assistant') && message.content.trim(),
-      ),
-  );
-  const canRunHarness = Boolean(
-    selectedSession?.sessionKind === 'harness' &&
-      providerSupportsHarness(selectedSession.provider) &&
-      selectedSession.harnessState,
-  );
   const shellStyle = isMobileLayout
     ? undefined
     : { gridTemplateColumns: `${leftPaneWidth}px 8px minmax(0, 1fr) 340px` };
@@ -2075,118 +2034,40 @@ export default function App() {
           {!isMobileLayout || mobilePanel === 'session' ? (
             <main className="conversation-layout">
               {uiError ? <div className="ui-error-banner">{uiError}</div> : null}
-              {selectedSession.sessionKind === 'harness' ? (
-                <HarnessDashboard
-                  session={selectedSession}
-                  plannerSession={harnessPlannerSession}
-                  generatorSession={harnessGeneratorSession}
-                  evaluatorSession={harnessEvaluatorSession}
-                  roleInteractions={sessionInteractions}
-                  onRunHarness={() => {
-                    void handleRunHarness();
-                  }}
-                  canRunHarness={canRunHarness}
-                  isRunningHarness={isRunningHarness}
-                  model={model}
-                  effort={effort}
-                  slashCommands={slashCommands}
-                  isWebRuntime={isWebRuntime}
-                  onRequestDiff={handleRequestDiff}
-                  onRequestPermission={(sid, targetPath, sensitive) =>
-                    updateSessionInteraction(sid, (s) => ({
-                      ...s,
-                      permission: { path: targetPath, sensitive, sessionId: sid },
-                    }))
-                  }
-                  onSendRoleMessage={(sid, prompt) => {
-                    void (async () => {
-                      try {
-                        const roleSession = allSessions.find((s) => s.id === sid);
-                        if (!roleSession) {
-                          return;
-                        }
-                        updateSessionInteraction(sid, (state) => clearSessionBackgroundTasks(state));
-                        const result = await bridge.sendMessage({
-                          sessionId: sid,
-                          prompt,
-                          attachments: [],
-                          session: roleSession,
-                          references: roleSession.contextReferences ?? [],
-                          model: resolveRequestedModelArg(model, modelSelectionSource),
-                          effort,
-                        });
-                        if (result?.projects) {
-                          replaceProjects(result.projects);
-                        }
-                      } catch (error) {
-                        setUiError(error instanceof Error ? error.message : 'Failed to send message.');
-                      }
-                    })();
-                  }}
-                  onStopRole={(sid) => {
-                    void (async () => {
-                      try {
-                        const result = await bridge.stopSessionRun({ sessionId: sid });
-                        if (result?.projects) {
-                          replaceProjects(result.projects);
-                        }
-                      } catch (error) {
-                        setUiError(error instanceof Error ? error.message : 'Failed to stop session.');
-                      }
-                    })();
-                  }}
-                  onDisconnectRole={(sid) => {
-                    void handleDisconnect(sid);
-                  }}
-                  onGrantPermission={(sid) => {
-                    void handleGrantPermission(sid);
-                  }}
-                  onDenyPermission={(sid) => {
-                    void handleCancelPermission(sid);
-                  }}
-                  onSubmitAskUserQuestion={(sid, d) => {
-                    void handleSubmitAskUserQuestion(sid, d);
-                  }}
-                  onSubmitPlanMode={(sid, payload) => {
-                    void handleSubmitPlanMode(sid, payload);
-                  }}
-                />
-              ) : (
-                <ChatThread
-                  session={selectedSession}
-                  messages={selectedSession.messages ?? []}
-                  isLoadingHistory={selectedSession.messagesLoaded === false}
-                  isCliOnline={canDisconnectSelectedSession}
-                  onDisconnect={() => {
-                    void handleDisconnect(selectedSession.id);
-                  }}
-                  onRequestDiff={handleRequestDiff}
-                  onRequestPermission={(request) =>
-                    updateSessionInteraction(selectedSession.id, (state) => ({
-                      ...state,
-                      permission: {
-                        path: request.targetPath,
-                        sensitive: request.sensitive,
-                        sessionId: selectedSession.id,
-                      },
-                    }))
-                  }
-                  interaction={sessionInteractions.get(selectedSession.id)}
-                  onGrantPermission={() => {
-                    void handleGrantPermission(selectedSession.id);
-                  }}
-                  onDenyPermission={() => {
-                    void handleCancelPermission(selectedSession.id);
-                  }}
-                  onSubmitAskUserQuestion={(draft) => {
-                    void handleSubmitAskUserQuestion(selectedSession.id, draft);
-                  }}
-                  onSubmitPlanMode={(payload) => {
-                    void handleSubmitPlanMode(selectedSession.id, payload);
-                  }}
-                />
-              )}
-              {selectedSession.sessionKind !== 'harness' && providerSupportsBtw(selectedSession.provider) ? (
+              <ChatThread
+                session={selectedSession}
+                messages={selectedSession.messages ?? []}
+                isLoadingHistory={selectedSession.messagesLoaded === false}
+                isCliOnline={canDisconnectSelectedSession}
+                onDisconnect={() => {
+                  void handleDisconnect(selectedSession.id);
+                }}
+                onRequestDiff={handleRequestDiff}
+                onRequestPermission={(request) =>
+                  updateSessionInteraction(selectedSession.id, (state) => ({
+                    ...state,
+                    permission: {
+                      path: request.targetPath,
+                      sensitive: request.sensitive,
+                      sessionId: selectedSession.id,
+                    },
+                  }))
+                }
+                interaction={sessionInteractions.get(selectedSession.id)}
+                onGrantPermission={() => {
+                  void handleGrantPermission(selectedSession.id);
+                }}
+                onDenyPermission={() => {
+                  void handleCancelPermission(selectedSession.id);
+                }}
+                onSubmitAskUserQuestion={(draft) => {
+                  void handleSubmitAskUserQuestion(selectedSession.id, draft);
+                }}
+                onSubmitPlanMode={(payload) => {
+                  void handleSubmitPlanMode(selectedSession.id, payload);
+                }}
+              />
+              {selectedSession.sessionKind !== 'group' && providerSupportsBtw(selectedSession.provider) ? (
                 <BtwPanel
                   isOpen={btwState.isOpen}
                   draft={btwState.draft}
@@ -2208,64 +2089,68 @@ export default function App() {
                   }}
                 />
               ) : null}
-              {selectedSession.sessionKind !== 'harness' ? (
-                <ChatComposer
-                  provider={selectedProvider}
-                  draft={draft}
-                  tokenUsage={selectedSession.tokenUsage}
-                  sessionModel={selectedSession.model}
-                  contextReferences={displayContextReferences}
-                  slashCommands={slashCommands}
-                  attachments={attachments}
-                  isSending={isSending}
-                  isResponding={isSelectedSessionResponding}
-                  allowSendWhileResponding={hasActiveSelectedBackgroundTasks}
-                  model={model}
-                  effort={effort}
-                  appliedEffort={selectedInteraction?.runtime?.appliedEffort}
-                  notice={composerNotice}
-                  supportsPathDrop={!isWebRuntime}
-                  onDraftChange={handleDraftChange}
-                  onModelChange={(value) => {
-                    setModel(value);
-                    setModelSelectionSource('explicit');
-                  }}
-                  onEffortChange={(value) => {
-                    setEffort(value);
-                    setComposerNotice(
-                      `Thinking changed to ${value}. Claude effort takes effect after the session restarts.`,
-                    );
-                  }}
-                  onUpdateContextReferenceMode={(referenceId, mode) => {
-                    handleUpdateContextReferences(
-                      displayContextReferences.map((reference) =>
-                        reference.id === referenceId
-                          ? {
-                              ...reference,
-                              mode,
-                            }
-                          : reference,
-                      ),
-                    );
-                  }}
-                  onRemoveContextReference={(referenceId) => {
-                    handleUpdateContextReferences(
-                      displayContextReferences.filter((reference) => reference.id !== referenceId),
-                    );
-                  }}
-                  onInsertDroppedPaths={handleInsertDroppedPaths}
-                  onAttachFiles={(files) => {
-                    void handleAttachFiles(files);
-                  }}
-                  onRemoveAttachment={handleRemoveAttachment}
-                  onSend={() => {
-                    void handleSend();
-                  }}
-                  onStop={() => {
-                    void handleStop();
-                  }}
-                />
-              ) : null}
+              <ChatComposer
+                provider={selectedProvider}
+                draft={draft}
+                tokenUsage={selectedSession.tokenUsage}
+                sessionModel={selectedSession.model}
+                contextReferences={displayContextReferences}
+                slashCommands={slashCommands}
+                mentionOptions={groupMentionOptions}
+                attachments={attachments}
+                isSending={isSending}
+                isResponding={isSelectedSessionResponding}
+                allowSendWhileResponding={hasActiveSelectedBackgroundTasks}
+                model={model}
+                effort={effort}
+                appliedEffort={selectedInteraction?.runtime?.appliedEffort}
+                notice={
+                  isSelectedGroupSession
+                    ? groupComposerNotice
+                    : composerNotice
+                }
+                isGroupSession={isSelectedGroupSession}
+                supportsPathDrop={!isWebRuntime}
+                onDraftChange={handleDraftChange}
+                onModelChange={(value) => {
+                  setModel(value);
+                  setModelSelectionSource('explicit');
+                }}
+                onEffortChange={(value) => {
+                  setEffort(value);
+                  setComposerNotice(
+                    `Thinking changed to ${value}. Claude effort takes effect after the session restarts.`,
+                  );
+                }}
+                onUpdateContextReferenceMode={(referenceId, mode) => {
+                  handleUpdateContextReferences(
+                    displayContextReferences.map((reference) =>
+                      reference.id === referenceId
+                        ? {
+                            ...reference,
+                            mode,
+                          }
+                        : reference,
+                    ),
+                  );
+                }}
+                onRemoveContextReference={(referenceId) => {
+                  handleUpdateContextReferences(
+                    displayContextReferences.filter((reference) => reference.id !== referenceId),
+                  );
+                }}
+                onInsertDroppedPaths={handleInsertDroppedPaths}
+                onAttachFiles={(files) => {
+                  void handleAttachFiles(files);
+                }}
+                onRemoveAttachment={handleRemoveAttachment}
+                onSend={() => {
+                  void handleSend();
+                }}
+                onStop={() => {
+                  void handleStop();
+                }}
+              />
             </main>
           ) : null}
 
@@ -2278,16 +2163,6 @@ export default function App() {
               appVersion={appVersion}
               gitSnapshot={gitSnapshot}
               onRequestDiff={handleRequestDiff}
-              onBootstrapHarness={() => {
-                void handleBootstrapHarness();
-              }}
-              onRunHarness={() => {
-                void handleRunHarness();
-              }}
-              canBootstrapHarness={canBootstrapHarness}
-              canRunHarness={canRunHarness}
-              isBootstrappingHarness={isBootstrappingHarness}
-              isRunningHarness={isRunningHarness}
             />
           ) : null}
         </>

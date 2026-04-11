@@ -13,6 +13,15 @@ const toDisplayPath = (filePath: string) => path.normalize(filePath).replace(/\\
 
 const sliceContent = (value: string) => value.slice(0, PREVIEW_CHAR_LIMIT);
 
+const normalizeToolName = (toolName: string) =>
+  toolName.trim().startsWith('functions.') ? toolName.trim().slice('functions.'.length) : toolName.trim();
+
+const extractPatchFilePath = (patch: string) => {
+  const normalized = normalizeText(patch);
+  const match = normalized.match(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/m);
+  return match?.[1]?.trim() ?? '';
+};
+
 const buildSyntheticDiff = (filePath: string, before: string, after: string) => {
   const displayPath = toDisplayPath(filePath);
 
@@ -57,13 +66,19 @@ export const buildRecordedCodeChangeDiff = (toolName: string, input: unknown): D
     return undefined;
   }
 
+  const normalizedToolName = normalizeToolName(toolName);
   const record = input as Record<string, unknown>;
-  const filePath = getString(record.file_path).trim();
+  const patch = getString(record.patch) || getString(record.content);
+  const filePath =
+    getString(record.file_path).trim() ||
+    ((normalizedToolName === 'ApplyPatch' || normalizedToolName === 'apply_patch') && patch
+      ? extractPatchFilePath(patch)
+      : '');
   if (!filePath) {
     return undefined;
   }
 
-  if (toolName === 'Edit') {
+  if (normalizedToolName === 'Edit') {
     const before = getString(record.old_string);
     const after = getString(record.new_string);
     if (!before && !after) {
@@ -77,7 +92,7 @@ export const buildRecordedCodeChangeDiff = (toolName: string, input: unknown): D
     };
   }
 
-  if (toolName === 'MultiEdit' && Array.isArray(record.edits)) {
+  if (normalizedToolName === 'MultiEdit' && Array.isArray(record.edits)) {
     const content = buildMultiEditDiff(
       filePath,
       record.edits as Array<{ old_string?: unknown; new_string?: unknown }>,
@@ -93,8 +108,7 @@ export const buildRecordedCodeChangeDiff = (toolName: string, input: unknown): D
     };
   }
 
-  if (toolName === 'ApplyPatch' || toolName === 'apply_patch') {
-    const patch = getString(record.patch) || getString(record.content);
+  if (normalizedToolName === 'ApplyPatch' || normalizedToolName === 'apply_patch') {
     if (!patch.trim()) {
       return undefined;
     }
@@ -106,7 +120,7 @@ export const buildRecordedCodeChangeDiff = (toolName: string, input: unknown): D
     };
   }
 
-  if (toolName === 'Write') {
+  if (normalizedToolName === 'Write') {
     const content = getString(record.content);
     if (!content) {
       return undefined;

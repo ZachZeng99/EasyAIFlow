@@ -17,8 +17,5 @@ export const getDefaultPreviewForProvider = (value: SessionProvider | string | u
     ? 'Start a new Codex conversation.'
     : 'Start a new Claude conversation.';
 
-export const providerSupportsHarness = (value: SessionProvider | string | undefined) =>
-  normalizeSessionProvider(value) === 'claude';
-
 export const providerSupportsBtw = (value: SessionProvider | string | undefined) =>
   normalizeSessionProvider(value) === 'claude';

@@ -105,22 +105,28 @@ export const buildDisplayItems = (messages: ConversationMessage[]): DisplayItem[
     if (current.role === 'assistant') {
       const systemRun: ConversationMessage[] = [];
       let nextIndex = index + 1;
-      while (nextIndex < normalized.length && normalized[nextIndex].role === 'system') {
+      while (
+        nextIndex < normalized.length &&
+        normalized[nextIndex].role === 'system' &&
+        (current.speakerId
+          ? normalized[nextIndex].speakerId === current.speakerId
+          : !normalized[nextIndex].speakerId)
+      ) {
         systemRun.push(normalized[nextIndex]);
         nextIndex += 1;
       }
 
       if (systemRun.length > 0) {
         items.push({
+          type: 'trace-group',
+          id: `trace-group-${current.id}`,
+          items: systemRun,
+        });
+        items.push({
           type: 'message',
           message: current,
           relatedTraceItems: systemRun,
           codeChanges: extractCodeChangeSummaries(systemRun),
-        });
-        items.push({
-          type: 'trace-group',
-          id: `trace-group-${current.id}`,
-          items: systemRun,
         });
         index = nextIndex - 1;
         continue;
@@ -130,7 +136,13 @@ export const buildDisplayItems = (messages: ConversationMessage[]): DisplayItem[
     if (current.role === 'system') {
       const systemRun: ConversationMessage[] = [current];
       let nextIndex = index + 1;
-      while (nextIndex < normalized.length && normalized[nextIndex].role === 'system') {
+      while (
+        nextIndex < normalized.length &&
+        normalized[nextIndex].role === 'system' &&
+        (current.speakerId
+          ? normalized[nextIndex].speakerId === current.speakerId
+          : !normalized[nextIndex].speakerId)
+      ) {
         systemRun.push(normalized[nextIndex]);
         nextIndex += 1;
       }

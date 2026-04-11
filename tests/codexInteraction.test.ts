@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import {
   buildCodexArgs,
+  buildCodexCommandTraceMessage,
+  buildCodexFunctionCallTraceMessage,
   buildCodexPromptWithAttachments,
   buildCodexSpawnSpec,
 } from '../backend/codexInteraction.ts';
@@ -34,8 +36,6 @@ const makeSession = (overrides: Partial<SessionSummary> = {}): SessionSummary =>
   sessionKind: overrides.sessionKind ?? 'standard',
   hidden: overrides.hidden ?? false,
   instructionPrompt: overrides.instructionPrompt,
-  harness: overrides.harness,
-  harnessState: overrides.harnessState,
   groups: overrides.groups ?? [],
   contextReferences: overrides.contextReferences ?? [],
   tokenUsage: overrides.tokenUsage ?? {
@@ -87,6 +87,70 @@ run('buildCodexArgs builds a new exec invocation with prompt as a single positio
   ]);
 });
 
+run('buildCodexArgs can omit full-auto for chat-style codex turns', () => {
+  const session = makeSession();
+  const args = buildCodexArgs(session, 'hi', [], 'gpt-5.4', false);
+
+  assert.deepEqual(args, [
+    'exec',
+    '--json',
+    '-m',
+    'gpt-5.4',
+    'hi',
+  ]);
+});
+
+run('buildCodexArgs can prepend disabled features before exec', () => {
+  const session = makeSession();
+  const args = buildCodexArgs(
+    session,
+    'hi',
+    [],
+    'gpt-5.4',
+    false,
+    false,
+    ['shell_tool', 'plugins'],
+  );
+
+  assert.deepEqual(args, [
+    '--disable',
+    'shell_tool',
+    '--disable',
+    'plugins',
+    'exec',
+    '--json',
+    '-m',
+    'gpt-5.4',
+    'hi',
+  ]);
+});
+
+run('buildCodexArgs can include an output schema for structured chat replies', () => {
+  const session = makeSession();
+  const args = buildCodexArgs(
+    session,
+    'hi',
+    [],
+    'gpt-5.4',
+    false,
+    true,
+    ['shell_tool'],
+    'D:\\tmp\\codex-reply.schema.json',
+  );
+
+  assert.deepEqual(args, [
+    '--disable',
+    'shell_tool',
+    'exec',
+    '--json',
+    '-m',
+    'gpt-5.4',
+    '--output-schema',
+    'D:\\tmp\\codex-reply.schema.json',
+    'hi',
+  ]);
+});
+
 run('buildCodexArgs builds a resume invocation when a stored thread id exists', () => {
   const session = makeSession({ codexThreadId: 'thread-123' });
   const args = buildCodexArgs(session, 'continue', [], 'gpt-5.4-mini');
@@ -100,6 +164,19 @@ run('buildCodexArgs builds a resume invocation when a stored thread id exists', 
     'gpt-5.4-mini',
     'thread-123',
     'continue',
+  ]);
+});
+
+run('buildCodexArgs can ignore a stored thread id for stateless chat turns', () => {
+  const session = makeSession({ codexThreadId: 'thread-123' });
+  const args = buildCodexArgs(session, 'hi', [], 'gpt-5.4', false, false);
+
+  assert.deepEqual(args, [
+    'exec',
+    '--json',
+    '-m',
+    'gpt-5.4',
+    'hi',
   ]);
 });
 
@@ -139,4 +216,153 @@ run('buildCodexPromptWithAttachments does not prepend the host behavior note to 
     ['You are in PBZ workspace.', 'Referenced session context', 'hi'].join('\n\n'),
   );
   assert.equal(prompt.includes('Host behavior note:'), false);
+});
+
+run('buildCodexCommandTraceMessage maps command execution events into tool traces', () => {
+  const running = buildCodexCommandTraceMessage({
+    item: {
+      id: 'item_0',
+      type: 'command_execution',
+      command: 'cmd /c ver',
+      aggregated_output: '',
+      exit_code: null,
+    },
+    status: 'running',
+    timestamp: '4/7 01:00',
+  });
+
+  assert.deepEqual(running, {
+    id: running?.id,
+    role: 'system',
+    kind: 'tool_use',
+    timestamp: '4/7 01:00',
+    title: 'Command',
+    content: 'cmd /c ver',
+    status: 'running',
+  });
+
+  const completed = buildCodexCommandTraceMessage({
+    item: {
+      id: 'item_0',
+      type: 'command_execution',
+      command: 'cmd /c ver',
+      aggregated_output: '\r\nMicrosoft Windows [Version 10.0.26200.8037]\r\n',
+      exit_code: 0,
+    },
+    status: 'success',
+    previous: running ?? undefined,
+  });
+
+  assert.deepEqual(completed, {
+    id: running?.id,
+    role: 'system',
+    kind: 'tool_use',
+    timestamp: '4/7 01:00',
+    title: 'Command',
+    content: ['cmd /c ver', 'Microsoft Windows [Version 10.0.26200.8037]'].join('\n\n'),
+    status: 'success',
+  });
+});
+
+run('buildCodexFunctionCallTraceMessage maps tool calls and outputs into tool traces', () => {
+  const running = buildCodexFunctionCallTraceMessage({
+    item: {
+      call_id: 'call_123',
+      name: 'list_mcp_resource_templates',
+      arguments: '{}',
+    },
+    status: 'running',
+    timestamp: '4/7 01:10',
+  });
+
+  assert.deepEqual(running, {
+    id: 'call_123',
+    role: 'system',
+    kind: 'tool_use',
+    timestamp: '4/7 01:10',
+    title: 'list_mcp_resource_templates',
+    content: '{}',
+    recordedDiff: undefined,
+    status: 'running',
+  });
+
+  const completed = buildCodexFunctionCallTraceMessage({
+    item: {
+      call_id: 'call_123',
+      output: '{"resourceTemplates":[]}',
+    },
+    status: 'success',
+    previous: running ?? undefined,
+  });
+
+  assert.deepEqual(completed, {
+    id: 'call_123',
+    role: 'system',
+    kind: 'tool_use',
+    timestamp: '4/7 01:10',
+    title: 'list_mcp_resource_templates',
+    content: ['{}', '{"resourceTemplates":[]}'].join('\n\n'),
+    recordedDiff: undefined,
+    status: 'success',
+  });
+});
+
+run('buildCodexFunctionCallTraceMessage keeps code edits as recorded code changes', () => {
+  const patch = [
+    '*** Begin Patch',
+    '*** Update File: src/App.tsx',
+    '@@',
+    '-old',
+    '+new',
+    '*** End Patch',
+  ].join('\n');
+
+  const running = buildCodexFunctionCallTraceMessage({
+    item: {
+      call_id: 'call_patch',
+      name: 'functions.apply_patch',
+      arguments: JSON.stringify({ patch }),
+    },
+    status: 'running',
+    timestamp: '4/7 01:12',
+  });
+
+  assert.deepEqual(running, {
+    id: 'call_patch',
+    role: 'system',
+    kind: 'tool_use',
+    timestamp: '4/7 01:12',
+    title: 'apply_patch',
+    content: 'src/App.tsx',
+    recordedDiff: {
+      filePath: 'src/App.tsx',
+      kind: 'git',
+      content: patch,
+    },
+    status: 'running',
+  });
+
+  const completed = buildCodexFunctionCallTraceMessage({
+    item: {
+      call_id: 'call_patch',
+      output: '{"ok":true}',
+    },
+    status: 'success',
+    previous: running ?? undefined,
+  });
+
+  assert.deepEqual(completed, {
+    id: 'call_patch',
+    role: 'system',
+    kind: 'tool_use',
+    timestamp: '4/7 01:12',
+    title: 'apply_patch',
+    content: 'src/App.tsx',
+    recordedDiff: {
+      filePath: 'src/App.tsx',
+      kind: 'git',
+      content: patch,
+    },
+    status: 'success',
+  });
 });

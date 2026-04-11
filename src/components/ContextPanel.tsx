@@ -1,7 +1,6 @@
 import { memo, useEffect, useMemo, useState } from 'react';
 import { DiffContent } from './DiffContent';
 import { extractCodeChangeSummaries } from '../data/codeChangeSummary';
-import { getProviderDisplayName, providerSupportsHarness } from '../data/sessionProvider';
 import type { SessionInteractionState } from '../data/sessionInteraction';
 import type { ConversationMessage, DiffPayload, GitSnapshot, SessionSummary } from '../data/types';
 
@@ -13,12 +12,6 @@ type ContextPanelProps = {
   appVersion: string;
   gitSnapshot: GitSnapshot;
   onRequestDiff: (filePath: string) => Promise<DiffPayload>;
-  onBootstrapHarness: () => void;
-  onRunHarness: () => void;
-  canBootstrapHarness?: boolean;
-  canRunHarness?: boolean;
-  isBootstrappingHarness?: boolean;
-  isRunningHarness?: boolean;
 };
 
 function ContextPanelComponent({
@@ -29,15 +22,7 @@ function ContextPanelComponent({
   appVersion,
   gitSnapshot,
   onRequestDiff,
-  onBootstrapHarness,
-  onRunHarness,
-  canBootstrapHarness = false,
-  canRunHarness = false,
-  isBootstrappingHarness = false,
-  isRunningHarness = false,
 }: ContextPanelProps) {
-  const providerName = getProviderDisplayName(session.provider);
-  const harnessSupported = providerSupportsHarness(session.provider);
   const [selectedFilePath, setSelectedFilePath] = useState<string>('');
   const [diffPayload, setDiffPayload] = useState<DiffPayload | null>(null);
   const [isLoadingDiff, setIsLoadingDiff] = useState(false);
@@ -256,48 +241,6 @@ function ContextPanelComponent({
       </div>
 
       <div className="context-block">
-        <p className="section-kicker">harness</p>
-        <h2>Long-Running Harness</h2>
-        <div className="meta-list">
-          <div>
-            <span>Provider</span>
-            <strong>{providerName}</strong>
-          </div>
-          <div>
-            <span>Kind</span>
-            <strong>{session.sessionKind ?? 'standard'}</strong>
-          </div>
-          <div>
-            <span>Artifact dir</span>
-            <strong>{session.harnessState?.artifactDir ?? session.harness?.artifactDir ?? 'not bootstrapped'}</strong>
-          </div>
-        </div>
-        {!harnessSupported ? (
-          <p className="harness-panel-note">Harness is currently available only for Claude sessions.</p>
-        ) : session.sessionKind !== 'harness' ? canBootstrapHarness ? (
-          <button
-            type="button"
-            className="mini-action primary"
-            onClick={onBootstrapHarness}
-            disabled={isBootstrappingHarness || isRunningHarness}
-          >
-            {isBootstrappingHarness ? 'Bootstrapping...' : 'Bootstrap Harness'}
-          </button>
-        ) : (
-          <p className="harness-panel-note">Harness becomes available after this session has real task context.</p>
-        ) : (
-          <button
-            type="button"
-            className="mini-action primary"
-            onClick={onRunHarness}
-            disabled={!canRunHarness || isBootstrappingHarness || isRunningHarness}
-          >
-            {isRunningHarness ? 'Running Harness...' : 'Run Harness'}
-          </button>
-        )}
-      </div>
-
-      <div className="context-block">
         <p className="section-kicker">session meta</p>
         <div className="meta-list">
           <div>
@@ -332,10 +275,6 @@ const areContextPanelPropsEqual = (current: ContextPanelProps, next: ContextPane
   current.interaction === next.interaction &&
   current.requestedEffort === next.requestedEffort &&
   current.appVersion === next.appVersion &&
-  current.gitSnapshot === next.gitSnapshot &&
-  current.canBootstrapHarness === next.canBootstrapHarness &&
-  current.canRunHarness === next.canRunHarness &&
-  current.isBootstrappingHarness === next.isBootstrappingHarness &&
-  current.isRunningHarness === next.isRunningHarness;
+  current.gitSnapshot === next.gitSnapshot;
 
 export const ContextPanel = memo(ContextPanelComponent, areContextPanelPropsEqual);

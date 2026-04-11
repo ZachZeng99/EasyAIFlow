@@ -18,6 +18,7 @@ const makeSession = (overrides: Partial<SessionRecord>): SessionRecord => ({
   preview: overrides.preview ?? 'preview',
   timeLabel: overrides.timeLabel ?? 'Imported',
   updatedAt: overrides.updatedAt ?? 1,
+  provider: overrides.provider,
   model: overrides.model ?? 'opus[1m]',
   workspace: overrides.workspace ?? 'X:\\PBZ\\ProjectPBZ',
   projectId: overrides.projectId ?? 'p',
@@ -25,6 +26,7 @@ const makeSession = (overrides: Partial<SessionRecord>): SessionRecord => ({
   dreamId: overrides.dreamId ?? 'd',
   dreamName: overrides.dreamName ?? 'Temporary',
   claudeSessionId: overrides.claudeSessionId,
+  codexThreadId: overrides.codexThreadId,
   groups: overrides.groups ?? [],
   contextReferences: overrides.contextReferences ?? [],
   tokenUsage: overrides.tokenUsage ?? {
@@ -56,4 +58,31 @@ run('findImportedSessionTarget falls back to a unique non-temporary title match'
   const temp = makeSession({ id: 'temp', title: 'Total', dreamName: 'Temporary' });
   const result = findImportedSessionTarget([memory, temp], 'new-native', 'Total', 'X:\\PBZ\\ProjectPBZ');
   assert.equal(result?.id, 'memory');
+});
+
+run('findImportedSessionTarget keeps same-title Claude and Codex sessions distinct', () => {
+  const claude = makeSession({
+    id: 'claude-memory',
+    title: '[Group] Room',
+    dreamName: 'Memory',
+    provider: 'claude',
+  });
+  const codex = makeSession({
+    id: 'codex-memory',
+    title: '[Group] Room',
+    dreamName: 'Memory',
+    provider: 'codex',
+    codexThreadId: 'codex-room',
+  });
+
+  const result = findImportedSessionTarget(
+    [claude, codex],
+    'new-codex-native',
+    '[Group] Room',
+    'X:\\PBZ\\ProjectPBZ',
+    'codexThreadId',
+    'codex',
+  );
+
+  assert.equal(result?.id, 'codex-memory');
 });

@@ -32,3 +32,22 @@ run('buildRecordedCodeChangeDiff captures Write content as a recorded preview', 
   assert.equal(payload?.kind, 'preview');
   assert.equal(payload?.content, '# Asset changes\n- item');
 });
+
+run('buildRecordedCodeChangeDiff infers a file path from functions.apply_patch payloads', () => {
+  const patch = [
+    '*** Begin Patch',
+    '*** Update File: src/App.tsx',
+    '@@',
+    '-old',
+    '+new',
+    '*** End Patch',
+  ].join('\n');
+
+  const payload = buildRecordedCodeChangeDiff('functions.apply_patch', {
+    patch,
+  });
+
+  assert.equal(payload?.filePath, 'src/App.tsx');
+  assert.equal(payload?.kind, 'git');
+  assert.equal(payload?.content, patch);
+});
