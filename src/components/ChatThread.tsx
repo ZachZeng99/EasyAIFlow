@@ -78,7 +78,7 @@ function ChatThreadComponent({
   onSubmitAskUserQuestion,
   onSubmitPlanMode,
 }: ChatThreadProps) {
-  const providerName = getProviderDisplayName(session.provider);
+  const providerName = session.sessionKind === 'group' ? 'Group Room' : getProviderDisplayName(session.provider);
   const displayItems = useMemo(() => buildDisplayItems(messages), [messages]);
   const activePermissionRequest = getActiveSessionPermissionRequest(interaction);
   const showDisconnectAction = isCliOnline && Boolean(onDisconnect);
@@ -179,6 +179,12 @@ function ChatThreadComponent({
             {session.projectName} / Streamwork: {session.dreamName}
           </p>
           <h1>{session.title}</h1>
+          {session.sessionKind === 'group' && session.group?.kind === 'room' ? (
+            <p className="section-kicker">
+              Group chat · no `@` follows the last responder · type `@` for quick targets (`@claude` / `@codex` / `@all`) · participants:{' '}
+              {session.group.participants.map((participant) => participant.label).join(' / ')}
+            </p>
+          ) : null}
           <div className="session-tags">
             {isCliOnline ? (
               <span className="session-tag cli-status" aria-label="CLI online">
@@ -194,8 +200,14 @@ function ChatThreadComponent({
             <span className="session-tag process-tag">
               {traceSummary.tools} tools · {traceSummary.progress} progress · {traceSummary.thinking} thinking
             </span>
-            <span className={`session-tag provider-pill provider-${normalizeSessionProvider(session.provider)}`}>
-              {getProviderBadgeLabel(session.provider)}
+            <span
+              className={`session-tag provider-pill ${
+                session.sessionKind === 'group'
+                  ? 'provider-group'
+                  : `provider-${normalizeSessionProvider(session.provider)}`
+              }`}
+            >
+              {session.sessionKind === 'group' ? 'GROUP' : getProviderBadgeLabel(session.provider)}
             </span>
           </div>
         </div>
@@ -278,6 +290,7 @@ function ChatThreadComponent({
                           <div className="trace-meta">
                             <span className={`trace-dot ${message.status ?? 'running'}`} />
                             <span className="trace-kind">{message.kind ?? 'trace'}</span>
+                            {message.speakerLabel ? <span>{message.speakerLabel}</span> : null}
                             <span>{message.timestamp}</span>
                           </div>
                           <div className="trace-copy">
@@ -320,7 +333,9 @@ function ChatThreadComponent({
           ) : (
             <article key={item.message.id} className={`message-card ${item.message.role}${item.message.role === 'assistant' ? ' final-reply' : ''}`}>
               <div className="message-meta">
-                <span className={`message-role ${item.message.role}`}>{item.message.role === 'user' ? 'You' : providerName}</span>
+                <span className={`message-role ${item.message.role}${item.message.role === 'assistant' ? ` provider-${item.message.provider ?? session.provider ?? 'claude'}` : ''}`}>
+                  {item.message.speakerLabel ?? (item.message.role === 'user' ? 'You' : providerName)}
+                </span>
                 <span>{item.message.timestamp}</span>
                 {item.message.status ? <span className={`message-status ${item.message.status}`}>{item.message.status}</span> : null}
               </div>

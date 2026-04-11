@@ -130,3 +130,84 @@ run('normalizeProjectsFromPersistence preserves provider and applies provider-sp
   assert.equal(message?.title, 'Codex queue interrupted');
   assert.equal(message?.content, 'Queued Codex run did not resume after restart.');
 });
+
+run('normalizeProjectsFromPersistence recovers stale streaming messages in group room sessions', () => {
+  const projects = makeProject(
+    makeMessage({
+      status: 'streaming',
+      title: 'Claude response',
+      content: '',
+      provider: 'claude',
+      speakerId: 'claude',
+      speakerLabel: 'Claude',
+    }),
+  );
+  const session = projects[0]?.dreams[0]?.sessions[0] as SessionRecord;
+  session.provider = undefined;
+  session.model = '';
+  session.sessionKind = 'group';
+  session.group = {
+    kind: 'room',
+    nextMessageSeq: 3,
+    participants: [],
+  };
+
+  const normalized = normalizeProjectsFromPersistence(projects);
+  const message = normalized[0]?.dreams[0]?.sessions[0]?.messages?.[0];
+
+  assert.equal(message?.status, 'error');
+  assert.equal(message?.content, 'Previous Claude run did not finish.');
+});
+
+run('normalizeProjectsFromPersistence completes non-empty streaming group room messages', () => {
+  const projects = makeProject(
+    makeMessage({
+      status: 'streaming',
+      title: 'Codex response',
+      content: 'partial reply from codex',
+      provider: 'codex',
+      speakerId: 'codex',
+      speakerLabel: 'Codex',
+    }),
+  );
+  const session = projects[0]?.dreams[0]?.sessions[0] as SessionRecord;
+  session.provider = undefined;
+  session.model = '';
+  session.sessionKind = 'group';
+  session.group = {
+    kind: 'room',
+    nextMessageSeq: 3,
+    participants: [],
+  };
+
+  const normalized = normalizeProjectsFromPersistence(projects);
+  const message = normalized[0]?.dreams[0]?.sessions[0]?.messages?.[0];
+
+  assert.equal(message?.status, 'complete');
+  assert.equal(message?.content, 'partial reply from codex');
+});
+
+run('normalizeProjectsForCache keeps group sessions provider-less', () => {
+  const projects = makeProject(
+    makeMessage({
+      status: 'complete',
+      title: 'Group room',
+      content: '@claude review this',
+    }),
+  );
+  const session = projects[0]?.dreams[0]?.sessions[0] as SessionRecord;
+  session.provider = undefined;
+  session.model = '';
+  session.sessionKind = 'group';
+  session.group = {
+    kind: 'room',
+    nextMessageSeq: 2,
+    participants: [],
+  };
+
+  const normalized = normalizeProjectsForCache(projects);
+  const normalizedSession = normalized[0]?.dreams[0]?.sessions[0] as SessionRecord | undefined;
+
+  assert.equal(normalizedSession?.sessionKind, 'group');
+  assert.equal(normalizedSession?.provider, undefined);
+});

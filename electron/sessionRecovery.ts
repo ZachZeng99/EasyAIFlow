@@ -71,3 +71,6 @@ export const recoverStaleSessionMessagesForProvider = (
   messages: ConversationMessage[] | undefined,
   provider: SessionProvider | undefined,
 ) => (messages ?? []).map((message) => recoverMessage(message, normalizeSessionProvider(provider)));
+
+export const recoverStaleGroupRoomMessages = (messages: ConversationMessage[] | undefined) =>
+  (messages ?? []).map((message) => recoverMessage(message, normalizeSessionProvider(message.provider)));

@@ -524,6 +524,22 @@ p {
   background: var(--session-provider-bg-active);
 }
 
+.session-card.provider-group {
+  --session-provider-border: rgba(168, 85, 247, 0.28);
+  --session-provider-border-active: rgba(192, 132, 252, 0.46);
+  --session-provider-bg:
+    linear-gradient(135deg, rgba(168, 85, 247, 0.12), rgba(126, 34, 206, 0.045) 48%, rgba(255, 255, 255, 0.03) 100%);
+  --session-provider-bg-active:
+    linear-gradient(135deg, rgba(168, 85, 247, 0.2), rgba(126, 34, 206, 0.065) 48%, rgba(255, 255, 255, 0.04) 100%);
+  --session-provider-watermark: rgba(233, 213, 255, 0.2);
+}
+
+.session-card.provider-group:hover,
+.session-card.provider-group.selected {
+  border-color: var(--session-provider-border-active);
+  background: var(--session-provider-bg-active);
+}
+
 .session-card.responding {
   border-color: rgba(245, 158, 11, 0.3);
   background:
@@ -536,13 +552,6 @@ p {
   background:
     linear-gradient(135deg, rgba(244, 114, 182, 0.16), rgba(255, 255, 255, 0.03)),
     var(--session-provider-bg-active);
-}
-
-.session-card.harness {
-  border-color: rgba(245, 158, 11, 0.18);
-  background:
-    linear-gradient(180deg, rgba(245, 158, 11, 0.1), rgba(255, 255, 255, 0.03)),
-    var(--session-provider-bg);
 }
 
 .session-card.responding::after {
@@ -739,270 +748,6 @@ p {
   overflow: hidden;
 }
 
-.harness-dashboard {
-  min-height: 0;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  overflow: hidden;
-}
-
-.harness-banner {
-  margin: 18px 22px 0;
-  padding: 18px 20px;
-  border: 1px solid rgba(245, 158, 11, 0.16);
-  border-radius: 20px;
-  background:
-    radial-gradient(circle at top right, rgba(245, 158, 11, 0.14), transparent 28%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02)),
-    rgba(21, 18, 15, 0.92);
-  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.2);
-}
-
-.harness-banner-copy p:last-child {
-  margin-top: 8px;
-  color: rgba(245, 239, 230, 0.78);
-  line-height: 1.55;
-}
-
-.harness-banner h1 {
-  margin: 0;
-  font-size: 1.5rem;
-}
-
-.harness-banner-meta {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 16px;
-}
-
-.harness-meta-chip {
-  padding: 12px 14px;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.035);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.harness-meta-chip span,
-.harness-progress-meta span,
-.harness-progress-submeta span,
-.harness-role-badge,
-.harness-trace-head,
-.harness-trace-meta {
-  font-family: 'Cascadia Code', 'Consolas', monospace;
-}
-
-.harness-meta-chip span {
-  display: block;
-  font-size: 0.68rem;
-  color: rgba(245, 239, 230, 0.56);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.harness-meta-chip strong {
-  display: block;
-  margin-top: 6px;
-  font-size: 0.96rem;
-}
-
-.harness-progress {
-  margin-top: 16px;
-}
-
-.harness-progress-bar {
-  height: 12px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.harness-progress-fill {
-  height: 100%;
-  border-radius: 999px;
-  background: linear-gradient(90deg, #f59e0b, #fb7185);
-  box-shadow: 0 0 16px rgba(245, 158, 11, 0.28);
-  transition: width 180ms ease;
-}
-
-.harness-progress-meta,
-.harness-progress-submeta,
-.harness-trace-head,
-.harness-trace-meta {
-  display: flex;
-  align-items: center;
-}
-
-.harness-progress-meta,
-.harness-progress-submeta {
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.harness-progress-meta {
-  margin-top: 10px;
-  font-size: 0.76rem;
-  color: rgba(245, 239, 230, 0.72);
-}
-
-.harness-progress-submeta {
-  margin-top: 8px;
-  flex-wrap: wrap;
-  font-size: 0.7rem;
-  color: rgba(245, 239, 230, 0.56);
-}
-
-.harness-panel-note {
-  margin-top: 12px;
-  color: rgba(245, 239, 230, 0.64);
-  line-height: 1.5;
-}
-
-.harness-role-grid {
-  min-height: 0;
-  display: grid;
-  grid-template-columns: 0.82fr 1.1fr 1.1fr;
-  gap: 14px;
-  padding: 18px 22px 18px;
-  overflow: hidden;
-}
-
-.harness-role-pane {
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  padding: 16px;
-  border-radius: 18px;
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.015)),
-    rgba(15, 13, 12, 0.92);
-}
-
-.harness-role-pane.active {
-  border-color: rgba(245, 158, 11, 0.24);
-  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.1);
-}
-
-.harness-role-composer {
-  display: flex;
-  gap: 8px;
-  padding: 8px 12px;
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
-  flex-shrink: 0;
-}
-
-.harness-role-input {
-  flex: 1;
-  min-height: 0;
-  resize: none;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 8px;
-  padding: 8px 10px;
-  color: inherit;
-  font-family: inherit;
-  font-size: 0.85rem;
-  line-height: 1.4;
-}
-
-.harness-role-input:focus {
-  outline: none;
-  border-color: rgba(245, 158, 11, 0.4);
-}
-
-.harness-role-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: flex-start;
-}
-
-.harness-role-head h2 {
-  margin: 0;
-  font-size: 1rem;
-}
-
-.harness-role-badge {
-  padding: 6px 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.05);
-  color: rgba(245, 239, 230, 0.68);
-  font-size: 0.68rem;
-  flex-shrink: 0;
-}
-
-.harness-role-badge.active {
-  color: #fcd68b;
-  background: rgba(245, 158, 11, 0.16);
-  border-color: rgba(245, 158, 11, 0.24);
-}
-
-.harness-role-copy {
-  margin-top: 10px;
-  color: rgba(245, 239, 230, 0.66);
-  line-height: 1.5;
-}
-
-.harness-role-stream {
-  min-height: 0;
-  margin-top: 14px;
-  padding-right: 4px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.harness-message-card,
-.harness-trace-group,
-.harness-empty-state {
-  padding: 12px 14px;
-  border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  background: rgba(255, 255, 255, 0.03);
-}
-
-.harness-empty-state {
-  color: rgba(245, 239, 230, 0.58);
-  font-family: 'Cascadia Code', 'Consolas', monospace;
-  font-size: 0.76rem;
-}
-
-.harness-markdown,
-.harness-message-card .message-body {
-  font-size: 0.9rem;
-}
-
-.harness-trace-head {
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 0.72rem;
-  color: rgba(245, 239, 230, 0.56);
-}
-
-.harness-trace-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.harness-trace-row {
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: rgba(0, 0, 0, 0.18);
-}
-
-.harness-trace-meta {
-  gap: 8px;
-  margin-bottom: 6px;
-  font-size: 0.68rem;
-  color: rgba(245, 239, 230, 0.52);
-}
-
 .ui-error-banner {
   margin: 14px 26px 0;
   padding: 12px 14px;
@@ -1193,7 +938,17 @@ p {
   padding: 12px 14px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.04);
+  background: #1b1714;
+  color: #f5efe6;
+}
+
+.dialog-field select {
+  color-scheme: dark;
+}
+
+.dialog-field select option,
+.dialog-field select optgroup {
+  background: #1b1714;
   color: #f5efe6;
 }
 
@@ -1537,6 +1292,12 @@ p {
   color: #99f6e4;
 }
 
+.provider-pill.provider-group {
+  border-color: rgba(192, 132, 252, 0.28);
+  background: rgba(168, 85, 247, 0.14);
+  color: #e9d5ff;
+}
+
 .disconnect-button {
   width: 42px;
   height: 42px;
@@ -1628,6 +1389,16 @@ p {
 .message-role.assistant {
   background: rgba(96, 165, 250, 0.14);
   color: #9bc2ff;
+}
+
+.message-role.assistant.provider-claude {
+  background: rgba(250, 204, 21, 0.18);
+  color: #fde047;
+}
+
+.message-role.assistant.provider-codex {
+  background: rgba(59, 130, 246, 0.18);
+  color: #93c5fd;
 }
 
 .message-status {
@@ -2974,31 +2745,9 @@ p {
     align-items: stretch;
   }
 
-  .harness-banner {
-    margin: 10px 10px 0;
-    padding: 14px;
-  }
-
-  .harness-banner h1 {
-    font-size: 1.14rem;
-  }
-
-  .harness-banner-meta {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .harness-role-grid {
-    grid-template-columns: 1fr;
-    padding: 10px;
-  }
-
-  .harness-role-pane {
-    max-height: 42vh;
-  }
-
-.message-card,
-.trace-group-card,
-.trace-row {
+  .message-card,
+  .trace-group-card,
+  .trace-row {
     width: 100%;
   }
 
