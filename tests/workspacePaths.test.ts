@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { isWorkspaceWithinProjectTree, sameWorkspacePath } from '../electron/workspacePaths.js';
+import { getClaudeProjectDirNameCandidates, toClaudeProjectDirName } from '../electron/workspacePaths.ts';
 
 const run = (name: string, fn: () => void) => {
   try {
@@ -11,13 +11,21 @@ const run = (name: string, fn: () => void) => {
   }
 };
 
-run('sameWorkspacePath treats Windows path variants as the same workspace', () => {
-  assert.equal(sameWorkspacePath('X:\\PBZ\\ProjectPBZ', 'x:/pbz/projectpbz/'), true);
-  assert.equal(sameWorkspacePath('X:\\PBZ', 'X:\\PBZ\\ProjectPBZ'), false);
+run('toClaudeProjectDirName matches Claude project folder naming on Windows workspaces', () => {
+  assert.equal(
+    toClaudeProjectDirName('D:\\AIAgent\\EasyAIFlow-eaf_codex'),
+    'D--AIAgent-EasyAIFlow-eaf-codex',
+  );
 });
 
-run('isWorkspaceWithinProjectTree matches the project root and nested workspaces', () => {
-  assert.equal(isWorkspaceWithinProjectTree('X:\\PBZ', 'x:/pbz/'), true);
-  assert.equal(isWorkspaceWithinProjectTree('X:\\PBZ', 'X:\\PBZ\\ProjectPBZ'), true);
-  assert.equal(isWorkspaceWithinProjectTree('X:\\PBZ\\ProjectPBZ', 'X:\\PBZ'), false);
+run('getClaudeProjectDirNameCandidates keeps compatibility with older derived folder names', () => {
+  assert.deepEqual(
+    getClaudeProjectDirNameCandidates('D:\\AIAgent\\EasyAIFlow-eaf_codex'),
+    [
+      'D--AIAgent-EasyAIFlow-eaf-codex',
+      'D--AIAgent-EasyAIFlow-eaf_codex',
+      'D--aiagent-easyaiflow-eaf_codex',
+      'D--aiagent-easyaiflow-eaf-codex',
+    ],
+  );
 });

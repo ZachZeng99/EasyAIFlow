@@ -1,6 +1,6 @@
 import type { ConversationMessage, GroupParticipant, GroupParticipantId } from './types.js';
 
-const groupMentionPattern = /(^|\s)@(claude|codex|all)\b/gi;
+const groupMentionPattern = /(^|[^@\w])@(claude|codex|all)\b/gi;
 
 const isGroupParticipantId = (value: string): value is GroupParticipantId =>
   value === 'claude' || value === 'codex';

@@ -143,7 +143,7 @@ run('buildCodexRoomChatPrompt uses greeting format for simple greetings', () => 
   assert.match(prompt, /You: @codex hi/);
 });
 
-run('buildCodexRoomChatPrompt uses assessment format for questions with context', () => {
+run('buildCodexRoomChatPrompt tells Codex to either answer directly or do the requested work', () => {
   const prompt = buildCodexRoomChatPrompt(
     makeParticipant(),
     [
@@ -175,12 +175,64 @@ run('buildCodexRoomChatPrompt uses assessment format for questions with context'
   );
 
   assert.match(prompt, /<task>/);
-  assert.match(prompt, /asked a question in a group chat/);
+  assert.match(prompt, /Decide whether TARGET_MESSAGE is asking for:/);
+  assert.match(prompt, /If it is \(2\), do the work before replying\./);
+  assert.match(prompt, /Do not stop at a plan or promise\./);
+  assert.match(prompt, /If it is only \(1\), answer directly\./);
+  assert.match(prompt, /TARGET_MESSAGE:/);
+  assert.match(prompt, /#2 \[You\] \[message status=complete\] title="@codex claude说的对吗"/);
+  assert.match(prompt, /LATEST_PARTICIPANT_REPLY:/);
+  assert.match(prompt, /#1 \[Claude\] \[message status=complete\] title="Claude response"/);
+  assert.match(
+    prompt,
+    /If TARGET_MESSAGE asks whether another participant's reply is correct, use LATEST_PARTICIPANT_REPLY and Chat context directly\./,
+  );
+  assert.match(prompt, /Do not ask the user to repeat content that is already shown below\./);
   assert.match(prompt, /Chat context:/);
   assert.match(prompt, /Claude: 集成Claude CLI的本地AI编程桌面客户端。/);
   assert.match(prompt, /You: @codex claude说的对吗/);
   assert.match(prompt, /<compact_output_contract>/);
+  assert.match(prompt, /Do not say you will do work later if you have not done it in this turn\./);
   assert.match(prompt, /<verification_loop>/);
+});
+
+run('buildCodexRoomChatPrompt treats missing follow-through complaints as active work requests', () => {
+  const prompt = buildCodexRoomChatPrompt(
+    makeParticipant(),
+    [
+      {
+        id: 'codex-1',
+        role: 'assistant',
+        seq: 1,
+        timestamp: '4/7 09:43',
+        title: 'Codex response',
+        content: '刚才停在 review 结论上了，没把修复进度继续往群里回出来。\n\n现在继续收这 2 个点，不再岔开：\n1. app-server 通知过滤。\n2. 首条 @mention 升级群聊。',
+        speakerId: 'codex',
+        speakerLabel: 'Codex',
+        provider: 'codex',
+        status: 'complete',
+      },
+      {
+        id: 'message-2',
+        role: 'user',
+        seq: 2,
+        timestamp: '4/7 09:44',
+        title: '@codex 刚才你也这么说的，但是没有后续了，你查一下怎么回事',
+        content: '@codex 刚才你也这么说的，但是没有后续了，你查一下怎么回事',
+        speakerId: 'user',
+        speakerLabel: 'You',
+        status: 'complete',
+        targetParticipantIds: ['codex'],
+      },
+    ],
+  );
+
+  assert.match(
+    prompt,
+    /If the user is calling out missing follow-through on work you already said you would do, treat that as \(2\): continue the work and return concrete results\./,
+  );
+  assert.match(prompt, /Codex: 刚才停在 review 结论上了/);
+  assert.match(prompt, /You: @codex 刚才你也这么说的，但是没有后续了，你查一下怎么回事/);
 });
 
 run('buildRoomSyncPrompt does not add special-case guidance for Claude evaluation turns', () => {
@@ -255,6 +307,22 @@ run('resolveGroupTargets defaults to the last successful responder when the user
   );
 
   assert.deepEqual(targets, ['codex']);
+});
+
+run('resolveGroupTargets parses @mentions after Chinese characters and punctuation', () => {
+  const participants = makeRoomSession().group?.kind === 'room' ? makeRoomSession().group.participants : [];
+  assert.deepEqual(
+    resolveGroupTargets('你好@codex', participants, []),
+    ['codex'],
+  );
+  assert.deepEqual(
+    resolveGroupTargets('，@all 看看', participants, []),
+    ['claude', 'codex'],
+  );
+  assert.deepEqual(
+    resolveGroupTargets('测试！@claude 检查一下', participants, []),
+    ['claude'],
+  );
 });
 
 run('resolveGroupTargets keeps explicit mentions instead of falling back to the last responder', () => {

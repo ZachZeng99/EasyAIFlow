@@ -1,6 +1,6 @@
 import type { AskUserQuestion } from './askUserQuestion.js';
 import type { PlanModeRequest } from './planMode.js';
-import type { BackgroundTaskRecord, SessionRuntimeState } from './types.js';
+import type { BackgroundTaskRecord, SessionRuntimePhase, SessionRuntimeState } from './types.js';
 
 export type SessionPermissionRequest = {
   path: string;
@@ -132,3 +132,43 @@ export const setSessionRuntimeState = (
     ...runtime,
   },
 });
+
+const runtimePhasePriority: Record<SessionRuntimePhase, number> = {
+  awaiting_reply: 6,
+  background: 5,
+  running: 4,
+  terminating: 3,
+  idle: 2,
+  inactive: 1,
+};
+
+const compareRuntimeStates = (left: SessionRuntimeState, right: SessionRuntimeState) => {
+  const priorityDiff = runtimePhasePriority[right.phase] - runtimePhasePriority[left.phase];
+  if (priorityDiff !== 0) {
+    return priorityDiff;
+  }
+
+  return (right.updatedAt ?? 0) - (left.updatedAt ?? 0);
+};
+
+export const mergeSessionRuntimeStates = (
+  states: Array<SessionRuntimeState | undefined>,
+): SessionRuntimeState | undefined => {
+  const present = states.filter((state): state is SessionRuntimeState => Boolean(state));
+  if (present.length === 0) {
+    return undefined;
+  }
+
+  const online = present.filter((state) => state.processActive);
+  const candidates = online.length > 0 ? online : present;
+  const [selected] = [...candidates].sort(compareRuntimeStates);
+  if (!selected) {
+    return undefined;
+  }
+
+  return {
+    ...selected,
+    processActive: online.length > 0,
+    updatedAt: Math.max(...present.map((state) => state.updatedAt ?? 0)),
+  };
+};

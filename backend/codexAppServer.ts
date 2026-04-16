@@ -13,6 +13,7 @@ type JsonRpcNotification = {
 };
 
 type NotificationHandler = (notification: JsonRpcNotification) => void;
+type ExitHandler = (error: Error) => void;
 
 const CLIENT_INFO = { title: 'EasyAIFlow', name: 'EasyAIFlow', version: '0.1.0' };
 const CAPABILITIES = {
@@ -33,7 +34,8 @@ export class CodexAppServerClient {
   private child: ChildProcess;
   private nextId = 1;
   private pending = new Map<number, PendingRequest>();
-  private notificationHandler: NotificationHandler | null = null;
+  private notificationHandlers = new Set<NotificationHandler>();
+  private exitHandlers = new Set<ExitHandler>();
   private exitError: Error | null = null;
   stderr = '';
 
@@ -63,6 +65,9 @@ export class CodexAppServerClient {
 
     child.on('close', () => {
       client.exitError = client.exitError ?? new Error('codex app-server process exited.');
+      for (const handler of client.exitHandlers) {
+        handler(client.exitError);
+      }
       for (const [, req] of client.pending) {
         req.reject(client.exitError);
       }
@@ -113,16 +118,20 @@ export class CodexAppServerClient {
 
     // Notification from server.
     if (typeof parsed.method === 'string') {
-      this.notificationHandler?.({
+      const notification: JsonRpcNotification = {
         method: parsed.method,
         params: (parsed.params as Record<string, unknown>) ?? {},
-      });
+      };
+      for (const handler of this.notificationHandlers) {
+        handler(notification);
+      }
     }
   }
 
-  private send(message: Record<string, unknown>) {
-    if (!this.child.stdin?.writable) return;
+  private send(message: Record<string, unknown>): boolean {
+    if (!this.child.stdin?.writable) return false;
     this.child.stdin.write(JSON.stringify(message) + '\n');
+    return true;
   }
 
   request<T = unknown>(method: string, params: Record<string, unknown>): Promise<T> {
@@ -131,7 +140,9 @@ export class CodexAppServerClient {
     }
 
     const id = this.nextId++;
-    this.send({ id, method, params });
+    if (!this.send({ id, method, params })) {
+      return Promise.reject(new Error('Codex app-server stdin is not writable.'));
+    }
 
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, { method, resolve: resolve as (v: unknown) => void, reject });
@@ -142,8 +153,20 @@ export class CodexAppServerClient {
     this.send({ method, params });
   }
 
-  setNotificationHandler(handler: NotificationHandler | null) {
-    this.notificationHandler = handler;
+  addNotificationHandler(handler: NotificationHandler) {
+    this.notificationHandlers.add(handler);
+  }
+
+  removeNotificationHandler(handler: NotificationHandler) {
+    this.notificationHandlers.delete(handler);
+  }
+
+  addExitHandler(handler: ExitHandler) {
+    this.exitHandlers.add(handler);
+  }
+
+  removeExitHandler(handler: ExitHandler) {
+    this.exitHandlers.delete(handler);
   }
 
   async close(): Promise<void> {
@@ -176,7 +199,7 @@ export class CodexAppServerClient {
       cwd: params.cwd,
       model: params.model,
       approvalPolicy: params.approvalPolicy ?? 'never',
-      sandbox: params.sandbox ?? 'read-only',
+      sandbox: params.sandbox ?? 'danger-full-access',
       serviceName: params.serviceName ?? 'easyaiflow_group_chat',
       ephemeral: params.ephemeral ?? false,
       experimentalRawEvents: false,
@@ -194,7 +217,7 @@ export class CodexAppServerClient {
       cwd: params.cwd,
       model: params.model,
       approvalPolicy: 'never',
-      sandbox: params.sandbox ?? 'read-only',
+      sandbox: params.sandbox ?? 'danger-full-access',
     });
   }
 
@@ -231,6 +254,7 @@ type ManagedAppServer = {
 
 class CodexAppServerManager {
   private instances = new Map<string, ManagedAppServer>();
+  private pendingCreates = new Map<string, Promise<ManagedAppServer>>();
 
   async acquire(cwd: string): Promise<CodexAppServerClient> {
     const existing = this.instances.get(cwd);
@@ -239,9 +263,27 @@ class CodexAppServerManager {
       return existing.client;
     }
 
-    const client = await CodexAppServerClient.create(cwd);
-    this.instances.set(cwd, { client, refCount: 1, cwd });
-    return client;
+    const pendingCreate = this.pendingCreates.get(cwd);
+    if (pendingCreate) {
+      const managed = await pendingCreate;
+      managed.refCount++;
+      return managed.client;
+    }
+
+    const createPromise = CodexAppServerClient.create(cwd)
+      .then((client) => {
+        const managed = { client, refCount: 0, cwd };
+        this.instances.set(cwd, managed);
+        return managed;
+      })
+      .finally(() => {
+        this.pendingCreates.delete(cwd);
+      });
+
+    this.pendingCreates.set(cwd, createPromise);
+    const managed = await createPromise;
+    managed.refCount++;
+    return managed.client;
   }
 
   release(cwd: string) {

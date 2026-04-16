@@ -162,7 +162,7 @@ export function ChatComposer({
       return null;
     }
 
-    const match = draft.match(/(^|\s)@([^\s@]*)$/);
+    const match = draft.match(/(^|[^@\w])@([^\s@]*)$/);
     if (!match) {
       return null;
     }
@@ -249,7 +249,7 @@ export function ChatComposer({
 
   const applyMentionOption = (option: ComposerMentionOption) => {
     onDraftChange(
-      draft.replace(/(^|\s)@([^\s@]*)$/, (_match, prefix: string) => `${prefix}@${option.value} `),
+      draft.replace(/(^|[^@\w])@([^\s@]*)$/, (_match, prefix: string) => `${prefix}@${option.value} `),
     );
     requestAnimationFrame(() => {
       textareaRef.current?.focus();

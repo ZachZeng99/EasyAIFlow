@@ -267,6 +267,7 @@ export type CloseProjectResult = {
 export type DeleteEntityResult = {
   projects: ProjectRecord[];
   deletedSessionIds: string[];
+  warning?: string;
 };
 
 export type ClaudeStreamEvent =

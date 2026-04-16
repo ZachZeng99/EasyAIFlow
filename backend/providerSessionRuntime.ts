@@ -7,13 +7,12 @@ import {
 } from './claudeInteraction.js';
 import type { ClaudeInteractionContext } from './claudeInteractionContext.js';
 import type { ClaudeInteractionState } from './claudeInteractionState.js';
+import { switchCodexSessionEffort, switchCodexSessionModel } from './codexInteraction.js';
 import {
-  disconnectCodexRun,
-  runCodexPrint,
-  stopCodexRun,
-  switchCodexSessionEffort,
-  switchCodexSessionModel,
-} from './codexInteraction.js';
+  disconnectCodexAppServerTurn,
+  interruptCodexAppServerTurn,
+  runResidentCodexAppServerTurn,
+} from './codexAppServerTurn.js';
 import { findSession } from '../electron/sessionStore.js';
 import { normalizeSessionProvider } from '../src/data/sessionProvider.js';
 import type {
@@ -156,19 +155,26 @@ export const providerSessionRuntimes: Record<SessionProvider, ProviderSessionRun
   codex: {
     provider: 'codex',
     capabilities: {
-      residentSession: false,
+      residentSession: true,
       interactiveControl: false,
-      disconnectBehavior: 'stop',
+      disconnectBehavior: 'resident',
     },
     sendMessage: (ctx, _state, payload) =>
-      runCodexPrint(ctx, payload.sessionId, payload.prompt, payload.attachments ?? [], payload.session, {
+      runResidentCodexAppServerTurn(
+        ctx,
+        payload.sessionId,
+        payload.prompt,
+        payload.attachments ?? [],
+        payload.session,
+        {
         references: payload.references,
         model: payload.model,
-      }),
+        },
+      ),
     switchModel: (_ctx, _state, payload) => switchCodexSessionModel(payload),
     switchEffort: (_ctx, _state, payload) => switchCodexSessionEffort(payload),
-    stopSession: (ctx, _state, payload) => stopCodexRun(ctx, payload.sessionId),
-    disconnectSession: (ctx, _state, payload) => disconnectCodexRun(ctx, payload.sessionId),
+    stopSession: (ctx, _state, payload) => interruptCodexAppServerTurn(ctx, payload.sessionId),
+    disconnectSession: (ctx, _state, payload) => disconnectCodexAppServerTurn(ctx, payload.sessionId),
   },
 };
 

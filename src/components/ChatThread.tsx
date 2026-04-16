@@ -15,7 +15,7 @@ import {
   getActiveSessionPermissionRequest,
   type SessionInteractionState,
 } from '../data/sessionInteraction';
-import type { ConversationMessage, DiffPayload, SessionSummary } from '../data/types';
+import type { ConversationMessage, DiffPayload, SessionProvider, SessionSummary } from '../data/types';
 
 const isTraceErrorStatus = (status: ConversationMessage['status']) => status === 'error';
 
@@ -54,6 +54,12 @@ type ChatThreadProps = {
   messages: ConversationMessage[];
   isLoadingHistory?: boolean;
   isCliOnline?: boolean;
+  groupCliStatuses?: Array<{
+    participantId: string;
+    label: string;
+    provider: SessionProvider;
+    online: boolean;
+  }>;
   onDisconnect?: () => void;
   onRequestPermission?: (request: PermissionRequest) => void;
   onRequestDiff?: (filePath: string) => Promise<DiffPayload>;
@@ -69,6 +75,7 @@ function ChatThreadComponent({
   messages,
   isLoadingHistory = false,
   isCliOnline = false,
+  groupCliStatuses,
   onDisconnect,
   onRequestPermission,
   onRequestDiff,
@@ -186,7 +193,21 @@ function ChatThreadComponent({
             </p>
           ) : null}
           <div className="session-tags">
-            {isCliOnline ? (
+            {session.sessionKind === 'group' && groupCliStatuses?.length ? (
+              groupCliStatuses.map((status) => (
+                <span
+                  key={status.participantId}
+                  className={`session-tag cli-status ${status.online ? 'online' : 'offline'} provider-${normalizeSessionProvider(status.provider)}`}
+                  aria-label={`${status.label} ${status.online ? 'online' : 'offline'}`}
+                >
+                  <span
+                    className={`cli-status-dot ${status.online ? 'online' : 'offline'}`}
+                    aria-hidden="true"
+                  />
+                  {status.label}
+                </span>
+              ))
+            ) : isCliOnline ? (
               <span className="session-tag cli-status" aria-label="CLI online">
                 <span className="cli-status-dot" aria-hidden="true" />
                 CLI
@@ -491,6 +512,7 @@ const areChatThreadPropsEqual = (current: ChatThreadProps, next: ChatThreadProps
   current.messages === next.messages &&
   current.isLoadingHistory === next.isLoadingHistory &&
   current.isCliOnline === next.isCliOnline &&
+  current.groupCliStatuses === next.groupCliStatuses &&
   current.interaction === next.interaction;
 
 export const ChatThread = memo(ChatThreadComponent, areChatThreadPropsEqual);

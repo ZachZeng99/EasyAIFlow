@@ -1265,6 +1265,12 @@ p {
   color: #bbf7d0;
 }
 
+.cli-status.offline {
+  border-color: rgba(148, 163, 184, 0.24);
+  background: rgba(148, 163, 184, 0.12);
+  color: rgba(226, 232, 240, 0.72);
+}
+
 .cli-status-dot {
   width: 8px;
   height: 8px;
@@ -1273,6 +1279,12 @@ p {
   box-shadow: 0 0 12px rgba(34, 197, 94, 0.75);
   animation: session-status-pulse 1.2s ease-in-out infinite;
   flex-shrink: 0;
+}
+
+.cli-status-dot.offline {
+  background: #94a3b8;
+  box-shadow: none;
+  animation: none;
 }
 
 .process-tag {

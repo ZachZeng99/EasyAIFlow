@@ -1,10 +1,6 @@
 import assert from 'node:assert/strict';
-import {
-  advanceSessionPermissionRequest,
-  enqueueSessionPermissionRequest,
-  getActiveSessionPermissionRequest,
-  setSessionRuntimeState,
-} from '../src/data/sessionInteraction.ts';
+import { mergeSessionRuntimeStates } from '../src/data/sessionInteraction.ts';
+import type { SessionRuntimeState } from '../src/data/types.ts';
 
 const run = (name: string, fn: () => void) => {
   try {
@@ -16,54 +12,48 @@ const run = (name: string, fn: () => void) => {
   }
 };
 
-const makeRequest = (requestId: string, path: string) => ({
-  requestId,
-  path,
-  sensitive: false,
-  sessionId: 'session-1',
+const makeRuntime = (overrides: Partial<SessionRuntimeState> = {}): SessionRuntimeState => ({
+  processActive: false,
+  phase: 'inactive',
+  updatedAt: 1,
+  ...overrides,
 });
 
-run('enqueueSessionPermissionRequest keeps the first pending permission active', () => {
-  const first = makeRequest('req-1', 'agents/openai.yaml');
-  const second = makeRequest('req-2', 'agents/claude.yaml');
+run('mergeSessionRuntimeStates prefers online idle over offline inactive', () => {
+  const merged = mergeSessionRuntimeStates([
+    makeRuntime({ processActive: false, phase: 'inactive', updatedAt: 10 }),
+    makeRuntime({ processActive: true, phase: 'idle', updatedAt: 5 }),
+  ]);
 
-  const state = enqueueSessionPermissionRequest(
-    enqueueSessionPermissionRequest({}, first),
-    second,
-  );
-
-  assert.equal(getActiveSessionPermissionRequest(state)?.requestId, 'req-1');
-  assert.deepEqual(state.pendingPermissions?.map((request) => request.requestId), ['req-2']);
+  assert.deepEqual(merged, {
+    processActive: true,
+    phase: 'idle',
+    updatedAt: 10,
+  });
 });
 
-run('advanceSessionPermissionRequest promotes the next queued permission', () => {
-  const first = makeRequest('req-1', 'agents/openai.yaml');
-  const second = makeRequest('req-2', 'agents/claude.yaml');
+run('mergeSessionRuntimeStates prefers an active running phase over idle', () => {
+  const merged = mergeSessionRuntimeStates([
+    makeRuntime({ processActive: true, phase: 'idle', updatedAt: 10 }),
+    makeRuntime({ processActive: true, phase: 'running', updatedAt: 5 }),
+  ]);
 
-  const state = advanceSessionPermissionRequest(
-    enqueueSessionPermissionRequest(
-      enqueueSessionPermissionRequest({}, first),
-      second,
-    ),
-  );
-
-  assert.equal(getActiveSessionPermissionRequest(state)?.requestId, 'req-2');
-  assert.deepEqual(state.pendingPermissions ?? [], []);
+  assert.deepEqual(merged, {
+    processActive: true,
+    phase: 'running',
+    updatedAt: 10,
+  });
 });
 
-run('setSessionRuntimeState preserves previously known runtime fields when partial updates arrive', () => {
-  const state = setSessionRuntimeState(
-    setSessionRuntimeState({}, {
-      processActive: true,
-      phase: 'idle',
-      appliedEffort: 'high',
-    }),
-    {
-      processActive: true,
-      phase: 'running',
-    },
-  );
+run('mergeSessionRuntimeStates falls back to the latest offline state when nothing is online', () => {
+  const merged = mergeSessionRuntimeStates([
+    makeRuntime({ processActive: false, phase: 'inactive', updatedAt: 10 }),
+    makeRuntime({ processActive: false, phase: 'inactive', updatedAt: 25 }),
+  ]);
 
-  assert.equal(state.runtime?.phase, 'running');
-  assert.equal(state.runtime?.appliedEffort, 'high');
+  assert.deepEqual(merged, {
+    processActive: false,
+    phase: 'inactive',
+    updatedAt: 25,
+  });
 });

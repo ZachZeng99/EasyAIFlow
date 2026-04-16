@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { ClaudeInteractionContext } from './claudeInteractionContext.js';
-import type { ClaudeInteractionState, ClaudePrintOptions } from './claudeInteractionState.js';
+import type { ClaudeInteractionState, ClaudePrintOptions, SessionBroadcastInterceptor } from './claudeInteractionState.js';
+import { addSessionBroadcastInterceptor, removeSessionBroadcastInterceptor } from './claudeInteractionState.js';
 import { buildMessageTitle, nowLabel } from './claudeHelpers.js';
 import {
   disconnectSession,
@@ -156,6 +157,14 @@ export const buildCodexRoomChatPrompt = (
   pendingMessages: ConversationMessage[],
 ) => {
   const chatLines: string[] = [];
+  const latestTargetedMessage = getLatestTargetedUserMessage(pendingMessages, participant);
+  const latestParticipantReply = [...pendingMessages].reverse().find((message) => message.role === 'assistant');
+  const targetBlock = latestTargetedMessage
+    ? formatGroupEventForSync(latestTargetedMessage)
+    : 'No targeted user message was found.';
+  const latestReplyBlock = latestParticipantReply
+    ? formatGroupEventForSync(latestParticipantReply)
+    : 'No previous participant reply was found.';
 
   for (const message of pendingMessages) {
     const speaker =
@@ -183,7 +192,23 @@ export const buildCodexRoomChatPrompt = (
 
   return [
     '<task>',
-    'A user asked a question in a group chat. Inspect the codebase if needed, then answer the question directly.',
+    `You are ${participant.label} in a group chat about the current workspace.`,
+    'Decide whether TARGET_MESSAGE is asking for:',
+    '1. A direct answer, explanation, or opinion.',
+    '2. Real work in the workspace, such as investigation, edits, commands, tests, verification, or continuing previously promised work.',
+    '',
+    'If it is (2), do the work before replying. Use tools when they help. Do not stop at a plan or promise.',
+    'If the user is calling out missing follow-through on work you already said you would do, treat that as (2): continue the work and return concrete results.',
+    'If it is only (1), answer directly.',
+    '',
+    'TARGET_MESSAGE:',
+    targetBlock,
+    '',
+    'LATEST_PARTICIPANT_REPLY:',
+    latestReplyBlock,
+    '',
+    'If TARGET_MESSAGE asks whether another participant\'s reply is correct, use LATEST_PARTICIPANT_REPLY and Chat context directly.',
+    'Do not ask the user to repeat content that is already shown below.',
     '',
     'Chat context:',
     transcript,
@@ -191,10 +216,14 @@ export const buildCodexRoomChatPrompt = (
     '',
     '<compact_output_contract>',
     'Return your answer in the same language the user used. Do not introduce yourself or describe your role.',
+    'If you performed work, include only concrete results that actually happened, such as changed files, key diff, test results, or a precise blocker.',
+    'Do not say you will do work later if you have not done it in this turn.',
     '</compact_output_contract>',
     '',
     '<verification_loop>',
-    'Before finalizing, verify that your answer addresses the user\'s question and does not contain self-introductions or role descriptions.',
+    'Before finalizing, verify that you either answered the question directly or actually performed the requested work.',
+    'Never claim edits, commands, tests, or follow-up that did not happen.',
+    'Do not contain self-introductions or role descriptions.',
     '</verification_loop>',
   ].join('\n');
 };
@@ -231,7 +260,7 @@ const mirrorTraceMessage = async (
       );
     },
   );
-  if (!updated) {
+  if (updated === null) {
     return;
   }
   ctx.broadcastEvent({
@@ -298,7 +327,7 @@ const mirrorAssistantEvent = async (
         );
       },
     );
-    if (!updated) {
+    if (updated === null) {
       return;
     }
     ctx.broadcastEvent({
@@ -332,7 +361,7 @@ const mirrorAssistantEvent = async (
         );
       },
     );
-    if (!updated) {
+    if (updated === null) {
       return;
     }
     ctx.broadcastEvent({
@@ -368,7 +397,7 @@ const mirrorAssistantEvent = async (
         );
       },
     );
-    if (!updated) {
+    if (updated === null) {
       return;
     }
     ctx.broadcastEvent({
@@ -403,7 +432,7 @@ const mirrorAssistantEvent = async (
       );
     },
   );
-  if (!updated) {
+  if (updated === null) {
     return;
   }
   ctx.broadcastEvent({
@@ -418,53 +447,63 @@ const mirrorAssistantEvent = async (
 const createMirroredContext = (
   ctx: ClaudeInteractionContext,
   spec: GroupMirrorSpec,
-): ClaudeInteractionContext => ({
-  ...ctx,
-  broadcastEvent: (event) => {
-    void (async () => {
+): ClaudeInteractionContext => {
+  let mirrorQueue = Promise.resolve();
+
+  return {
+    ...ctx,
+    broadcastEvent: (event) => {
       if (event.sessionId !== spec.backingSessionId) {
         return;
       }
 
-      if (event.type === 'trace') {
-        await mirrorTraceMessage(ctx, spec, event.message);
-        return;
-      }
+      // Serialize mirrored event processing to maintain delta ordering and
+      // prevent concurrent read-modify-write races on the room session.
+      mirrorQueue = mirrorQueue
+        .then(async () => {
+          if (event.type === 'trace') {
+            await mirrorTraceMessage(ctx, spec, event.message);
+            return;
+          }
 
-      if (
-        event.type === 'status' ||
-        event.type === 'delta' ||
-        event.type === 'complete' ||
-        event.type === 'error'
-      ) {
-        await mirrorAssistantEvent(ctx, spec, event);
-        return;
-      }
+          if (
+            event.type === 'status' ||
+            event.type === 'delta' ||
+            event.type === 'complete' ||
+            event.type === 'error'
+          ) {
+            await mirrorAssistantEvent(ctx, spec, event);
+            return;
+          }
 
-      if (
-        event.type === 'permission-request' ||
-        event.type === 'ask-user-question' ||
-        event.type === 'plan-mode-request'
-      ) {
-        ctx.broadcastEvent({
-          ...event,
-          sessionId: spec.roomSessionId,
-          sourceSessionId: spec.backingSessionId,
+          if (
+            event.type === 'permission-request' ||
+            event.type === 'ask-user-question' ||
+            event.type === 'plan-mode-request' ||
+            event.type === 'background-task' ||
+            event.type === 'runtime-state'
+          ) {
+            ctx.broadcastEvent({
+              ...event,
+              sessionId: spec.roomSessionId,
+              sourceSessionId: spec.backingSessionId,
+            });
+          }
+        })
+        .catch((error) => {
+          console.error(
+            '[GROUP] Failed to mirror event',
+            event.type,
+            'for room session',
+            spec.roomSessionId,
+            'from backing session',
+            spec.backingSessionId,
+            error,
+          );
         });
-      }
-    })().catch((error) => {
-      console.error(
-        '[GROUP] Failed to mirror event',
-        event.type,
-        'for room session',
-        spec.roomSessionId,
-        'from backing session',
-        spec.backingSessionId,
-        error,
-      );
-    });
-  },
-});
+    },
+  };
+};
 
 const buildRoomAssistantPlaceholder = (
   participant: GroupParticipant,
@@ -588,50 +627,111 @@ const runGroupParticipantTurn = async (
   };
   const mirroredCtx = createMirroredContext(ctx, mirrorSpec);
 
-  const result =
-    participant.provider === 'codex'
-      ? await runCodexAppServerTurn(
-          mirroredCtx,
-          backingSession.id,
-          syncPrompt,
-          pendingAttachments,
-          backingSession,
-          {
-            references: roomSession.contextReferences ?? [],
-            model: participant.model || backingSession.model || payload.model,
-          },
-        )
-      : await runClaudePrint(
-          mirroredCtx,
-          state,
-          backingSession.id,
-          syncPrompt,
-          pendingAttachments,
-          backingSession,
-          {
-            references: roomSession.contextReferences ?? [],
-            model: participant.model || backingSession.model || payload.model,
-            effort: payload.effort,
-          },
-        );
+  // For Claude participants, register a persistent broadcast interceptor on the
+  // backing session so that events produced by the resident stdout processor
+  // (which holds the ctx from when the resident was first created, not the
+  // current mirroredCtx) are also routed through the mirror.  The interceptor
+  // stays alive until a terminal event (complete/error) arrives for our
+  // assistant message, covering background tasks that outlive the initial turn.
+  // Codex doesn't need this — runCodexAppServerTurn is fully synchronous and
+  // its ctx is used directly throughout.
+  let interceptor: SessionBroadcastInterceptor | undefined;
+  let interceptorSettled: (() => void) | undefined;
+  let backgroundSettled: Promise<void> | undefined;
 
-  mirrorSpec.backingAssistantMessageId = result.queued.assistantMessageId;
+  if (participant.provider !== 'codex') {
+    backgroundSettled = new Promise<void>((resolve) => {
+      interceptorSettled = resolve;
+    });
 
-  await updateSessionRecord(roomSession.id, (session) => {
-    if (session.group?.kind !== 'room') {
-      return;
+    interceptor = (event) => {
+      // Only handle events for the backing session.
+      if (event.sessionId !== backingSession.id) {
+        return;
+      }
+
+      // Forward through the mirrored context so the room session gets updated.
+      mirroredCtx.broadcastEvent(event);
+
+      // When the assistant message reaches a terminal state, the interceptor
+      // has done its job — unregister and signal settlement.
+      if (
+        mirrorSpec.backingAssistantMessageId &&
+        'messageId' in event &&
+        event.messageId === mirrorSpec.backingAssistantMessageId &&
+        (event.type === 'complete' || event.type === 'error')
+      ) {
+        removeSessionBroadcastInterceptor(state, backingSession.id, interceptor!);
+        interceptorSettled?.();
+      }
+    };
+
+    addSessionBroadcastInterceptor(state, backingSession.id, interceptor);
+  }
+
+  try {
+    // Codex: pass mirroredCtx directly — runCodexAppServerTurn is synchronous
+    // and uses the passed ctx throughout, so mirroring works correctly.
+    // Claude: pass the original ctx — the interceptor registered above handles
+    // mirroring.  Passing mirroredCtx here would cause double-mirroring since
+    // the resident proxy also dispatches through the interceptor.
+    const result =
+      participant.provider === 'codex'
+        ? await runCodexAppServerTurn(
+            mirroredCtx,
+            backingSession.id,
+            syncPrompt,
+            pendingAttachments,
+            backingSession,
+            {
+              references: roomSession.contextReferences ?? [],
+              model: participant.model || backingSession.model || payload.model,
+            },
+          )
+        : await runClaudePrint(
+            ctx,
+            state,
+            backingSession.id,
+            syncPrompt,
+            pendingAttachments,
+            backingSession,
+            {
+              references: roomSession.contextReferences ?? [],
+              model: participant.model || backingSession.model || payload.model,
+              effort: payload.effort,
+            },
+          );
+
+    mirrorSpec.backingAssistantMessageId = result.queued.assistantMessageId;
+
+    await updateSessionRecord(roomSession.id, (session) => {
+      if (session.group?.kind !== 'room') {
+        return;
+      }
+
+      session.group.participants = session.group.participants.map((candidate) =>
+        candidate.id === participant.id
+          ? {
+              ...candidate,
+              lastAppliedRoomSeq: snapshotSeq,
+              model: participant.model || backingSession.model || candidate.model,
+            }
+          : candidate,
+      );
+    });
+
+    // Wait for the interceptor to see the terminal event (complete/error) so
+    // background task results are mirrored before we return.
+    if (backgroundSettled) {
+      await backgroundSettled;
     }
-
-    session.group.participants = session.group.participants.map((candidate) =>
-      candidate.id === participant.id
-        ? {
-            ...candidate,
-            lastAppliedRoomSeq: snapshotSeq,
-            model: participant.model || backingSession.model || candidate.model,
-          }
-        : candidate,
-    );
-  });
+  } finally {
+    // Safety net: always clean up the interceptor even if the turn throws.
+    if (interceptor) {
+      removeSessionBroadcastInterceptor(state, backingSession.id, interceptor);
+      interceptorSettled?.();
+    }
+  }
 };
 
 export const sendGroupMessage = async (
@@ -705,13 +805,20 @@ export const sendGroupMessage = async (
     );
   });
 
-  targetParticipants.forEach((participant, index) => {
+  // Broadcast running state for the room when participant turns start.
+  ctx.broadcastEvent({
+    type: 'runtime-state',
+    sessionId: roomSession.id,
+    runtime: { processActive: true, phase: 'running', updatedAt: Date.now() },
+  });
+
+  const turnPromises = targetParticipants.map((participant, index) => {
     const placeholder = placeholders[index];
     if (!placeholder) {
-      return;
+      return Promise.resolve();
     }
 
-    void runGroupParticipantTurn(
+    return runGroupParticipantTurn(
       ctx,
       state,
       roomAfterUser,
@@ -728,6 +835,15 @@ export const sendGroupMessage = async (
         placeholder,
         error,
       );
+    });
+  });
+
+  // When all participant turns settle, broadcast inactive for the room.
+  void Promise.allSettled(turnPromises).then(() => {
+    ctx.broadcastEvent({
+      type: 'runtime-state',
+      sessionId: roomSession.id,
+      runtime: { processActive: false, phase: 'inactive', updatedAt: Date.now() },
     });
   });
 

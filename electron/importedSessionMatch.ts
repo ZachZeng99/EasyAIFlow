@@ -20,9 +20,13 @@ export const findImportedSessionTarget = (
   const sameTitle = projectSessions.filter(
     (session) =>
       session.title === title &&
-      session.dreamName !== 'Temporary' &&
       sameWorkspacePath(session.workspace, workspace) &&
-      normalizeSessionProvider(session.provider) === provider,
+      normalizeSessionProvider(session.provider) === provider &&
+      (
+        session.dreamName !== 'Temporary' ||
+        session.hidden === true ||
+        session.group?.kind === 'member'
+      ),
   );
 
   return sameTitle.length === 1 ? sameTitle[0] : undefined;

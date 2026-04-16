@@ -95,26 +95,61 @@ const normalizeMessages = (messages: ConversationMessage[]) => {
   return result;
 };
 
+const sharesDisplaySpeaker = (left: ConversationMessage, right: ConversationMessage) => {
+  const leftSpeaker = left.speakerId?.trim() ?? '';
+  const rightSpeaker = right.speakerId?.trim() ?? '';
+
+  if (leftSpeaker || rightSpeaker) {
+    return leftSpeaker === rightSpeaker;
+  }
+
+  return true;
+};
+
+const buildAssistantTraceAssignments = (messages: ConversationMessage[]) => {
+  const traceItemsByAssistantId = new Map<string, ConversationMessage[]>();
+  const assignedTraceIndexes = new Set<number>();
+
+  for (let index = 0; index < messages.length; index += 1) {
+    const current = messages[index];
+    if (current.role !== 'system') {
+      continue;
+    }
+
+    for (let scan = index - 1; scan >= 0; scan -= 1) {
+      const candidate = messages[scan];
+      if (candidate.role === 'user') {
+        break;
+      }
+
+      if (candidate.role !== 'assistant' || !sharesDisplaySpeaker(candidate, current)) {
+        continue;
+      }
+
+      assignedTraceIndexes.add(index);
+      const traceItems = traceItemsByAssistantId.get(candidate.id) ?? [];
+      traceItems.push(current);
+      traceItemsByAssistantId.set(candidate.id, traceItems);
+      break;
+    }
+  }
+
+  return {
+    traceItemsByAssistantId,
+    assignedTraceIndexes,
+  };
+};
+
 export const buildDisplayItems = (messages: ConversationMessage[]): DisplayItem[] => {
   const normalized = normalizeMessages(messages);
+  const { traceItemsByAssistantId, assignedTraceIndexes } = buildAssistantTraceAssignments(normalized);
   const items: DisplayItem[] = [];
 
   for (let index = 0; index < normalized.length; index += 1) {
     const current = normalized[index];
 
     if (current.role === 'assistant') {
-      const systemRun: ConversationMessage[] = [];
-      let nextIndex = index + 1;
-      while (
-        nextIndex < normalized.length &&
-        normalized[nextIndex].role === 'system' &&
-        (current.speakerId
-          ? normalized[nextIndex].speakerId === current.speakerId
-          : !normalized[nextIndex].speakerId)
-      ) {
-        systemRun.push(normalized[nextIndex]);
-        nextIndex += 1;
-      }
+      const systemRun = traceItemsByAssistantId.get(current.id) ?? [];
 
       if (systemRun.length > 0) {
         items.push({
@@ -128,20 +163,22 @@ export const buildDisplayItems = (messages: ConversationMessage[]): DisplayItem[
           relatedTraceItems: systemRun,
           codeChanges: extractCodeChangeSummaries(systemRun),
         });
-        index = nextIndex - 1;
         continue;
       }
     }
 
     if (current.role === 'system') {
+      if (assignedTraceIndexes.has(index)) {
+        continue;
+      }
+
       const systemRun: ConversationMessage[] = [current];
       let nextIndex = index + 1;
       while (
         nextIndex < normalized.length &&
         normalized[nextIndex].role === 'system' &&
-        (current.speakerId
-          ? normalized[nextIndex].speakerId === current.speakerId
-          : !normalized[nextIndex].speakerId)
+        !assignedTraceIndexes.has(nextIndex) &&
+        sharesDisplaySpeaker(current, normalized[nextIndex])
       ) {
         systemRun.push(normalized[nextIndex]);
         nextIndex += 1;

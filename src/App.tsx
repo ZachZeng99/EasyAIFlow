@@ -15,6 +15,7 @@ import {
 } from './data/askUserQuestion';
 import {
   clearSessionBackgroundTasks,
+  mergeSessionRuntimeStates,
   setSessionRuntimeState,
   upsertSessionBackgroundTask,
   type SessionInteractionState,
@@ -508,9 +509,45 @@ export default function App() {
         loadingSessionRecordIds.current.delete(sessionId);
       });
   }, [allSessions, hydrateSessionRecord]);
+  const getEffectiveSessionRuntime = useCallback(
+    (session: Pick<SessionRecord, 'id' | 'sessionKind' | 'group'> | undefined) => {
+      if (!session) {
+        return undefined;
+      }
+
+      const directRuntime = sessionInteractions.get(session.id)?.runtime;
+      if (session.sessionKind !== 'group' || session.group?.kind !== 'room') {
+        return directRuntime;
+      }
+
+      return mergeSessionRuntimeStates([
+        directRuntime,
+        ...session.group.participants.map(
+          (participant) => sessionInteractions.get(participant.backingSessionId)?.runtime,
+        ),
+      ]);
+    },
+    [sessionInteractions],
+  );
+  const getEffectiveSessionInteraction = useCallback(
+    (session: SessionRecord | undefined): SessionInteractionState | undefined => {
+      if (!session) {
+        return undefined;
+      }
+
+      const interaction = sessionInteractions.get(session.id);
+      const runtime = getEffectiveSessionRuntime(session);
+      if (!runtime) {
+        return interaction;
+      }
+
+      return interaction ? { ...interaction, runtime } : { runtime };
+    },
+    [getEffectiveSessionRuntime, sessionInteractions],
+  );
   const selectedInteractionState = useMemo(
-    () => sessionInteractions.get(selectedSession?.id ?? ''),
-    [selectedSession?.id, sessionInteractions],
+    () => getEffectiveSessionInteraction(selectedSession),
+    [getEffectiveSessionInteraction, selectedSession],
   );
   useEffect(() => {
     setComposerNotice(null);
@@ -555,14 +592,14 @@ export default function App() {
   );
   const isSelectedSessionResponding = useMemo(
     () =>
-      sessionInteractions.get(selectedSession?.id ?? '')?.runtime
-        ? sessionInteractions.get(selectedSession?.id ?? '')?.runtime?.phase === 'running' ||
-          sessionInteractions.get(selectedSession?.id ?? '')?.runtime?.phase === 'awaiting_reply' ||
-          sessionInteractions.get(selectedSession?.id ?? '')?.runtime?.phase === 'terminating'
+      selectedInteractionState?.runtime
+        ? selectedInteractionState.runtime.phase === 'running' ||
+          selectedInteractionState.runtime.phase === 'awaiting_reply' ||
+          selectedInteractionState.runtime.phase === 'terminating'
         : selectedSession
           ? isAssistantPendingStatus(findLastAssistantMessage(selectedSession)?.status)
           : false,
-    [selectedSession, sessionInteractions],
+    [selectedInteractionState, selectedSession],
   );
   const selectedGroupParticipants = useMemo<GroupParticipant[]>(
     () =>
@@ -586,6 +623,20 @@ export default function App() {
           ]
         : [],
     [selectedGroupParticipants],
+  );
+  const selectedGroupCliStatuses = useMemo(
+    () =>
+      selectedSession?.sessionKind === 'group' && selectedSession.group?.kind === 'room'
+        ? selectedSession.group.participants
+            .filter((participant) => participant.enabled)
+            .map((participant) => ({
+              participantId: participant.id,
+              label: participant.label,
+              provider: participant.provider,
+              online: Boolean(sessionInteractions.get(participant.backingSessionId)?.runtime?.processActive),
+            }))
+        : [],
+    [selectedSession, sessionInteractions],
   );
   const groupComposerNotice = useMemo(() => {
     if (selectedSession?.sessionKind !== 'group') {
@@ -614,7 +665,7 @@ export default function App() {
           const isResponding = isAssistantPendingStatus(lastAssistant?.status);
           const hasUnread =
             session.id !== activeSelectedSessionId && unreadSessionIds.includes(session.id);
-          const interaction = sessionInteractions.get(session.id);
+          const interaction = getEffectiveSessionInteraction(session);
           const hasActiveBackgroundTasks = Boolean(
             interaction?.backgroundTasks?.some(
               (task) => task.status === 'pending' || task.status === 'running',
@@ -657,19 +708,27 @@ export default function App() {
           return [session.id, { state: 'idle', online: isOnline }];
         }),
       ),
-    [activeSelectedSessionId, allSessions, sessionInteractions, unreadSessionIds, visibleSessions],
+    [
+      activeSelectedSessionId,
+      allSessions,
+      getEffectiveSessionInteraction,
+      sessionInteractions,
+      unreadSessionIds,
+      visibleSessions,
+    ],
   );
   const isWebRuntime = bridge.runtime === 'web';
-  const selectedInteraction = sessionInteractions.get(selectedSession?.id ?? '');
   const hasBlockingInteraction = Boolean(
-    selectedInteraction?.permission || selectedInteraction?.askUserQuestion || selectedInteraction?.planModeRequest,
+    selectedInteractionState?.permission ||
+      selectedInteractionState?.askUserQuestion ||
+      selectedInteractionState?.planModeRequest,
   );
   const hasActiveSelectedBackgroundTasks = Boolean(
-    selectedInteraction?.backgroundTasks?.some(
+    selectedInteractionState?.backgroundTasks?.some(
       (task) => task.status === 'pending' || task.status === 'running',
     ),
   );
-  const canDisconnectSelectedSession = Boolean(selectedInteraction?.runtime?.processActive);
+  const canDisconnectSelectedSession = Boolean(selectedInteractionState?.runtime?.processActive);
   const isSelectedGroupSession = selectedSession?.sessionKind === 'group';
   const selectedProvider = getSessionProvider(selectedSession);
   const selectedProviderName = isSelectedGroupSession ? 'Group room' : getProviderDisplayName(selectedProvider);
@@ -1773,7 +1832,7 @@ export default function App() {
       if (nextSession) {
         setSelectedSessionId(nextSession.id);
       }
-      setUiError(null);
+      setUiError(result.warning ?? null);
     } catch (error) {
       setUiError(error instanceof Error ? error.message : 'Failed to delete streamwork.');
     }
@@ -1788,7 +1847,7 @@ export default function App() {
       if (nextSession) {
         setSelectedSessionId(nextSession.id);
       }
-      setUiError(null);
+      setUiError(result.warning ?? null);
     } catch (error) {
       setUiError(error instanceof Error ? error.message : 'Failed to delete session.');
     }
@@ -2039,6 +2098,7 @@ export default function App() {
                 messages={selectedSession.messages ?? []}
                 isLoadingHistory={selectedSession.messagesLoaded === false}
                 isCliOnline={canDisconnectSelectedSession}
+                groupCliStatuses={selectedGroupCliStatuses}
                 onDisconnect={() => {
                   void handleDisconnect(selectedSession.id);
                 }}
@@ -2053,7 +2113,7 @@ export default function App() {
                     },
                   }))
                 }
-                interaction={sessionInteractions.get(selectedSession.id)}
+                interaction={selectedInteractionState}
                 onGrantPermission={() => {
                   void handleGrantPermission(selectedSession.id);
                 }}
@@ -2103,7 +2163,7 @@ export default function App() {
                 allowSendWhileResponding={hasActiveSelectedBackgroundTasks}
                 model={model}
                 effort={effort}
-                appliedEffort={selectedInteraction?.runtime?.appliedEffort}
+                appliedEffort={selectedInteractionState?.runtime?.appliedEffort}
                 notice={
                   isSelectedGroupSession
                     ? groupComposerNotice
@@ -2158,7 +2218,7 @@ export default function App() {
             <ContextPanel
               session={selectedSession}
               messages={selectedSession.messages ?? []}
-              interaction={selectedInteraction}
+              interaction={selectedInteractionState}
               requestedEffort={effort}
               appVersion={appVersion}
               gitSnapshot={gitSnapshot}

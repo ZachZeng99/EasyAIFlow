@@ -65,9 +65,9 @@ await run('provider session runtimes advertise resident vs one-shot capabilities
     disconnectBehavior: 'resident',
   });
   assert.deepEqual(providerSessionRuntimes.codex.capabilities, {
-    residentSession: false,
+    residentSession: true,
     interactiveControl: false,
-    disconnectBehavior: 'stop',
+    disconnectBehavior: 'resident',
   });
 });
 
@@ -96,7 +96,7 @@ await run('resolveProviderSessionRuntime resolves stored Claude and Codex sessio
     const codexRuntime = await resolveProviderSessionRuntime(codexCreated.session.id);
     assert.equal(codexProvider, 'codex');
     assert.equal(codexRuntime.provider, 'codex');
-    assert.equal(codexRuntime.capabilities.disconnectBehavior, 'stop');
+    assert.equal(codexRuntime.capabilities.disconnectBehavior, 'resident');
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

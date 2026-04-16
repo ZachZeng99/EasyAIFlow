@@ -177,19 +177,31 @@ type CodexCommandExecutionItem = {
   type?: unknown;
   command?: unknown;
   aggregated_output?: unknown;
+  aggregatedOutput?: unknown;
   exit_code?: unknown;
+  exitCode?: unknown;
   status?: unknown;
 };
 
 type CodexFunctionCallItem = {
   call_id?: unknown;
+  id?: unknown;
   name?: unknown;
+  tool?: unknown;
   arguments?: unknown;
+  prompt?: unknown;
+  result?: unknown;
+  contentItems?: unknown;
+  error?: unknown;
 };
 
 type CodexFunctionCallOutputItem = {
   call_id?: unknown;
+  id?: unknown;
   output?: unknown;
+  result?: unknown;
+  contentItems?: unknown;
+  error?: unknown;
 };
 
 const getString = (value: unknown) => (typeof value === 'string' ? value : '');
@@ -209,6 +221,117 @@ const parseCodexFunctionArguments = (value: string) => {
   } catch {
     return undefined;
   }
+};
+
+const stringifyCodexStructuredValue = (value: unknown): string => {
+  if (typeof value === 'string') {
+    return value.trim();
+  }
+
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => {
+        if (!entry || typeof entry !== 'object') {
+          return stringifyCodexStructuredValue(entry);
+        }
+
+        const candidate = entry as Record<string, unknown>;
+        if (typeof candidate.text === 'string') {
+          return candidate.text.trim();
+        }
+        if (typeof candidate.message === 'string') {
+          return candidate.message.trim();
+        }
+        return JSON.stringify(candidate);
+      })
+      .filter(Boolean)
+      .join('\n\n')
+      .trim();
+  }
+
+  if (value && typeof value === 'object') {
+    const candidate = value as Record<string, unknown>;
+    if (typeof candidate.text === 'string') {
+      return candidate.text.trim();
+    }
+    if (Array.isArray(candidate.content)) {
+      const nested = stringifyCodexStructuredValue(candidate.content);
+      if (nested) {
+        return nested;
+      }
+    }
+    if (Array.isArray(candidate.contentItems)) {
+      const nested = stringifyCodexStructuredValue(candidate.contentItems);
+      if (nested) {
+        return nested;
+      }
+    }
+    if (typeof candidate.message === 'string') {
+      return candidate.message.trim();
+    }
+    return JSON.stringify(candidate, null, 2).trim();
+  }
+
+  return '';
+};
+
+const extractCodexToolCallId = (item: CodexFunctionCallItem | CodexFunctionCallOutputItem) => {
+  if (typeof item.call_id === 'string' && item.call_id.trim()) {
+    return item.call_id;
+  }
+
+  if (typeof item.id === 'string' && item.id.trim()) {
+    return item.id;
+  }
+
+  return undefined;
+};
+
+const extractCodexToolArgumentsText = (item: CodexFunctionCallItem | CodexFunctionCallOutputItem) => {
+  const rawArguments = (item as { arguments?: unknown }).arguments;
+  if (typeof rawArguments === 'string') {
+    return rawArguments.trim();
+  }
+
+  if (rawArguments && typeof rawArguments === 'object') {
+    return JSON.stringify(rawArguments, null, 2).trim();
+  }
+
+  if (typeof (item as { prompt?: unknown }).prompt === 'string') {
+    return ((item as { prompt: string }).prompt).trim();
+  }
+
+  return '';
+};
+
+const extractCodexToolArgumentsObject = (item: CodexFunctionCallItem | CodexFunctionCallOutputItem) => {
+  const rawArguments = (item as { arguments?: unknown }).arguments;
+  if (rawArguments && typeof rawArguments === 'object' && !Array.isArray(rawArguments)) {
+    return rawArguments as Record<string, unknown>;
+  }
+
+  return extractCodexToolArgumentsText(item)
+    ? parseCodexFunctionArguments(extractCodexToolArgumentsText(item))
+    : undefined;
+};
+
+const extractCodexToolOutputText = (item: CodexFunctionCallItem | CodexFunctionCallOutputItem) => {
+  const directOutput = stringifyCodexStructuredValue((item as { output?: unknown }).output);
+  if (directOutput) {
+    return directOutput;
+  }
+
+  const contentItems = stringifyCodexStructuredValue((item as { contentItems?: unknown }).contentItems);
+  if (contentItems) {
+    return contentItems;
+  }
+
+  const result = stringifyCodexStructuredValue((item as { result?: unknown }).result);
+  if (result) {
+    return result;
+  }
+
+  return stringifyCodexStructuredValue((item as { error?: unknown }).error);
 };
 
 const buildCodexCodeChangeSuccessLine = (toolName: string) => {
@@ -232,7 +355,14 @@ export const buildCodexCommandTraceMessage = (payload: {
   previous?: ConversationMessage;
   timestamp?: string;
 }) => {
-  if (payload.item.type !== 'command_execution' || typeof payload.item.command !== 'string') {
+  if (
+    payload.item.type !== 'command_execution' &&
+    payload.item.type !== 'commandExecution'
+  ) {
+    return null;
+  }
+
+  if (typeof payload.item.command !== 'string') {
     return null;
   }
 
@@ -244,11 +374,15 @@ export const buildCodexCommandTraceMessage = (payload: {
   const output =
     typeof payload.item.aggregated_output === 'string'
       ? payload.item.aggregated_output.trim()
-      : '';
+      : typeof payload.item.aggregatedOutput === 'string'
+        ? payload.item.aggregatedOutput.trim()
+        : '';
   const exitCode =
     typeof payload.item.exit_code === 'number' && Number.isFinite(payload.item.exit_code)
       ? payload.item.exit_code
-      : null;
+      : typeof payload.item.exitCode === 'number' && Number.isFinite(payload.item.exitCode)
+        ? payload.item.exitCode
+        : null;
   const contentParts = [command];
   if (output) {
     contentParts.push(output);
@@ -274,11 +408,9 @@ export const buildCodexFunctionCallTraceMessage = (payload: {
   previous?: ConversationMessage;
   timestamp?: string;
   title?: string;
+  extraLines?: string[];
 }) => {
-  const callId =
-    typeof (payload.item as { call_id?: unknown }).call_id === 'string'
-      ? (payload.item as { call_id: string }).call_id
-      : undefined;
+  const callId = extractCodexToolCallId(payload.item);
   if (!callId) {
     return null;
   }
@@ -287,22 +419,21 @@ export const buildCodexFunctionCallTraceMessage = (payload: {
     payload.title ??
     (typeof (payload.item as { name?: unknown }).name === 'string'
       ? (payload.item as { name: string }).name
+      : typeof (payload.item as { tool?: unknown }).tool === 'string'
+        ? (payload.item as { tool: string }).tool
       : 'Tool');
   const name = normalizeCodexFunctionToolName(rawName);
-  const argumentsText =
-    typeof (payload.item as { arguments?: unknown }).arguments === 'string'
-      ? (payload.item as { arguments: string }).arguments.trim()
-      : '';
-  const outputText =
-    typeof (payload.item as { output?: unknown }).output === 'string'
-      ? (payload.item as { output: string }).output.trim()
-      : '';
-  const parsedArguments = argumentsText ? parseCodexFunctionArguments(argumentsText) : undefined;
+  const argumentsText = extractCodexToolArgumentsText(payload.item);
+  const outputText = extractCodexToolOutputText(payload.item);
+  const parsedArguments = extractCodexToolArgumentsObject(payload.item);
   const recordedDiff =
     payload.previous?.recordedDiff ??
     (parsedArguments ? buildRecordedCodeChangeDiff(name, parsedArguments) : undefined);
   const filePath = recordedDiff?.filePath || getString(parsedArguments?.file_path).trim();
-  const contentParts = [payload.previous?.content?.trim() ?? ''].filter(Boolean);
+  const contentParts = (payload.previous?.content?.trim() ?? '')
+    .split(/\n{2,}/)
+    .map((part) => part.trim())
+    .filter(Boolean);
 
   if (!payload.previous && argumentsText) {
     contentParts.push(filePath || argumentsText);
@@ -314,6 +445,12 @@ export const buildCodexFunctionCallTraceMessage = (payload: {
     }
   } else if (outputText) {
     contentParts.push(outputText);
+  }
+  for (const line of payload.extraLines ?? []) {
+    const trimmed = line.trim();
+    if (trimmed && !contentParts.includes(trimmed)) {
+      contentParts.push(trimmed);
+    }
   }
 
   return {

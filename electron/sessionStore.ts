@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { getRuntimePaths } from '../backend/runtimePaths.js';
@@ -37,6 +38,7 @@ import {
   isWorkspaceWithinProjectTree,
   normalizeWorkspacePath,
   sameWorkspacePath,
+  getClaudeProjectDirNameCandidates,
   toClaudeProjectDirName,
 } from './workspacePaths.js';
 import { filterVisibleProjects } from './projectVisibility.js';
@@ -66,6 +68,14 @@ import type {
 
 type AppState = {
   projects: ProjectRecord[];
+  deletedImports: {
+    claudeSessionIds: string[];
+    codexThreadIds: string[];
+  };
+};
+
+type NativeCleanupResult = {
+  warnings: string[];
 };
 
 let cachedState: AppState | null = null;
@@ -78,8 +88,78 @@ const nativeClaudeHistoryPath = () =>
 const normalizeSessionModel = (model: string, provider: SessionProvider) =>
   provider === 'claude' ? normalizeClaudeModelSelection(model) ?? model.trim() : model.trim();
 
+const describeError = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+const isMissingFsEntryError = (error: unknown) =>
+  typeof error === 'object' &&
+  error !== null &&
+  'code' in error &&
+  (error as { code?: unknown }).code === 'ENOENT';
+
+const logNativeCleanupWarnings = (warnings: string[]) => {
+  warnings.forEach((warning) => console.warn(`[SESSION_STORE] ${warning}`));
+};
+
+const summarizeDeleteWarning = (warnings: string[]) =>
+  warnings.length > 0
+    ? 'Deleted, but native session cleanup partially failed. Check the app logs for details.'
+    : undefined;
+
+const normalizeDeletedImportIds = (value: unknown) =>
+  [...new Set((Array.isArray(value) ? value : []).filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean))];
+
+const createEmptyDeletedImports = () => ({
+  claudeSessionIds: [] as string[],
+  codexThreadIds: [] as string[],
+});
+
+const normalizeDeletedImports = (value: unknown) => {
+  if (!value || typeof value !== 'object') {
+    return createEmptyDeletedImports();
+  }
+
+  const typed = value as {
+    claudeSessionIds?: unknown;
+    codexThreadIds?: unknown;
+  };
+
+  return {
+    claudeSessionIds: normalizeDeletedImportIds(typed.claudeSessionIds),
+    codexThreadIds: normalizeDeletedImportIds(typed.codexThreadIds),
+  };
+};
+
+const rememberDeletedImports = (
+  state: AppState,
+  nativeTargets: { claudeSessions: Array<{ workspace: string; sessionId: string }>; codexThreadIds: string[] },
+) => {
+  const claude = new Set(state.deletedImports.claudeSessionIds);
+  nativeTargets.claudeSessions.forEach((session) => claude.add(session.sessionId));
+  const codex = new Set(state.deletedImports.codexThreadIds);
+  nativeTargets.codexThreadIds.forEach((threadId) => codex.add(threadId));
+  state.deletedImports = {
+    claudeSessionIds: [...claude],
+    codexThreadIds: [...codex],
+  };
+};
+
 const normalizeSessionKind = (value: SessionKind | undefined): SessionKind =>
   value === 'group' || value === 'group_member' ? value : 'standard';
+
+const inferSessionKindFromMetadata = (
+  sessionKind: SessionKind | undefined,
+  group: GroupSessionMetadata | undefined,
+): SessionKind => {
+  if (group?.kind === 'room') {
+    return 'group';
+  }
+
+  if (group?.kind === 'member') {
+    return 'group_member';
+  }
+
+  return normalizeSessionKind(sessionKind);
+};
 
 const getDefaultPreviewForSessionKind = (
   sessionKind: SessionKind,
@@ -177,18 +257,21 @@ const normalizeTokenUsage = (tokenUsage: TokenUsage | undefined, model: string):
 const normalizeProjects = (projects: ProjectRecord[]) =>
   projects.map((project) =>
     cleanupProjectSessions({
-      ...project,
-      dreams: sortDreamsWithTemporaryFirst(project.dreams).map((dream) => ({
-        ...dream,
-        sessions: normalizeDreamSessions(dream),
-      })),
+      ...recoverProjectGroupSessions({
+        ...project,
+        dreams: sortDreamsWithTemporaryFirst(project.dreams).map((dream) => ({
+          ...dream,
+          sessions: normalizeDreamSessions(dream),
+        })),
+      }),
     }),
   ) as ProjectRecord[];
 
 const normalizeDreamSessions = (dream: DreamRecord) => {
   const sessions = dream.sessions.map((session) => {
     const current = session as SessionRecord;
-    const sessionKind = normalizeSessionKind(current.sessionKind);
+    const normalizedGroup = normalizeGroupMetadata(current.group);
+    const sessionKind = inferSessionKindFromMetadata(current.sessionKind, normalizedGroup);
     const provider = sessionKind === 'group' ? undefined : normalizeSessionProvider(current.provider);
     const model = provider ? normalizeSessionModel(current.model, provider) : current.model ?? '';
     const legacyKind = (session as { sessionKind?: string }).sessionKind;
@@ -203,8 +286,8 @@ const normalizeDreamSessions = (dream: DreamRecord) => {
       provider,
       model,
       sessionKind,
-      hidden: wasUnknownLegacySessionKind ? false : Boolean(current.hidden),
-      group: normalizeGroupMetadata(current.group),
+      hidden: sessionKind === 'group_member' ? true : wasUnknownLegacySessionKind ? false : Boolean(current.hidden),
+      group: normalizedGroup,
       contextReferences: normalizeContextReferences(current.contextReferences),
       tokenUsage: normalizeTokenUsage(current.tokenUsage, model),
       messages: current.messages ?? [],
@@ -214,6 +297,766 @@ const normalizeDreamSessions = (dream: DreamRecord) => {
 
   return dream.isTemporary ? pruneTemporaryImportedDuplicates(sessions) : sessions;
 };
+
+const groupTitlePrefix = '[Group] ';
+const recoveredGroupHeaderPattern =
+  /^#(\d+)\s+\[([^\]]+)\]\s+\[([^\]\s]+)(?:\s+status=([^\]]+))?\](?:\s+title="([^"]*)")?$/gm;
+const recoverableConversationMessageKinds = new Set([
+  'message',
+  'thinking',
+  'tool_use',
+  'tool_result',
+  'progress',
+  'error',
+]);
+const recoverableConversationMessageStatuses = new Set([
+  'queued',
+  'streaming',
+  'running',
+  'background',
+  'success',
+  'complete',
+  'error',
+]);
+
+const getRecoveredRoomTitle = (title: string) =>
+  title.startsWith(groupTitlePrefix) ? title.slice(groupTitlePrefix.length).trim() : title.trim();
+
+const isOrphanGroupImportedSession = (session: SessionRecord) =>
+  session.sessionKind === 'standard' &&
+  !session.group &&
+  !session.hidden &&
+  session.title.startsWith(groupTitlePrefix) &&
+  Boolean(session.claudeSessionId || session.codexThreadId);
+
+const getRecoveredGroupKey = (workspace: string, roomTitle: string) =>
+  `${normalizeWorkspacePath(workspace)}::${roomTitle.trim()}`;
+
+const chooseRecoveredRoomMessage = (
+  current: ConversationMessage | undefined,
+  candidate: ConversationMessage,
+) => {
+  if (!current) {
+    return candidate;
+  }
+
+  const currentContent = current.content.trim();
+  const candidateContent = candidate.content.trim();
+  if (!currentContent && candidateContent) {
+    return candidate;
+  }
+  if (current.status === 'error' && candidate.status !== 'error') {
+    return candidate;
+  }
+  if (candidateContent.length > currentContent.length) {
+    return candidate;
+  }
+
+  return current;
+};
+
+const parseRecoveredGroupPromptEntries = (
+  section: string,
+  timestamp: string,
+) => {
+  const matches = [...section.matchAll(recoveredGroupHeaderPattern)];
+  const result: ConversationMessage[] = [];
+
+  for (let index = 0; index < matches.length; index += 1) {
+    const match = matches[index];
+    const next = matches[index + 1];
+    const seq = Number(match[1]);
+    if (!Number.isFinite(seq) || seq <= 0) {
+      continue;
+    }
+
+    const speaker = match[2]?.trim() || 'Assistant';
+    const rawKind = match[3]?.trim() || 'message';
+    const rawStatus = match[4]?.trim();
+    const rawTitle = match[5]?.trim();
+    const contentStart = (match.index ?? 0) + match[0].length;
+    const contentEnd = next?.index ?? section.length;
+    const content = section
+      .slice(contentStart, contentEnd)
+      .trim()
+      .replace(/\n{3,}/g, '\n\n');
+
+    const kind = recoverableConversationMessageKinds.has(rawKind) ? rawKind : 'message';
+    const status =
+      rawStatus && recoverableConversationMessageStatuses.has(rawStatus)
+        ? (rawStatus as ConversationMessage['status'])
+        : kind === 'message'
+          ? 'complete'
+          : undefined;
+    const provider =
+      speaker === 'Claude' ? 'claude' : speaker === 'Codex' ? 'codex' : undefined;
+    const role: ConversationMessage['role'] =
+      kind !== 'message' ? 'system' : speaker === 'You' ? 'user' : 'assistant';
+    const title =
+      rawTitle ||
+      firstMeaningfulLine(content).slice(0, 42) ||
+      (role === 'user'
+        ? 'User prompt'
+        : role === 'assistant'
+          ? `${speaker} response`
+          : 'Recovered trace');
+
+    result.push({
+      id: randomUUID(),
+      role,
+      ...(kind !== 'message' ? { kind: kind as ConversationMessage['kind'] } : {}),
+      seq,
+      timestamp,
+      title,
+      content,
+      ...(role !== 'user' && provider
+        ? {
+            speakerId: provider,
+            speakerLabel: speaker,
+            provider,
+          }
+        : role === 'user'
+          ? {
+              speakerId: 'user',
+              speakerLabel: 'You',
+            }
+          : {}),
+      ...(status ? { status } : {}),
+    });
+  }
+
+  return result;
+};
+
+const parseRecoveredClaudeGroupPrompt = (
+  prompt: string,
+  timestamp: string,
+) => {
+  const roomContextMatch = prompt.match(/ROOM_CONTEXT through message #(\d+):/);
+  if (!roomContextMatch) {
+    return null;
+  }
+
+  const snapshotSeq = Number(roomContextMatch[1]);
+  if (!Number.isFinite(snapshotSeq) || snapshotSeq <= 0) {
+    return null;
+  }
+
+  const targetMarker = 'TARGET_MESSAGE:';
+  const targetIndex = prompt.indexOf(targetMarker);
+  const roomIndex = prompt.indexOf(roomContextMatch[0]);
+  if (targetIndex === -1 || roomIndex === -1 || roomIndex <= targetIndex) {
+    return null;
+  }
+
+  const replyIndex = prompt.indexOf('\n\nReply as ', roomIndex);
+  const targetSection = prompt.slice(targetIndex + targetMarker.length, roomIndex).trim();
+  const roomSectionRaw = prompt
+    .slice(roomIndex + roomContextMatch[0].length, replyIndex === -1 ? prompt.length : replyIndex)
+    .trim();
+  const roomSection = roomSectionRaw.replace(/^Participants:.*(?:\r?\n|$)/, '').trim();
+
+  return {
+    snapshotSeq,
+    entries: [
+      ...parseRecoveredGroupPromptEntries(targetSection, timestamp),
+      ...parseRecoveredGroupPromptEntries(roomSection, timestamp),
+    ],
+  };
+};
+
+const parseRecoveredCodexTranscriptPrompt = (
+  prompt: string,
+  timestamp: string,
+) => {
+  const chatContextMarker = 'Chat context:';
+  const startIndex = prompt.indexOf(chatContextMarker);
+  if (startIndex === -1) {
+    return null;
+  }
+
+  const endTagIndex = prompt.indexOf('\n</task>', startIndex);
+  const transcript = prompt
+    .slice(startIndex + chatContextMarker.length, endTagIndex === -1 ? prompt.length : endTagIndex)
+    .trim();
+  if (!transcript) {
+    return null;
+  }
+
+  const lines = transcript.split(/\r?\n/);
+  const entries: ConversationMessage[] = [];
+  let currentSpeaker: 'You' | 'Claude' | 'Codex' | null = null;
+  let buffer: string[] = [];
+
+  const flush = () => {
+    if (!currentSpeaker) {
+      return;
+    }
+
+    const content = buffer.join('\n').trim();
+    if (!content) {
+      currentSpeaker = null;
+      buffer = [];
+      return;
+    }
+
+    const provider =
+      currentSpeaker === 'Claude' ? 'claude' : currentSpeaker === 'Codex' ? 'codex' : undefined;
+    const role: ConversationMessage['role'] = currentSpeaker === 'You' ? 'user' : 'assistant';
+    entries.push({
+      id: randomUUID(),
+      role,
+      timestamp,
+      title:
+        firstMeaningfulLine(content).slice(0, 42) ||
+        (role === 'user' ? 'User prompt' : `${currentSpeaker} response`),
+      content,
+      ...(role === 'user'
+        ? {
+            speakerId: 'user',
+            speakerLabel: 'You',
+          }
+        : provider
+          ? {
+              speakerId: provider,
+              speakerLabel: currentSpeaker,
+              provider,
+            }
+          : {}),
+      status: 'complete',
+    });
+
+    currentSpeaker = null;
+    buffer = [];
+  };
+
+  for (const line of lines) {
+    const header = line.match(/^(You|Claude|Codex):\s?(.*)$/);
+    if (header) {
+      flush();
+      currentSpeaker = header[1] as 'You' | 'Claude' | 'Codex';
+      buffer = [header[2] ?? ''];
+      continue;
+    }
+
+    if (currentSpeaker) {
+      buffer.push(line);
+    }
+  }
+
+  flush();
+  return entries.length > 0 ? entries : null;
+};
+
+const reconstructRecoveredRoomMessages = (
+  roomSession: SessionRecord,
+  participantBackings: Map<GroupParticipantId, SessionRecord>,
+) => {
+  if (roomSession.group?.kind !== 'room') {
+    return [] as ConversationMessage[];
+  }
+
+  const messagesBySeq = new Map<number, ConversationMessage>();
+  const responseCandidates = new Map<
+    number,
+    Partial<Record<GroupParticipantId, { content: string; timestamp: string; sourceSessionId: string }>>
+  >();
+  let longestCodexTranscript:
+    | {
+        entries: ConversationMessage[];
+        finalReply?: { content: string; timestamp: string; sourceSessionId: string; participantId: GroupParticipantId };
+      }
+    | undefined;
+
+  for (const participant of roomSession.group.participants) {
+    const backing = participantBackings.get(participant.id);
+    if (!backing) {
+      continue;
+    }
+
+    let activePrompt:
+      | {
+          snapshotSeq: number;
+          lastAssistant: ConversationMessage | null;
+          timestamp: string;
+        }
+      | null = null;
+
+    for (const message of backing.messages ?? []) {
+      if (message.role === 'user') {
+        const parsedPrompt = parseRecoveredClaudeGroupPrompt(message.content, message.timestamp);
+        const parsedCodexPrompt = parseRecoveredCodexTranscriptPrompt(message.content, message.timestamp);
+        if (!parsedPrompt) {
+          if (parsedCodexPrompt) {
+            activePrompt = {
+              snapshotSeq: parsedCodexPrompt.length,
+              lastAssistant: null,
+              timestamp: message.timestamp,
+            };
+            if (!longestCodexTranscript || parsedCodexPrompt.length >= longestCodexTranscript.entries.length) {
+              longestCodexTranscript = {
+                entries: parsedCodexPrompt,
+              };
+            }
+          } else {
+            activePrompt = null;
+          }
+          continue;
+        }
+
+        if (parsedCodexPrompt && (!longestCodexTranscript || parsedCodexPrompt.length >= longestCodexTranscript.entries.length)) {
+          longestCodexTranscript = {
+            entries: parsedCodexPrompt,
+          };
+        }
+
+        if (!parsedPrompt) {
+          activePrompt = null;
+          continue;
+        }
+
+        for (const entry of parsedPrompt.entries) {
+          if (typeof entry.seq !== 'number') {
+            continue;
+          }
+          messagesBySeq.set(entry.seq, chooseRecoveredRoomMessage(messagesBySeq.get(entry.seq), entry));
+        }
+
+        activePrompt = {
+          snapshotSeq: parsedPrompt.snapshotSeq,
+          lastAssistant: null,
+          timestamp: message.timestamp,
+        };
+        continue;
+      }
+
+      if (message.role === 'assistant' && activePrompt) {
+        activePrompt.lastAssistant = message;
+        continue;
+      }
+    }
+
+    let currentPrompt:
+      | {
+          snapshotSeq: number;
+          lastAssistant: ConversationMessage | null;
+        }
+      | null = null;
+    for (const message of backing.messages ?? []) {
+      if (message.role === 'user') {
+        const parsedPrompt = parseRecoveredClaudeGroupPrompt(message.content, message.timestamp);
+        const parsedCodexPrompt = parseRecoveredCodexTranscriptPrompt(message.content, message.timestamp);
+        currentPrompt = parsedPrompt
+          ? {
+              snapshotSeq: parsedPrompt.snapshotSeq,
+              lastAssistant: null,
+            }
+          : parsedCodexPrompt
+            ? {
+                snapshotSeq: parsedCodexPrompt.length,
+                lastAssistant: null,
+              }
+            : null;
+        continue;
+      }
+
+      if (message.role === 'assistant' && currentPrompt) {
+        currentPrompt.lastAssistant = message;
+        continue;
+      }
+    }
+
+    // Capture the last visible assistant reply after each parsed prompt.
+    currentPrompt = null;
+    for (const message of backing.messages ?? []) {
+      if (message.role === 'user') {
+        const parsedPrompt = parseRecoveredClaudeGroupPrompt(message.content, message.timestamp);
+        const parsedCodexPrompt = parseRecoveredCodexTranscriptPrompt(message.content, message.timestamp);
+        if (currentPrompt?.lastAssistant?.content.trim()) {
+          if (parsedPrompt) {
+            const bucket = responseCandidates.get(currentPrompt.snapshotSeq) ?? {};
+            bucket[participant.id] = {
+              content: currentPrompt.lastAssistant.content,
+              timestamp: currentPrompt.lastAssistant.timestamp,
+              sourceSessionId: backing.id,
+            };
+            responseCandidates.set(currentPrompt.snapshotSeq, bucket);
+          } else if (
+            parsedCodexPrompt &&
+            longestCodexTranscript &&
+            parsedCodexPrompt.length >= longestCodexTranscript.entries.length
+          ) {
+            longestCodexTranscript = {
+              entries: parsedCodexPrompt,
+              finalReply: {
+                content: currentPrompt.lastAssistant.content,
+                timestamp: currentPrompt.lastAssistant.timestamp,
+                sourceSessionId: backing.id,
+                participantId: participant.id,
+              },
+            };
+          }
+        }
+        currentPrompt = parsedPrompt
+          ? {
+              snapshotSeq: parsedPrompt.snapshotSeq,
+              lastAssistant: null,
+            }
+          : parsedCodexPrompt
+            ? {
+                snapshotSeq: parsedCodexPrompt.length,
+                lastAssistant: null,
+              }
+            : null;
+        continue;
+      }
+
+      if (message.role === 'assistant' && currentPrompt) {
+        currentPrompt.lastAssistant = message;
+      }
+    }
+
+    if (currentPrompt?.lastAssistant?.content.trim()) {
+      if (messagesBySeq.size > 0) {
+        const bucket = responseCandidates.get(currentPrompt.snapshotSeq) ?? {};
+        bucket[participant.id] = {
+          content: currentPrompt.lastAssistant.content,
+          timestamp: currentPrompt.lastAssistant.timestamp,
+          sourceSessionId: backing.id,
+        };
+        responseCandidates.set(currentPrompt.snapshotSeq, bucket);
+      } else if (longestCodexTranscript) {
+        longestCodexTranscript = {
+          ...longestCodexTranscript,
+          finalReply: {
+            content: currentPrompt.lastAssistant.content,
+            timestamp: currentPrompt.lastAssistant.timestamp,
+            sourceSessionId: backing.id,
+            participantId: participant.id,
+          },
+        };
+      }
+    }
+  }
+
+  if (messagesBySeq.size === 0 && longestCodexTranscript?.entries.length) {
+    longestCodexTranscript.entries.forEach((message, index) => {
+      messagesBySeq.set(index + 1, {
+        ...message,
+        seq: index + 1,
+      });
+    });
+
+    const lastRecovered = [...messagesBySeq.values()].at(-1);
+    if (
+      longestCodexTranscript.finalReply?.content.trim() &&
+      longestCodexTranscript.finalReply.content.trim() !== lastRecovered?.content.trim()
+    ) {
+      const participant = roomSession.group.participants.find(
+        (candidate) => candidate.id === longestCodexTranscript.finalReply?.participantId,
+      );
+      if (participant) {
+        const nextSeq = messagesBySeq.size + 1;
+        messagesBySeq.set(nextSeq, {
+          id: randomUUID(),
+          role: 'assistant',
+          seq: nextSeq,
+          timestamp: longestCodexTranscript.finalReply.timestamp,
+          title:
+            firstMeaningfulLine(longestCodexTranscript.finalReply.content).slice(0, 42) ||
+            `${participant.label} response`,
+          content: longestCodexTranscript.finalReply.content,
+          speakerId: participant.id,
+          speakerLabel: participant.label,
+          provider: participant.provider,
+          sourceSessionId: longestCodexTranscript.finalReply.sourceSessionId,
+          status: 'complete',
+        });
+      }
+    }
+  }
+
+  for (const [snapshotSeq, bucket] of [...responseCandidates.entries()].sort((left, right) => left[0] - right[0])) {
+    const orderedParticipants = roomSession.group.participants.filter(
+      (participant) => bucket[participant.id]?.content.trim(),
+    );
+
+    orderedParticipants.forEach((participant, index) => {
+      const expectedSeq = snapshotSeq + index + 1;
+      if (messagesBySeq.has(expectedSeq)) {
+        return;
+      }
+
+      const candidate = bucket[participant.id];
+      if (!candidate) {
+        return;
+      }
+
+      messagesBySeq.set(expectedSeq, {
+        id: randomUUID(),
+        role: 'assistant',
+        seq: expectedSeq,
+        timestamp: candidate.timestamp,
+        title:
+          firstMeaningfulLine(candidate.content).slice(0, 42) ||
+          `${participant.label} response`,
+        content: candidate.content,
+        speakerId: participant.id,
+        speakerLabel: participant.label,
+        provider: participant.provider,
+        sourceSessionId: candidate.sourceSessionId,
+        status: 'complete',
+      });
+    });
+  }
+
+  return [...messagesBySeq.entries()]
+    .sort((left, right) => left[0] - right[0])
+    .map(([, message]) => message);
+};
+
+const getRecoveredRoomMessageMaxSeq = (messages: ConversationMessage[] | undefined) =>
+  Math.max(
+    0,
+    ...(messages ?? []).map((message) => (typeof message.seq === 'number' ? message.seq : 0)),
+  );
+
+const getRecoveredRoomMessageContentSize = (messages: ConversationMessage[] | undefined) =>
+  (messages ?? []).reduce((sum, message) => sum + message.content.trim().length, 0);
+
+const shouldApplyRecoveredRoomMessages = (
+  currentMessages: ConversationMessage[] | undefined,
+  reconstructedMessages: ConversationMessage[],
+) => {
+  if (reconstructedMessages.length === 0) {
+    return false;
+  }
+
+  const current = currentMessages ?? [];
+  if (current.length === 0) {
+    return true;
+  }
+
+  const reconstructedMaxSeq = getRecoveredRoomMessageMaxSeq(reconstructedMessages);
+  const currentMaxSeq = getRecoveredRoomMessageMaxSeq(current);
+  if (reconstructedMaxSeq > currentMaxSeq) {
+    return true;
+  }
+
+  const reconstructedContentSize = getRecoveredRoomMessageContentSize(reconstructedMessages);
+  const currentContentSize = getRecoveredRoomMessageContentSize(current);
+  return reconstructedMessages.length >= current.length && reconstructedContentSize > currentContentSize;
+};
+
+const applyRecoveredRoomMessages = (
+  roomSession: SessionRecord,
+  reconstructedMessages: ConversationMessage[],
+) => {
+  if (roomSession.group?.kind !== 'room' || reconstructedMessages.length === 0) {
+    return;
+  }
+
+  const hadExistingMessages = (roomSession.messages ?? []).length > 0;
+  const maxSeq = getRecoveredRoomMessageMaxSeq(reconstructedMessages);
+  roomSession.messages = reconstructedMessages;
+  roomSession.group = {
+    ...roomSession.group,
+    nextMessageSeq: maxSeq + 1,
+    participants: roomSession.group.participants.map((participant) => ({
+      ...participant,
+      lastAppliedRoomSeq: hadExistingMessages
+        ? Math.min(participant.lastAppliedRoomSeq, maxSeq)
+        : maxSeq,
+    })),
+  };
+  const latest = reconstructedMessages[reconstructedMessages.length - 1];
+  roomSession.preview = latest?.content || roomSession.preview;
+  roomSession.timeLabel = latest?.timestamp || roomSession.timeLabel;
+};
+
+function recoverProjectGroupSessions(project: ProjectRecord): ProjectRecord {
+  const sessions = project.dreams.flatMap((dream) => dream.sessions as SessionRecord[]);
+  const dreamById = new Map(project.dreams.map((dream) => [dream.id, dream]));
+  const roomByKey = new Map<string, SessionRecord>();
+
+  for (const session of sessions) {
+    if (session.sessionKind === 'group' || session.group?.kind === 'room') {
+      const roomTitle = getRecoveredRoomTitle(session.title);
+      roomByKey.set(getRecoveredGroupKey(session.workspace, roomTitle), session);
+    }
+  }
+
+  const orphanBuckets = new Map<string, SessionRecord[]>();
+  for (const session of sessions) {
+    if (!isOrphanGroupImportedSession(session)) {
+      continue;
+    }
+
+    const roomTitle = getRecoveredRoomTitle(session.title);
+    const key = getRecoveredGroupKey(session.workspace, roomTitle);
+    const bucket = orphanBuckets.get(key) ?? [];
+    bucket.push(session);
+    orphanBuckets.set(key, bucket);
+  }
+
+  for (const [key, bucket] of orphanBuckets) {
+    const sortedBucket = [...bucket].sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));
+    const latest = sortedBucket[0];
+    if (!latest) {
+      continue;
+    }
+
+    const roomTitle = getRecoveredRoomTitle(latest.title);
+    const targetDream =
+      dreamById.get(latest.dreamId) ??
+      project.dreams.find((dream) => dream.isTemporary) ??
+      project.dreams[0];
+    if (!targetDream) {
+      continue;
+    }
+
+    let roomSession = roomByKey.get(key);
+    if (!roomSession) {
+      roomSession = createBaseSession(project, targetDream, roomTitle, latest.workspace, undefined, 'group');
+      roomSession.preview = latest.preview || roomSession.preview;
+      roomSession.timeLabel = latest.timeLabel;
+      roomSession.updatedAt = latest.updatedAt;
+      roomSession.groups = latest.groups ?? [];
+      roomSession.contextReferences = normalizeContextReferences(latest.contextReferences);
+      roomSession.tokenUsage = {
+        contextWindow: 0,
+        used: 0,
+        input: 0,
+        output: 0,
+        cached: 0,
+        windowSource: 'unknown',
+      };
+      roomSession.branchSnapshot = latest.branchSnapshot ?? makeEmptyBranchSnapshot(latest.workspace);
+      roomSession.messages = [];
+      roomSession.group = {
+        kind: 'room',
+        nextMessageSeq: 1,
+        participants: [],
+      };
+      targetDream.sessions.unshift(roomSession);
+      roomByKey.set(key, roomSession);
+    } else {
+      roomSession.title = roomTitle;
+      roomSession.sessionKind = 'group';
+      roomSession.hidden = false;
+      roomSession.provider = undefined;
+      roomSession.model = '';
+      roomSession.claudeSessionId = undefined;
+      roomSession.codexThreadId = undefined;
+      roomSession.instructionPrompt = undefined;
+      roomSession.group = roomSession.group?.kind === 'room'
+        ? roomSession.group
+        : {
+            kind: 'room',
+            nextMessageSeq: 1,
+            participants: [],
+          };
+    }
+
+    const participantBackings = new Map<GroupParticipantId, SessionRecord>();
+    for (const session of sessions) {
+      if (
+        session.group?.kind === 'member' &&
+        session.group.roomSessionId === roomSession.id &&
+        (session.sessionKind === 'group_member' || session.hidden)
+      ) {
+        participantBackings.set(session.group.participantId, session);
+      }
+    }
+
+    for (const provider of ['claude', 'codex'] as SessionProvider[]) {
+      const participantId = getParticipantIdForProvider(provider);
+      const orphan = sortedBucket.find((session) => normalizeSessionProvider(session.provider) === provider);
+      let memberSession = orphan ?? participantBackings.get(participantId);
+
+      if (!memberSession) {
+        memberSession = createGroupMemberSession(project, targetDream, roomSession, participantId, provider);
+        targetDream.sessions.splice(1, 0, memberSession);
+      }
+
+      memberSession.title = getGroupBackingSessionTitle(roomTitle);
+      memberSession.sessionKind = 'group_member';
+      memberSession.hidden = true;
+      memberSession.provider = provider;
+      memberSession.group = {
+        kind: 'member',
+        roomSessionId: roomSession.id,
+        participantId,
+        speakerLabel: getSpeakerLabelForProvider(provider),
+      };
+
+      participantBackings.set(participantId, memberSession);
+    }
+
+    roomSession.group = {
+      kind: 'room',
+      nextMessageSeq: roomSession.group?.kind === 'room' ? roomSession.group.nextMessageSeq : 1,
+      participants: (['claude', 'codex'] as GroupParticipantId[]).map((participantId) => {
+        const memberSession = participantBackings.get(participantId);
+        const provider = participantId === 'codex' ? 'codex' : 'claude';
+        if (!memberSession) {
+          throw new Error(`Missing recovered group backing session for ${participantId}.`);
+        }
+
+        return buildGroupParticipantRecord(
+          participantId,
+          provider,
+          memberSession.id,
+          memberSession.model || getDefaultModelForProvider(provider),
+        );
+      }),
+    };
+
+    const reconstructedMessages = reconstructRecoveredRoomMessages(roomSession, participantBackings);
+    if (shouldApplyRecoveredRoomMessages(roomSession.messages, reconstructedMessages)) {
+      applyRecoveredRoomMessages(roomSession, reconstructedMessages);
+    }
+
+    sortedBucket.forEach((session) => {
+      if (session.id === participantBackings.get(getParticipantIdForProvider(normalizeSessionProvider(session.provider)))?.id) {
+        return;
+      }
+
+      session.hidden = true;
+    });
+  }
+
+  for (const roomSession of sessions) {
+    if (roomSession.group?.kind !== 'room') {
+      continue;
+    }
+
+    roomSession.sessionKind = 'group';
+    roomSession.hidden = false;
+    roomSession.provider = undefined;
+    roomSession.model = '';
+    roomSession.claudeSessionId = undefined;
+    roomSession.codexThreadId = undefined;
+
+    const participantBackings = new Map<GroupParticipantId, SessionRecord>();
+    for (const session of sessions) {
+      if (
+        session.group?.kind === 'member' &&
+        session.group.roomSessionId === roomSession.id &&
+        (session.sessionKind === 'group_member' || session.hidden)
+      ) {
+        participantBackings.set(session.group.participantId, session);
+      }
+    }
+
+    const reconstructedMessages = reconstructRecoveredRoomMessages(roomSession, participantBackings);
+    if (shouldApplyRecoveredRoomMessages(roomSession.messages, reconstructedMessages)) {
+      applyRecoveredRoomMessages(roomSession, reconstructedMessages);
+    }
+  }
+
+  return project;
+}
 
 const toUpdatedAt = (timestamp: string | number | undefined) => {
   if (typeof timestamp === 'number' && Number.isFinite(timestamp)) {
@@ -228,13 +1071,21 @@ const toUpdatedAt = (timestamp: string | number | undefined) => {
   return undefined;
 };
 
+const getNativeClaudeProjectDirPaths = (rootPath: string) =>
+  getClaudeProjectDirNameCandidates(rootPath).map((dirName) => path.join(nativeClaudeProjectsRoot(), dirName));
+
+const getExistingNativeClaudeProjectDirPaths = (rootPath: string) =>
+  getNativeClaudeProjectDirPaths(rootPath).filter((candidate) => existsSync(candidate));
+
 const nativeClaudeSessionFilePath = (rootPath: string, claudeSessionId: string) => {
-  const dirName = toClaudeProjectDirName(rootPath);
-  if (!dirName) {
+  const existingDir =
+    getExistingNativeClaudeProjectDirPaths(rootPath)[0] ??
+    getNativeClaudeProjectDirPaths(rootPath)[0];
+  if (!existingDir) {
     return null;
   }
 
-  return path.join(nativeClaudeProjectsRoot(), dirName, `${claudeSessionId}.jsonl`);
+  return path.join(existingDir, `${claudeSessionId}.jsonl`);
 };
 
 const extractTextFromContent = (content: unknown): string => {
@@ -1022,7 +1873,7 @@ const renameNativeClaudeSession = async (rootPath: string, claudeSessionId: stri
   await writeFile(filePath, `${output.join('\n')}\n`, 'utf8');
 };
 
-const renameNativeCodexThread = async (codexThreadId: string, nextName: string) => {
+export const renameNativeCodexThread = async (codexThreadId: string, nextName: string) => {
   const threadId = codexThreadId.trim();
   const title = nextName.trim();
   if (!threadId || !title) {
@@ -1074,6 +1925,101 @@ const renameNativeCodexThread = async (codexThreadId: string, nextName: string) 
   await writeFile(codexSessionIndexPath(), `${lines.join('\n')}\n`, 'utf8');
 };
 
+const deleteNativeCodexThreads = async (threadIds: string[]): Promise<NativeCleanupResult> => {
+  const uniqueThreadIds = [...new Set(threadIds.map((threadId) => threadId.trim()).filter(Boolean))];
+  if (uniqueThreadIds.length === 0) {
+    return { warnings: [] };
+  }
+
+  const threadIdSet = new Set(uniqueThreadIds);
+  const files = [
+    ...(await listJsonlFilesRecursively(codexSessionsRoot())),
+    ...(await listJsonlFilesRecursively(codexArchivedSessionsRoot())),
+  ];
+
+  const warnings: string[] = [];
+  const deleteTasks: Array<{ filePath: string; task: Promise<void> }> = [];
+  for (const filePath of files) {
+    const fileName = path.basename(filePath, '.jsonl');
+    const quickMatch = uniqueThreadIds.some((threadId) => fileName === threadId || fileName.endsWith(`-${threadId}`));
+    if (quickMatch) {
+      deleteTasks.push({ filePath, task: rm(filePath, { force: true }) });
+      continue;
+    }
+
+    let raw = '';
+    try {
+      raw = await readFile(filePath, 'utf8');
+    } catch {
+      continue;
+    }
+
+    const matchesThread = raw
+      .split(/\r?\n/)
+      .some((line) => {
+        if (!line) {
+          return false;
+        }
+
+        try {
+          const parsed = JSON.parse(line) as { type?: unknown; payload?: { id?: unknown } };
+          return parsed.type === 'session_meta' && typeof parsed.payload?.id === 'string'
+            ? threadIdSet.has(parsed.payload.id.trim())
+            : false;
+        } catch {
+          return false;
+        }
+      });
+
+    if (matchesThread) {
+      deleteTasks.push({ filePath, task: rm(filePath, { force: true }) });
+    }
+  }
+
+  const deleteResults = await Promise.allSettled(deleteTasks.map((entry) => entry.task));
+  deleteResults.forEach((result, index) => {
+    if (result.status === 'rejected') {
+      warnings.push(
+        `Failed to delete native Codex session file "${deleteTasks[index]?.filePath}": ${describeError(result.reason)}`,
+      );
+    }
+  });
+
+  try {
+    const raw = await readFile(codexSessionIndexPath(), 'utf8');
+    const filtered = raw
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .filter((line) => {
+        try {
+          const parsed = JSON.parse(line) as { id?: unknown };
+          return typeof parsed.id === 'string' ? !threadIdSet.has(parsed.id.trim()) : true;
+        } catch {
+          return true;
+        }
+      });
+    await writeFile(codexSessionIndexPath(), filtered.length > 0 ? `${filtered.join('\n')}\n` : '', 'utf8');
+  } catch (error) {
+    if (!isMissingFsEntryError(error)) {
+      warnings.push(
+        `Failed to update native Codex session index "${codexSessionIndexPath()}": ${describeError(error)}`,
+      );
+    }
+  }
+
+  return { warnings };
+};
+
+const collectNativeDeleteTargets = (sessions: SessionSummary[]) => ({
+  claudeSessions: sessions
+    .filter((session): session is SessionSummary & { claudeSessionId: string } => Boolean(session.claudeSessionId))
+    .map((session) => ({
+      workspace: session.workspace,
+      sessionId: session.claudeSessionId,
+    })),
+  codexThreadIds: sessions.flatMap((session) => (session.codexThreadId ? [session.codexThreadId] : [])),
+});
+
 const applySessionTitleRename = (
   session: SessionSummary,
   nextName: string,
@@ -1093,7 +2039,7 @@ const applySessionTitleRename = (
   }
 };
 
-const importNativeClaudeSessions = async (project: ProjectRecord) => {
+const importNativeClaudeSessions = async (project: ProjectRecord, deletedImports: AppState['deletedImports']) => {
   const temporary = project.dreams.find((dream) => dream.isTemporary);
   if (!temporary) {
     return;
@@ -1107,18 +2053,23 @@ const importNativeClaudeSessions = async (project: ProjectRecord) => {
       .map((session) => [session.claudeSessionId, session]),
   );
 
-  const dirName = toClaudeProjectDirName(project.rootPath);
-  if (!dirName) {
+  const nativeDirs = getExistingNativeClaudeProjectDirPaths(project.rootPath);
+  if (nativeDirs.length === 0) {
     temporary.sessions = existingSessions;
     return;
   }
-
-  const nativeDir = path.join(nativeClaudeProjectsRoot(), dirName);
-  let files: string[] = [];
-
-  try {
-    files = (await readdir(nativeDir)).filter((file) => file.endsWith('.jsonl'));
-  } catch {
+  const files: string[] = [];
+  for (const nativeDir of nativeDirs) {
+    try {
+      const dirFiles = (await readdir(nativeDir))
+        .filter((file) => file.endsWith('.jsonl'))
+        .map((file) => path.join(nativeDir, file));
+      files.push(...dirFiles);
+    } catch {
+      continue;
+    }
+  }
+  if (files.length === 0) {
     temporary.sessions = existingSessions;
     return;
   }
@@ -1131,12 +2082,15 @@ const importNativeClaudeSessions = async (project: ProjectRecord) => {
       | Awaited<ReturnType<typeof parseNativeClaudeSessionFile>>
       | undefined;
     try {
-      parsed = await parseNativeClaudeSessionFile(path.join(nativeDir, file));
+        parsed = await parseNativeClaudeSessionFile(file);
     } catch {
       continue;
     }
     const workspace = parsed.workspace || project.rootPath;
     if (!sameWorkspacePath(workspace, project.rootPath)) {
+      continue;
+    }
+    if (deletedImports.claudeSessionIds.includes(parsed.nativeSessionId)) {
       continue;
     }
 
@@ -1219,7 +2173,7 @@ const mergeImportedCodexSessions = (
   ].sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));
 };
 
-const importNativeCodexSessions = async (project: ProjectRecord) => {
+const importNativeCodexSessions = async (project: ProjectRecord, deletedImports: AppState['deletedImports']) => {
   const temporary = project.dreams.find((dream) => dream.isTemporary);
   if (!temporary) {
     return;
@@ -1251,6 +2205,9 @@ const importNativeCodexSessions = async (project: ProjectRecord) => {
     }
 
     if (!parsed) {
+      continue;
+    }
+    if (deletedImports.codexThreadIds.includes(parsed.nativeSessionId)) {
       continue;
     }
 
@@ -1310,9 +2267,9 @@ const importNativeCodexSessions = async (project: ProjectRecord) => {
   );
 };
 
-const importNativeProjectSessions = async (project: ProjectRecord) => {
-  await importNativeClaudeSessions(project);
-  await importNativeCodexSessions(project);
+const importNativeProjectSessions = async (project: ProjectRecord, deletedImports: AppState['deletedImports']) => {
+  await importNativeClaudeSessions(project, deletedImports);
+  await importNativeCodexSessions(project, deletedImports);
 };
 
 const recoverExistingSessionsFromNativeHistory = async (projects: ProjectRecord[]) => {
@@ -1347,30 +2304,39 @@ const recoverExistingSessionsFromNativeHistory = async (projects: ProjectRecord[
   }
 };
 
-const deleteNativeClaudeSessions = async (nativeSessions: Array<{ workspace: string; sessionId: string }>) => {
+const deleteNativeClaudeSessions = async (
+  nativeSessions: Array<{ workspace: string; sessionId: string }>,
+): Promise<NativeCleanupResult> => {
   if (nativeSessions.length === 0) {
-    return;
+    return { warnings: [] };
   }
 
   const uniqueSessions = [...new Map(
     nativeSessions.map((session) => [`${normalizeWorkspacePath(session.workspace)}::${session.sessionId}`, session]),
   ).values()];
   const uniqueIds = [...new Set(uniqueSessions.map((session) => session.sessionId))];
+  const warnings: string[] = [];
+  const deleteTasks = uniqueSessions.flatMap((session) => {
+    return getNativeClaudeProjectDirPaths(session.workspace).flatMap((nativeDir) => [
+      {
+        targetPath: path.join(nativeDir, `${session.sessionId}.jsonl`),
+        task: rm(path.join(nativeDir, `${session.sessionId}.jsonl`), { force: true }),
+      },
+      {
+        targetPath: path.join(nativeDir, session.sessionId),
+        task: rm(path.join(nativeDir, session.sessionId), { force: true, recursive: true }),
+      },
+    ]);
+  });
 
-  await Promise.all(
-    uniqueSessions.flatMap((session) => {
-      const dirName = toClaudeProjectDirName(session.workspace);
-      if (!dirName) {
-        return [];
-      }
-
-      const nativeDir = path.join(nativeClaudeProjectsRoot(), dirName);
-      return [
-        rm(path.join(nativeDir, `${session.sessionId}.jsonl`), { force: true }),
-        rm(path.join(nativeDir, session.sessionId), { force: true, recursive: true }),
-      ];
-    }),
-  ).catch(() => undefined);
+  const deleteResults = await Promise.allSettled(deleteTasks.map((entry) => entry.task));
+  deleteResults.forEach((result, index) => {
+    if (result.status === 'rejected') {
+      warnings.push(
+        `Failed to delete native Claude session path "${deleteTasks[index]?.targetPath}": ${describeError(result.reason)}`,
+      );
+    }
+  });
 
   try {
     const raw = await readFile(nativeClaudeHistoryPath(), 'utf8');
@@ -1379,9 +2345,13 @@ const deleteNativeClaudeSessions = async (nativeSessions: Array<{ workspace: str
       .filter((line) => line && !uniqueIds.some((sessionId) => line.includes(`"sessionId":"${sessionId}"`)))
       .join('\n');
     await writeFile(nativeClaudeHistoryPath(), `${filtered}\n`, 'utf8');
-  } catch {
-    // Ignore history cleanup failures.
+  } catch (error) {
+    if (!isMissingFsEntryError(error)) {
+      warnings.push(`Failed to update native Claude history "${nativeClaudeHistoryPath()}": ${describeError(error)}`);
+    }
   }
+
+  return { warnings };
 };
 
 const ensureTemporaryStreamwork = (project: ProjectRecord) => {
@@ -1421,7 +2391,10 @@ const ensureTemporaryStreamwork = (project: ProjectRecord) => {
 };
 
 const ensureProjectHasSession = (project: ProjectRecord) => {
-  const existingSession = project.dreams.flatMap((dream) => dream.sessions)[0] as SessionRecord | undefined;
+  const allSessions = project.dreams.flatMap((dream) => dream.sessions) as SessionRecord[];
+  const existingSession =
+    allSessions.find((session) => !session.hidden) ??
+    allSessions[0];
   if (existingSession) {
     return existingSession;
   }
@@ -1458,21 +2431,23 @@ const cloneVisibleProjects = (projects: ProjectRecord[]) => cloneProjects(filter
 
 const ensureStateShape = (value: unknown): AppState => {
   if (!value || typeof value !== 'object' || !Array.isArray((value as { projects?: unknown }).projects)) {
-    return { projects: buildInitialProjects() };
+    return { projects: buildInitialProjects(), deletedImports: createEmptyDeletedImports() };
   }
 
-  const projects = cloneProjects((value as { projects: ProjectRecord[] }).projects);
+  const typed = value as { projects: ProjectRecord[]; deletedImports?: unknown };
+  const projects = cloneProjects(typed.projects);
   projects.forEach((project) => ensureTemporaryStreamwork(project));
 
   return {
     projects: normalizeProjectsForCache(normalizeProjects(projects)),
+    deletedImports: normalizeDeletedImports(typed.deletedImports),
   };
 };
 
 const hydrateLoadedState = async (state: AppState) => {
   for (const project of state.projects) {
     try {
-    await importNativeProjectSessions(project);
+      await importNativeProjectSessions(project, state.deletedImports);
     } catch {
       // Preserve the persisted project tree when auxiliary native-session import fails.
     }
@@ -1498,7 +2473,7 @@ export const loadState = async () => {
     const raw = await readFile(storePath(), 'utf8');
     cachedState = ensureStateShape(JSON.parse(raw));
   } catch {
-    cachedState = { projects: buildInitialProjects() };
+    cachedState = { projects: buildInitialProjects(), deletedImports: createEmptyDeletedImports() };
   }
 
   await hydrateLoadedState(cachedState);
@@ -1521,6 +2496,7 @@ const writeToDisk = async () => {
 export const saveState = async (state: AppState) => {
   cachedState = {
     projects: normalizeProjectsForCache(normalizeProjects(cloneProjects(state.projects))),
+    deletedImports: normalizeDeletedImports(state.deletedImports),
   };
 
   if (pendingSaveTimer) {
@@ -2214,6 +3190,7 @@ export const ensureGroupRoomSession = async (sessionId: string): Promise<Session
   const roomSessionId = targetSession.id;
   const originalMessages = (targetSession.messages ?? []).map((message) => ({ ...message }));
   const highestExistingSeq = originalMessages.length;
+  const nativeRenameTasks: Array<Promise<void>> = [];
 
   const primaryMemberSession = createGroupMemberSession(
     targetProject,
@@ -2223,6 +3200,20 @@ export const ensureGroupRoomSession = async (sessionId: string): Promise<Session
     baseProvider,
   );
   primaryMemberSession.model = targetSession.model || primaryMemberSession.model;
+  if (baseProvider === 'claude' && targetSession.claudeSessionId) {
+    primaryMemberSession.claudeSessionId = targetSession.claudeSessionId;
+    nativeRenameTasks.push(
+      renameNativeClaudeSession(
+        targetSession.workspace,
+        targetSession.claudeSessionId,
+        primaryMemberSession.title,
+      ),
+    );
+  }
+  if (baseProvider === 'codex' && targetSession.codexThreadId) {
+    primaryMemberSession.codexThreadId = targetSession.codexThreadId;
+    nativeRenameTasks.push(renameNativeCodexThread(targetSession.codexThreadId, primaryMemberSession.title));
+  }
 
   const secondaryProvider: SessionProvider = baseProvider === 'codex' ? 'claude' : 'codex';
   const secondaryParticipantId = getParticipantIdForProvider(secondaryProvider);
@@ -2278,6 +3269,7 @@ export const ensureGroupRoomSession = async (sessionId: string): Promise<Session
   }
 
   targetDream.sessions.splice(insertionIndex + 1, 0, primaryMemberSession, secondaryMemberSession);
+  await Promise.allSettled(nativeRenameTasks);
   await saveState(state);
 
   return JSON.parse(JSON.stringify(targetSession)) as SessionRecord;
@@ -2291,11 +3283,17 @@ export const createProject = async (name: string, rootPath: string): Promise<Pro
     existingProject.name = name;
     existingProject.isClosed = false;
     ensureTemporaryStreamwork(existingProject);
-    const existingSession = await hydrateProjectForOpen(
+    await hydrateProjectForOpen(
       existingProject,
-      importNativeProjectSessions,
+      (project) => importNativeProjectSessions(project, state.deletedImports),
       ensureProjectHasSession,
     );
+    const normalizedExistingProject = normalizeProjects([existingProject])[0] as ProjectRecord | undefined;
+    if (!normalizedExistingProject) {
+      throw new Error('Failed to normalize the reopened project.');
+    }
+    Object.assign(existingProject, normalizedExistingProject);
+    const existingSession = ensureProjectHasSession(existingProject);
     await saveState(state);
 
     return {
@@ -2327,7 +3325,13 @@ export const createProject = async (name: string, rootPath: string): Promise<Pro
   };
 
   project.dreams.push(temporaryStreamwork, streamwork);
-  const session = await hydrateProjectForOpen(project, importNativeProjectSessions, ensureProjectHasSession);
+  await hydrateProjectForOpen(project, (targetProject) => importNativeProjectSessions(targetProject, state.deletedImports), ensureProjectHasSession);
+  const normalizedProject = normalizeProjects([project])[0] as ProjectRecord | undefined;
+  if (!normalizedProject) {
+    throw new Error('Failed to normalize the created project.');
+  }
+  Object.assign(project, normalizedProject);
+  const session = ensureProjectHasSession(project);
   state.projects.unshift(project);
 
   await saveState(state);
@@ -2556,6 +3560,7 @@ export const deleteStreamwork = async (streamworkId: string): Promise<DeleteEnti
   const state = await loadState();
   let deletedSessionIds: string[] = [];
   let deletedNativeSessions: Array<{ workspace: string; sessionId: string }> = [];
+  let deletedNativeCodexThreads: string[] = [];
 
   state.projects.forEach((project) => {
     project.dreams = project.dreams.filter((dream) => {
@@ -2566,21 +3571,25 @@ export const deleteStreamwork = async (streamworkId: string): Promise<DeleteEnti
         return true;
       }
       deletedSessionIds = dream.sessions.map((session) => session.id);
-      deletedNativeSessions = dream.sessions
-        .filter((session): session is SessionRecord & { claudeSessionId: string } => Boolean(session.claudeSessionId))
-        .map((session) => ({
-          workspace: session.workspace,
-          sessionId: session.claudeSessionId,
-        }));
+      const nativeTargets = collectNativeDeleteTargets(dream.sessions);
+      deletedNativeSessions = nativeTargets.claudeSessions;
+      deletedNativeCodexThreads = nativeTargets.codexThreadIds;
+      rememberDeletedImports(state, nativeTargets);
       return false;
     });
   });
 
-  await deleteNativeClaudeSessions(deletedNativeSessions);
+  const [claudeCleanup, codexCleanup] = await Promise.all([
+    deleteNativeClaudeSessions(deletedNativeSessions),
+    deleteNativeCodexThreads(deletedNativeCodexThreads),
+  ]);
+  const warnings = [...claudeCleanup.warnings, ...codexCleanup.warnings];
+  logNativeCleanupWarnings(warnings);
   await saveState(state);
   return {
     projects: cloneVisibleProjects(state.projects),
     deletedSessionIds,
+    warning: summarizeDeleteWarning(warnings),
   };
 };
 
@@ -2588,6 +3597,7 @@ export const deleteSession = async (sessionId: string): Promise<DeleteEntityResu
   const state = await loadState();
   const deletedSessionIds = new Set<string>();
   let deletedNativeSessions: Array<{ workspace: string; sessionId: string }> = [];
+  let deletedNativeCodexThreads: string[] = [];
 
   state.projects.forEach((project) => {
     project.dreams.forEach((dream) => {
@@ -2596,20 +3606,13 @@ export const deleteSession = async (sessionId: string): Promise<DeleteEntityResu
         target?.sessionKind === 'group' && target.group?.kind === 'room'
           ? target.group.participants.map((participant) => participant.backingSessionId)
           : [];
-      if (target?.claudeSessionId) {
-        deletedNativeSessions.push({
-          workspace: target.workspace,
-          sessionId: target.claudeSessionId,
-        });
-      }
-      dream.sessions.forEach((session) => {
-        if (extraDeletedIds.includes(session.id) && session.claudeSessionId) {
-          deletedNativeSessions.push({
-            workspace: session.workspace,
-            sessionId: session.claudeSessionId,
-          });
-        }
-      });
+      const removedSessions = dream.sessions.filter(
+        (session) => session.id === sessionId || extraDeletedIds.includes(session.id),
+      );
+      const nativeTargets = collectNativeDeleteTargets(removedSessions);
+      deletedNativeSessions.push(...nativeTargets.claudeSessions);
+      deletedNativeCodexThreads.push(...nativeTargets.codexThreadIds);
+      rememberDeletedImports(state, nativeTargets);
       const nextSessions = dream.sessions.filter(
         (session) => session.id !== sessionId && !extraDeletedIds.includes(session.id),
       );
@@ -2621,10 +3624,16 @@ export const deleteSession = async (sessionId: string): Promise<DeleteEntityResu
     });
   });
 
-  await deleteNativeClaudeSessions(deletedNativeSessions);
+  const [claudeCleanup, codexCleanup] = await Promise.all([
+    deleteNativeClaudeSessions(deletedNativeSessions),
+    deleteNativeCodexThreads(deletedNativeCodexThreads),
+  ]);
+  const warnings = [...claudeCleanup.warnings, ...codexCleanup.warnings];
+  logNativeCleanupWarnings(warnings);
   await saveState(state);
   return {
     projects: cloneVisibleProjects(state.projects),
     deletedSessionIds: [...deletedSessionIds],
+    warning: summarizeDeleteWarning(warnings),
   };
 };

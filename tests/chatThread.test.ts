@@ -110,3 +110,62 @@ run('ChatThread expands failed process groups and shows an inline failure reason
   assert.match(html, /\[Request interrupted by user for tool use\]/);
   assert.ok(html.indexOf('Process') < html.indexOf('好问题，让我确认一下源码。'));
 });
+
+run('ChatThread shows separate Claude and Codex CLI badges for group rooms', () => {
+  const groupSession: SessionSummary = {
+    ...session,
+    id: 'group-room-1',
+    title: 'Group room',
+    provider: undefined,
+    sessionKind: 'group',
+    group: {
+      kind: 'room',
+      nextMessageSeq: 1,
+      participants: [
+        {
+          id: 'claude',
+          label: 'Claude',
+          provider: 'claude',
+          backingSessionId: 'claude-member-1',
+          enabled: true,
+          lastAppliedRoomSeq: 0,
+        },
+        {
+          id: 'codex',
+          label: 'Codex',
+          provider: 'codex',
+          backingSessionId: 'codex-member-1',
+          enabled: true,
+          lastAppliedRoomSeq: 0,
+        },
+      ],
+    },
+  };
+
+  const html = renderToStaticMarkup(
+    createElement(ChatThread, {
+      session: groupSession,
+      messages: [],
+      groupCliStatuses: [
+        {
+          participantId: 'claude',
+          label: 'Claude',
+          provider: 'claude',
+          online: true,
+        },
+        {
+          participantId: 'codex',
+          label: 'Codex',
+          provider: 'codex',
+          online: false,
+        },
+      ],
+    }),
+  );
+
+  assert.match(html, /Claude/);
+  assert.match(html, /Codex/);
+  assert.match(html, /Claude online/);
+  assert.match(html, /Codex offline/);
+  assert.match(html, /cli-status offline/);
+});

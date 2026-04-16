@@ -27,6 +27,10 @@ const makeSession = (overrides: Partial<SessionRecord>): SessionRecord => ({
   dreamName: overrides.dreamName ?? 'Temporary',
   claudeSessionId: overrides.claudeSessionId,
   codexThreadId: overrides.codexThreadId,
+  sessionKind: overrides.sessionKind,
+  hidden: overrides.hidden,
+  instructionPrompt: overrides.instructionPrompt,
+  group: overrides.group,
   groups: overrides.groups ?? [],
   contextReferences: overrides.contextReferences ?? [],
   tokenUsage: overrides.tokenUsage ?? {
@@ -85,4 +89,31 @@ run('findImportedSessionTarget keeps same-title Claude and Codex sessions distin
   );
 
   assert.equal(result?.id, 'codex-memory');
+});
+
+run('findImportedSessionTarget can match hidden temporary group backings by title', () => {
+  const hiddenTemporaryGroupMember = makeSession({
+    id: 'codex-group-member',
+    title: '[Group] Room',
+    dreamName: 'Temporary',
+    provider: 'codex',
+    hidden: true,
+    group: {
+      kind: 'member',
+      roomSessionId: 'room-1',
+      participantId: 'codex',
+      speakerLabel: 'Codex',
+    },
+  });
+
+  const result = findImportedSessionTarget(
+    [hiddenTemporaryGroupMember],
+    'new-codex-native',
+    '[Group] Room',
+    'X:\\PBZ\\ProjectPBZ',
+    'codexThreadId',
+    'codex',
+  );
+
+  assert.equal(result?.id, 'codex-group-member');
 });

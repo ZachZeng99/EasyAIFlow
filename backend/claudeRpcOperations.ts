@@ -13,6 +13,7 @@ import {
   getConfiguredClaudeModel,
   getSlashCommands,
 } from './claudeInteraction.js';
+import { getCodexAppServerInteractionSnapshots } from './codexAppServerTurn.js';
 import { isWritableStdin } from './claudeHelpers.js';
 import {
   buildClaudeAskUserQuestionToolResultLine,
@@ -297,7 +298,10 @@ export const handleBootstrapSessions = async (
   state: ClaudeInteractionState,
 ) => ({
   projects: await getProjects(),
-  interactions: getSessionInteractionSnapshots(state),
+  interactions: {
+    ...getSessionInteractionSnapshots(state),
+    ...getCodexAppServerInteractionSnapshots(),
+  },
 });
 
 export const handleCloseProject = async (

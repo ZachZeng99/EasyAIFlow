@@ -138,3 +138,99 @@ run('buildDisplayItems keeps per-speaker trace groups separate in group chats', 
     ['claude', 'codex'],
   );
 });
+
+run('buildDisplayItems reattaches late interleaved trace items to the matching group reply', () => {
+  const grouped = buildDisplayItems([
+    {
+      id: 'user-1',
+      role: 'user',
+      timestamp: '4/13 14:49',
+      title: '@all',
+      content: '@all look into this timeout.',
+      speakerId: 'user',
+      speakerLabel: 'You',
+      status: 'complete',
+    },
+    {
+      id: 'assistant-claude',
+      role: 'assistant',
+      timestamp: '4/13 14:50',
+      title: 'Claude response',
+      content: 'I finished first.',
+      speakerId: 'claude',
+      speakerLabel: 'Claude',
+      provider: 'claude',
+      status: 'complete',
+    },
+    {
+      id: 'assistant-codex',
+      role: 'assistant',
+      timestamp: '4/13 14:55',
+      title: 'Codex error',
+      content: 'Codex turn timed out.',
+      speakerId: 'codex',
+      speakerLabel: 'Codex',
+      provider: 'codex',
+      status: 'error',
+    },
+    {
+      id: 'trace-codex-1',
+      role: 'system',
+      kind: 'tool_use',
+      timestamp: '4/13 14:51',
+      title: 'Command',
+      content: 'rg -n "timeout"',
+      speakerId: 'codex',
+      speakerLabel: 'Codex',
+      provider: 'codex',
+      status: 'success',
+    },
+    {
+      id: 'trace-claude-1',
+      role: 'system',
+      kind: 'tool_use',
+      timestamp: '4/13 14:51',
+      title: 'Bash',
+      content: 'git show',
+      speakerId: 'claude',
+      speakerLabel: 'Claude',
+      provider: 'claude',
+      status: 'success',
+    },
+    {
+      id: 'trace-codex-2',
+      role: 'system',
+      kind: 'tool_use',
+      timestamp: '4/13 14:54',
+      title: 'Command',
+      content: 'Get-Content log.txt',
+      speakerId: 'codex',
+      speakerLabel: 'Codex',
+      provider: 'codex',
+      status: 'error',
+    },
+  ]);
+
+  assert.deepEqual(
+    grouped.map((item) => (item.type === 'message' ? item.message.id : item.id)),
+    ['user-1', 'trace-group-assistant-claude', 'assistant-claude', 'trace-group-assistant-codex', 'assistant-codex'],
+  );
+
+  const claudeReply = grouped.find(
+    (item) => item.type === 'message' && item.message.id === 'assistant-claude',
+  );
+  assert.equal(claudeReply?.type, 'message');
+  assert.deepEqual(
+    claudeReply?.relatedTraceItems?.map((message) => message.id),
+    ['trace-claude-1'],
+  );
+
+  const codexReply = grouped.find(
+    (item) => item.type === 'message' && item.message.id === 'assistant-codex',
+  );
+  assert.equal(codexReply?.type, 'message');
+  assert.deepEqual(
+    codexReply?.relatedTraceItems?.map((message) => message.id),
+    ['trace-codex-1', 'trace-codex-2'],
+  );
+});

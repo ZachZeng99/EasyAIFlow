@@ -1049,9 +1049,19 @@ const resolveAssistantVisibleContent = (
   runState: ClaudeRunState,
   preferredFallback = '',
 ) => {
+  // Prefer accumulated streaming content when it is longer than the result
+  // event's content, because multi-turn responses (with tool use) may only
+  // include the last text block in the result event.
+  const result = runState.lastResultContent?.trim() ? runState.lastResultContent : undefined;
+  const streamed = runState.content?.trim() ? runState.content : undefined;
+
+  if (result && streamed) {
+    return streamed.length >= result.length ? streamed : result;
+  }
+
   const candidates = [
-    runState.lastResultContent,
-    runState.content,
+    result,
+    streamed,
     runState.lastToolResultContent,
     preferredFallback,
   ];
@@ -1923,11 +1933,31 @@ const finalizeResidentSessionClose = async (
 };
 
 const ensureResidentClaudeSession = async (
-  ctx: ClaudeInteractionContext,
+  callerCtx: ClaudeInteractionContext,
   state: ClaudeInteractionState,
   session: SessionSummary,
   options?: ClaudePrintOptions,
 ) => {
+  // Wrap broadcastEvent so that registered interceptors (used by group chat to
+  // mirror backing-session events to the room) are invoked for every event the
+  // resident stdout processor produces — even for events that fire long after
+  // the original caller's mirroredCtx has gone out of scope.
+  const ctx: ClaudeInteractionContext = {
+    ...callerCtx,
+    broadcastEvent: (event) => {
+      const interceptors = state.sessionBroadcastInterceptors.get(session.id);
+      if (interceptors) {
+        for (const fn of interceptors) {
+          try {
+            fn(event);
+          } catch {
+            // Best-effort: interceptor errors must not break the resident processor.
+          }
+        }
+      }
+      callerCtx.broadcastEvent(event);
+    },
+  };
   const resolvedModel = await resolveRequestedClaudeModel(ctx, options?.model);
   const persistedModel = await resolveRequestedClaudeModel(ctx, session.model);
   const existing = getResidentSession(state, session.id);

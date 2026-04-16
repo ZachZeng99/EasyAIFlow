@@ -128,6 +128,8 @@ export type DeferredExitPlanControl = {
   rawInput: Record<string, unknown>;
 };
 
+export type SessionBroadcastInterceptor = (event: import('../src/data/types.js').ClaudeStreamEvent) => void;
+
 export type ClaudeInteractionState = {
   activeRuns: ReturnType<typeof createActiveClaudeRunRegistry<ClaudeChildProcess>>;
   residentSessions: Map<string, ResidentClaudeSession>;
@@ -139,6 +141,10 @@ export type ClaudeInteractionState = {
   sessionRunQueue: ReturnType<typeof createSessionRunQueue>;
   sessionStopVersions: ReturnType<typeof createSessionStopVersionRegistry>;
   slashCommandCache: Map<string, { commands: string[]; expiresAt: number }>;
+  /** Interceptors registered per session ID; called by the resident stdout
+   *  processor for every broadcastEvent so group chat can mirror events from
+   *  backing sessions to their room. */
+  sessionBroadcastInterceptors: Map<string, Set<SessionBroadcastInterceptor>>;
 };
 
 export const createClaudeInteractionState = (): ClaudeInteractionState => ({
@@ -152,4 +158,32 @@ export const createClaudeInteractionState = (): ClaudeInteractionState => ({
   sessionRunQueue: createSessionRunQueue(),
   sessionStopVersions: createSessionStopVersionRegistry(),
   slashCommandCache: new Map(),
+  sessionBroadcastInterceptors: new Map(),
 });
+
+export const addSessionBroadcastInterceptor = (
+  state: ClaudeInteractionState,
+  sessionId: string,
+  interceptor: SessionBroadcastInterceptor,
+) => {
+  let set = state.sessionBroadcastInterceptors.get(sessionId);
+  if (!set) {
+    set = new Set();
+    state.sessionBroadcastInterceptors.set(sessionId, set);
+  }
+  set.add(interceptor);
+};
+
+export const removeSessionBroadcastInterceptor = (
+  state: ClaudeInteractionState,
+  sessionId: string,
+  interceptor: SessionBroadcastInterceptor,
+) => {
+  const set = state.sessionBroadcastInterceptors.get(sessionId);
+  if (set) {
+    set.delete(interceptor);
+    if (set.size === 0) {
+      state.sessionBroadcastInterceptors.delete(sessionId);
+    }
+  }
+};

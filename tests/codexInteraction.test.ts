@@ -264,6 +264,52 @@ run('buildCodexCommandTraceMessage maps command execution events into tool trace
   });
 });
 
+run('buildCodexCommandTraceMessage also supports app-server commandExecution payloads', () => {
+  const running = buildCodexCommandTraceMessage({
+    item: {
+      id: 'item_1',
+      type: 'commandExecution',
+      command: 'git status --short',
+      aggregatedOutput: '',
+      exitCode: null,
+    },
+    status: 'running',
+    timestamp: '4/7 01:05',
+  });
+
+  assert.deepEqual(running, {
+    id: running?.id,
+    role: 'system',
+    kind: 'tool_use',
+    timestamp: '4/7 01:05',
+    title: 'Command',
+    content: 'git status --short',
+    status: 'running',
+  });
+
+  const completed = buildCodexCommandTraceMessage({
+    item: {
+      id: 'item_1',
+      type: 'commandExecution',
+      command: 'git status --short',
+      aggregatedOutput: ' M src/App.tsx',
+      exitCode: 0,
+    },
+    status: 'success',
+    previous: running ?? undefined,
+  });
+
+  assert.deepEqual(completed, {
+    id: running?.id,
+    role: 'system',
+    kind: 'tool_use',
+    timestamp: '4/7 01:05',
+    title: 'Command',
+    content: ['git status --short', 'M src/App.tsx'].join('\n\n'),
+    status: 'success',
+  });
+});
+
 run('buildCodexFunctionCallTraceMessage maps tool calls and outputs into tool traces', () => {
   const running = buildCodexFunctionCallTraceMessage({
     item: {
@@ -358,6 +404,71 @@ run('buildCodexFunctionCallTraceMessage keeps code edits as recorded code change
     timestamp: '4/7 01:12',
     title: 'apply_patch',
     content: 'src/App.tsx',
+    recordedDiff: {
+      filePath: 'src/App.tsx',
+      kind: 'git',
+      content: patch,
+    },
+    status: 'success',
+  });
+});
+
+run('buildCodexFunctionCallTraceMessage supports app-server tool items with object arguments and progress lines', () => {
+  const patch = [
+    '*** Begin Patch',
+    '*** Update File: src/App.tsx',
+    '@@',
+    '-old',
+    '+new',
+    '*** End Patch',
+  ].join('\n');
+
+  const running = buildCodexFunctionCallTraceMessage({
+    item: {
+      id: 'tool_patch',
+      tool: 'functions.apply_patch',
+      arguments: { patch },
+    },
+    status: 'running',
+    timestamp: '4/7 01:14',
+    extraLines: ['Preparing patch'],
+  });
+
+  assert.deepEqual(running, {
+    id: 'tool_patch',
+    role: 'system',
+    kind: 'tool_use',
+    timestamp: '4/7 01:14',
+    title: 'apply_patch',
+    content: ['src/App.tsx', 'Preparing patch'].join('\n\n'),
+    recordedDiff: {
+      filePath: 'src/App.tsx',
+      kind: 'git',
+      content: patch,
+    },
+    status: 'running',
+  });
+
+  const completed = buildCodexFunctionCallTraceMessage({
+    item: {
+      id: 'tool_patch',
+      tool: 'functions.apply_patch',
+      result: {
+        content: [{ text: 'ok' }],
+      },
+    },
+    status: 'success',
+    previous: running ?? undefined,
+    extraLines: ['Preparing patch'],
+  });
+
+  assert.deepEqual(completed, {
+    id: 'tool_patch',
+    role: 'system',
+    kind: 'tool_use',
+    timestamp: '4/7 01:14',
+    title: 'apply_patch',
+    content: ['src/App.tsx', 'Preparing patch', 'The file has been patched successfully.'].join('\n\n'),
     recordedDiff: {
       filePath: 'src/App.tsx',
       kind: 'git',

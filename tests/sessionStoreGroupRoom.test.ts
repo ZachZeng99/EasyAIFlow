@@ -25,10 +25,21 @@ await run('ensureGroupRoomSession creates a fresh primary member session without
   const userDataPath = path.join(tempRoot, 'userData');
   const homePath = path.join(tempRoot, 'home');
   const projectRoot = path.join(tempRoot, 'workspace');
+  const codexIndexPath = path.join(homePath, '.codex', 'session_index.jsonl');
 
   await mkdir(userDataPath, { recursive: true });
   await mkdir(homePath, { recursive: true });
   await mkdir(projectRoot, { recursive: true });
+  await mkdir(path.dirname(codexIndexPath), { recursive: true });
+  await writeFile(
+    codexIndexPath,
+    `${JSON.stringify({
+      id: 'thread-123',
+      thread_name: 'Legacy room title',
+      updated_at: '2026-04-07T10:00:00.000Z',
+    })}\n`,
+    'utf8',
+  );
 
   const previousUserProfile = process.env.USERPROFILE;
   process.env.USERPROFILE = homePath;
@@ -72,9 +83,16 @@ await run('ensureGroupRoomSession creates a fresh primary member session without
     assert.equal(primaryMember?.sessionKind, 'group_member');
     assert.equal(primaryMember?.title, `[Group] ${room.title}`);
     assert.equal(primaryMember?.instructionPrompt, undefined);
-    assert.equal(primaryMember?.codexThreadId, undefined);
+    assert.equal(primaryMember?.codexThreadId, 'thread-123');
     assert.equal(primaryMember?.model, 'gpt-5.4-mini');
     assert.equal(primaryMember?.messages.length, 0);
+
+    const updatedIndex = JSON.parse((await readFile(codexIndexPath, 'utf8')).trim()) as {
+      id?: string;
+      thread_name?: string;
+    };
+    assert.equal(updatedIndex.id, 'thread-123');
+    assert.equal(updatedIndex.thread_name, primaryMember?.title);
   } finally {
     if (previousUserProfile === undefined) {
       delete process.env.USERPROFILE;

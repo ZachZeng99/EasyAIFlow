@@ -2,6 +2,31 @@ import path from 'node:path';
 
 const isWindowsPath = (value: string) => /^[A-Za-z]:/.test(value) || value.includes('\\');
 
+const normalizeWindowsPathPreserveCase = (value: string) => {
+  const normalized = path.win32.normalize(value.replace(/\//g, '\\'));
+  return trimTrailingSeparators(normalized, path.win32.parse(normalized).root);
+};
+
+const buildClaudeProjectDirName = (
+  normalizedPath: string,
+  mapSegment: (segment: string) => string = (segment) => segment,
+) => {
+  const normalized = normalizedPath.replace(/\//g, '\\');
+  const match = normalized.match(/^([A-Za-z]):\\?(.*)$/);
+  if (!match) {
+    return null;
+  }
+
+  const drive = match[1].toUpperCase();
+  const rest = match[2]
+    .split('\\')
+    .filter(Boolean)
+    .map((segment) => mapSegment(segment))
+    .join('-');
+
+  return rest ? `${drive}--${rest}` : `${drive}--`;
+};
+
 const trimTrailingSeparators = (value: string, root: string) => {
   const trimmed = value.replace(/[\\/]+$/, '');
   if (!trimmed) {
@@ -53,17 +78,29 @@ export const isWorkspaceWithinProjectTree = (projectRoot: string, workspace: str
 };
 
 export const toClaudeProjectDirName = (rootPath: string) => {
-  const normalized = normalizeWorkspacePath(rootPath).replace(/\//g, '\\');
-  const match = normalized.match(/^([A-Za-z]):\\?(.*)$/);
-  if (!match) {
+  if (!isWindowsPath(rootPath)) {
     return null;
   }
 
-  const drive = match[1].toUpperCase();
-  const rest = match[2]
-    .split('\\')
-    .filter(Boolean)
-    .join('-');
+  return buildClaudeProjectDirName(
+    normalizeWindowsPathPreserveCase(rootPath),
+    (segment) => segment.replace(/_/g, '-'),
+  );
+};
 
-  return rest ? `${drive}--${rest}` : `${drive}--`;
+export const getClaudeProjectDirNameCandidates = (rootPath: string) => {
+  if (!isWindowsPath(rootPath)) {
+    return [] as string[];
+  }
+
+  const preservedCase = normalizeWindowsPathPreserveCase(rootPath);
+  const normalizedLegacy = normalizeWorkspacePath(rootPath).replace(/\//g, '\\');
+  const candidates = [
+    buildClaudeProjectDirName(preservedCase, (segment) => segment.replace(/_/g, '-')),
+    buildClaudeProjectDirName(preservedCase),
+    buildClaudeProjectDirName(normalizedLegacy),
+    buildClaudeProjectDirName(normalizedLegacy, (segment) => segment.replace(/_/g, '-')),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+
+  return [...new Set(candidates)];
 };

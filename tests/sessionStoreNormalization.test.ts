@@ -211,3 +211,77 @@ run('normalizeProjectsForCache keeps group sessions provider-less', () => {
   assert.equal(normalizedSession?.sessionKind, 'group');
   assert.equal(normalizedSession?.provider, undefined);
 });
+
+run('normalizeProjectsForCache infers group kinds from persisted group metadata', () => {
+  const projects = makeProject(
+    makeMessage({
+      status: 'complete',
+      title: 'Recovered room message',
+      content: 'hello',
+    }),
+  );
+  const roomSession = projects[0]?.dreams[0]?.sessions[0] as SessionRecord;
+  roomSession.sessionKind = 'standard';
+  roomSession.provider = 'codex';
+  roomSession.group = {
+    kind: 'room',
+    nextMessageSeq: 2,
+    participants: [],
+  };
+
+  const memberSession: SessionRecord = {
+    ...roomSession,
+    id: 'member-1',
+    title: '[Group] Recovered room',
+    provider: 'codex',
+    sessionKind: 'standard',
+    hidden: false,
+    group: {
+      kind: 'member',
+      roomSessionId: roomSession.id,
+      participantId: 'codex',
+      speakerLabel: 'Codex',
+    },
+  };
+  projects[0]?.dreams[0]?.sessions.push(memberSession);
+
+  const normalized = normalizeProjectsForCache(projects);
+  const normalizedRoom = normalized[0]?.dreams[0]?.sessions[0] as SessionRecord | undefined;
+  const normalizedMember = normalized[0]?.dreams[0]?.sessions[1] as SessionRecord | undefined;
+
+  assert.equal(normalizedRoom?.sessionKind, 'group');
+  assert.equal(normalizedRoom?.provider, undefined);
+  assert.equal(normalizedMember?.sessionKind, 'group_member');
+  assert.equal(normalizedMember?.hidden, true);
+  assert.equal(normalizedMember?.provider, 'codex');
+});
+
+run('normalizeProjectsFromPersistence infers group kinds before stale-message recovery', () => {
+  const projects = makeProject(
+    makeMessage({
+      status: 'streaming',
+      title: 'Codex response',
+      content: '',
+      provider: 'codex',
+      speakerId: 'codex',
+      speakerLabel: 'Codex',
+    }),
+  );
+  const session = projects[0]?.dreams[0]?.sessions[0] as SessionRecord;
+  session.sessionKind = 'standard';
+  session.provider = 'codex';
+  session.group = {
+    kind: 'room',
+    nextMessageSeq: 2,
+    participants: [],
+  };
+
+  const normalized = normalizeProjectsFromPersistence(projects);
+  const normalizedSession = normalized[0]?.dreams[0]?.sessions[0] as SessionRecord | undefined;
+  const message = normalizedSession?.messages?.[0];
+
+  assert.equal(normalizedSession?.sessionKind, 'group');
+  assert.equal(normalizedSession?.provider, undefined);
+  assert.equal(message?.status, 'error');
+  assert.equal(message?.content, 'Previous Claude run did not finish.');
+});
