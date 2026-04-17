@@ -16,8 +16,10 @@ import {
   findSession,
   getProjects,
   setSessionRuntime,
+  updateAssistantMessageInMemory,
   updateSessionContextReferences,
   updateAssistantMessage,
+  upsertSessionMessageInMemory,
   upsertSessionMessage,
 } from '../electron/sessionStore.js';
 import { buildRecordedCodeChangeDiff } from '../electron/recordedCodeChangeDiff.js';
@@ -55,6 +57,7 @@ type ActiveCodexRun = {
 };
 
 const activeRuns = new Map<string, ActiveCodexRun>();
+type CodexTraceFinalStatus = 'success' | 'error';
 
 const isImageAttachment = (attachment: MessageAttachment) => attachment.mimeType.startsWith('image/');
 
@@ -97,8 +100,13 @@ export const emitTraceMessage = async (
   ctx: ClaudeInteractionContext,
   sessionId: string,
   message: ConversationMessage,
+  options?: { persist?: boolean },
 ) => {
-  await upsertSessionMessage(sessionId, message);
+  if (options?.persist === false) {
+    await upsertSessionMessageInMemory(sessionId, message);
+  } else {
+    await upsertSessionMessage(sessionId, message);
+  }
   ctx.broadcastEvent({
     type: 'trace',
     sessionId,
@@ -465,6 +473,47 @@ export const buildCodexFunctionCallTraceMessage = (payload: {
   };
 };
 
+const isPendingCodexTraceStatus = (status: ConversationMessage['status']) =>
+  status === 'queued' || status === 'streaming' || status === 'running' || status === 'background';
+
+export const finalizeCodexTraceMessage = (
+  message: ConversationMessage,
+  finalStatus: CodexTraceFinalStatus,
+): ConversationMessage => {
+  if (!isPendingCodexTraceStatus(message.status)) {
+    return message;
+  }
+
+  const nextStatus: ConversationMessage['status'] =
+    message.kind === 'tool_use' || message.kind === 'tool_result'
+      ? finalStatus
+      : finalStatus === 'error'
+        ? 'error'
+        : 'complete';
+
+  return {
+    ...message,
+    status: nextStatus,
+  };
+};
+
+export const finalizeCodexTraceMessages = async (
+  ctx: ClaudeInteractionContext,
+  sessionId: string,
+  traceMessages: Map<string, ConversationMessage>,
+  finalStatus: CodexTraceFinalStatus,
+) => {
+  for (const [traceId, message] of traceMessages.entries()) {
+    const finalized = finalizeCodexTraceMessage(message, finalStatus);
+    if (finalized === message) {
+      continue;
+    }
+
+    traceMessages.set(traceId, finalized);
+    await emitTraceMessage(ctx, sessionId, finalized);
+  }
+};
+
 export const prepareCodexRun = async (
   ctx: ClaudeInteractionContext,
   sessionId: string,
@@ -815,6 +864,7 @@ export const runCodexPrint = async (
     }
 
     if (failureMessage) {
+      await finalizeCodexTraceMessages(ctx, sessionId, activeRun.traceMessages, 'error');
       await updateAssistantMessage(sessionId, prepared.assistantMessageId, (message) => {
         message.title = 'Codex error';
         message.content = failureMessage;
@@ -846,6 +896,7 @@ export const runCodexPrint = async (
       ? options.parseFinalMessage(rawContent)
       : rawContent;
     activeRun.completed = true;
+    await finalizeCodexTraceMessages(ctx, sessionId, activeRun.traceMessages, 'success');
     await updateAssistantMessage(sessionId, prepared.assistantMessageId, (message) => {
       message.title = buildMessageTitle(content, 'Codex response');
       message.content = content;

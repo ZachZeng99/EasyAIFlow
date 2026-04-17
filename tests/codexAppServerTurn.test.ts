@@ -708,6 +708,130 @@ await run('runCodexAppServerTurn names the native thread after the current sessi
   }
 });
 
+await run('runCodexAppServerTurn finalizes started command traces when the turn completes without an item completion event', async () => {
+  const tempBase = path.resolve('.tmp-tests');
+  await mkdir(tempBase, { recursive: true });
+  const tempRoot = await mkdtemp(path.join(tempBase, 'codex-app-server-finalize-trace-'));
+  const userDataPath = path.join(tempRoot, 'userData');
+  const homePath = path.join(tempRoot, 'home');
+  const workspacePath = path.join(tempRoot, 'workspace');
+
+  await mkdir(userDataPath, { recursive: true });
+  await mkdir(homePath, { recursive: true });
+  await mkdir(workspacePath, { recursive: true });
+
+  const previousUserProfile = process.env.USERPROFILE;
+  process.env.USERPROFILE = homePath;
+  configureRuntimePaths({ mode: 'web', userDataPath, homePath });
+
+  try {
+    const sessionStore = await importSessionStore();
+    const codexAppServer = await importCodexAppServer();
+    const codexAppServerTurn = await importFreshCodexAppServerTurn();
+    const project = await sessionStore.createProject('FinalizeTrace', workspacePath);
+    const created = await sessionStore.createSession(project.session.id, false, 'codex');
+    const sessionId = created.session.id;
+    let notificationHandler: ((n: { method: string; params: Record<string, unknown> }) => void) | null = null;
+    const fakeClient = {
+      threadStart: async () => ({ thread: { id: 'thread-finalize' } }),
+      threadResume: async () => ({ thread: { id: 'thread-finalize' } }),
+      threadSetName: async (_threadId: string, _name: string) => undefined,
+      turnStart: async () => {
+        notificationHandler?.({
+          method: 'item/started',
+          params: {
+            threadId: 'thread-finalize',
+            turnId: 'turn-finalize',
+            item: {
+              id: 'cmd-1',
+              type: 'commandExecution',
+              command: 'git status --short',
+              aggregatedOutput: '',
+              status: 'inProgress',
+            },
+          },
+        });
+        notificationHandler?.({
+          method: 'item/commandExecution/outputDelta',
+          params: {
+            threadId: 'thread-finalize',
+            turnId: 'turn-finalize',
+            itemId: 'cmd-1',
+            delta: ' M src/App.tsx',
+          },
+        });
+        notificationHandler?.({
+          method: 'item/started',
+          params: {
+            threadId: 'thread-finalize',
+            turnId: 'turn-finalize',
+            item: {
+              id: 'answer-1',
+              type: 'agentMessage',
+              text: 'Checking status.',
+              phase: 'final_answer',
+            },
+          },
+        });
+        notificationHandler?.({
+          method: 'item/completed',
+          params: {
+            threadId: 'thread-finalize',
+            turnId: 'turn-finalize',
+            item: {
+              id: 'answer-1',
+              type: 'agentMessage',
+              text: 'Checking status.',
+              phase: 'final_answer',
+            },
+          },
+        });
+        return { turn: { id: 'turn-finalize', status: 'completed' } };
+      },
+      addNotificationHandler: (handler: (n: { method: string; params: Record<string, unknown> }) => void) => {
+        notificationHandler = handler;
+      },
+      removeNotificationHandler: (_handler: (n: { method: string; params: Record<string, unknown> }) => void) => {
+        notificationHandler = null;
+      },
+      addExitHandler: (_handler: (error: Error) => void) => undefined,
+      removeExitHandler: (_handler: (error: Error) => void) => undefined,
+    };
+    const originalAcquire = codexAppServer.appServerManager.acquire;
+    const originalRelease = codexAppServer.appServerManager.release;
+    codexAppServer.appServerManager.acquire = async (_cwd: string) => fakeClient as never;
+    codexAppServer.appServerManager.release = (_cwd: string) => undefined;
+
+    try {
+      await codexAppServerTurn.runCodexAppServerTurn(
+        { broadcastEvent: (_event: Record<string, unknown>) => undefined } as never,
+        sessionId,
+        'Finish the turn.',
+      );
+
+      const updatedSession = await sessionStore.findSession(sessionId);
+      const commandTrace = updatedSession?.messages.find(
+        (message: ConversationMessage) => message.kind === 'tool_use' && message.title === 'Command',
+      );
+
+      assert.equal(commandTrace?.status, 'success');
+      assert.match(commandTrace?.content ?? '', /git status --short/);
+      assert.match(commandTrace?.content ?? '', /M src\/App\.tsx/);
+    } finally {
+      codexAppServer.appServerManager.acquire = originalAcquire;
+      codexAppServer.appServerManager.release = originalRelease;
+    }
+  } finally {
+    if (previousUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = previousUserProfile;
+    }
+
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 await run('runResidentCodexAppServerTurn keeps the Codex app-server session online after the turn completes', async () => {
   const tempBase = path.resolve('.tmp-tests');
   await mkdir(tempBase, { recursive: true });

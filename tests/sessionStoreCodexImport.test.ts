@@ -166,6 +166,130 @@ await run('createProject imports Codex CLI sessions under the opened project tre
   }
 });
 
+await run('createProject imports Codex CLI tool traces from native session logs', async () => {
+  const tempBase = path.resolve('.tmp-tests');
+  await mkdir(tempBase, { recursive: true });
+  const tempRoot = await mkdtemp(path.join(tempBase, 'session-store-codex-import-traces-'));
+  const userDataPath = path.join(tempRoot, 'userData');
+  const homePath = path.join(tempRoot, 'home');
+  const projectRoot = path.join(tempRoot, 'PBZ');
+  const codexSessionsDir = path.join(homePath, '.codex', 'sessions', '2026', '04', '17');
+  const codexIndexPath = path.join(homePath, '.codex', 'session_index.jsonl');
+
+  await mkdir(userDataPath, { recursive: true });
+  await mkdir(projectRoot, { recursive: true });
+  await mkdir(codexSessionsDir, { recursive: true });
+  await mkdir(path.dirname(codexIndexPath), { recursive: true });
+
+  await writeFile(
+    codexIndexPath,
+    `${JSON.stringify({
+      id: 'trace-thread',
+      thread_name: 'Trace import',
+      updated_at: '2026-04-17T12:00:05.000Z',
+    })}\n`,
+    'utf8',
+  );
+
+  await writeFile(
+    path.join(codexSessionsDir, 'rollout-2026-04-17T12-00-00-trace-thread.jsonl'),
+    [
+      JSON.stringify({
+        timestamp: '2026-04-17T12:00:00.000Z',
+        type: 'session_meta',
+        payload: {
+          id: 'trace-thread',
+          cwd: projectRoot,
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-04-17T12:00:01.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: '检查 trace 导入' }],
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-04-17T12:00:02.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'function_call',
+          call_id: 'call-shell',
+          name: 'apply_patch',
+          arguments: JSON.stringify({
+            patch: ['*** Begin Patch', '*** Update File: src/App.tsx', '@@', '-old', '+new', '*** End Patch'].join('\n'),
+          }),
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-04-17T12:00:03.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'function_call_output',
+          call_id: 'call-shell',
+          output: '{"output":"Success. Updated the following files:\\nM src/App.tsx\\n"}',
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-04-17T12:00:04.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'exec_command_end',
+          call_id: 'call-cmd',
+          command: ['cmd.exe', '/d', '/s', '/c', 'git', 'status', '--short'],
+          aggregated_output: ' M src/App.tsx',
+          exit_code: 0,
+          status: 'completed',
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-04-17T12:00:05.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: '已检查完成。' }],
+        },
+      }),
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  const previousUserProfile = process.env.USERPROFILE;
+  process.env.USERPROFILE = homePath;
+  configureRuntimePaths({ mode: 'web', userDataPath, homePath });
+
+  try {
+    const sessionStore = await importFreshSessionStore();
+    const result = await sessionStore.createProject('PBZ', projectRoot);
+    const temporary = result.projects[0]?.dreams.find((dream: { isTemporary?: boolean }) => dream.isTemporary);
+    const imported = temporary?.sessions.find(
+      (session: { codexThreadId?: string }) => session.codexThreadId === 'trace-thread',
+    ) as
+      | {
+          messages?: Array<{ role?: string; kind?: string; title?: string; status?: string; content?: string }>;
+        }
+      | undefined;
+
+    const toolMessages = imported?.messages?.filter((message) => message.role === 'system' && message.kind === 'tool_use') ?? [];
+    assert.equal(toolMessages.length, 2);
+    assert.equal(toolMessages[0]?.status, 'success');
+    assert.match(toolMessages[0]?.content ?? '', /src\/App\.tsx/);
+    assert.equal(toolMessages[1]?.title, 'Command');
+    assert.equal(toolMessages[1]?.status, 'success');
+    assert.match(toolMessages[1]?.content ?? '', /git status --short/);
+  } finally {
+    if (previousUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = previousUserProfile;
+    }
+  }
+});
+
 await run('native Codex import does not surface visible duplicates when persisted group session kinds were lost', async () => {
   const tempBase = path.resolve('.tmp-tests');
   await mkdir(tempBase, { recursive: true });

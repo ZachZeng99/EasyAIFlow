@@ -30,6 +30,7 @@ import {
   ensureGroupRoomSession,
   findSession,
   getProjects,
+  getProjectsForBootstrap,
   renameEntity,
   reorderStreamworks,
   updateSessionContextReferences,
@@ -296,8 +297,11 @@ export const handleGetSlashCommands = async (
 
 export const handleBootstrapSessions = async (
   state: ClaudeInteractionState,
+  options?: {
+    bootstrapProjects?: boolean;
+  },
 ) => ({
-  projects: await getProjects(),
+  projects: options?.bootstrapProjects ? await getProjectsForBootstrap() : await getProjects(),
   interactions: {
     ...getSessionInteractionSnapshots(state),
     ...getCodexAppServerInteractionSnapshots(),

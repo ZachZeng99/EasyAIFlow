@@ -1064,8 +1064,8 @@ const resolveAssistantVisibleContent = (
   }
 
   const candidates = [
-    result,
     streamed,
+    result,
     runState.lastToolResultContent,
     preferredFallback,
   ];

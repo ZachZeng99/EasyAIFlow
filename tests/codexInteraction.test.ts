@@ -5,6 +5,7 @@ import {
   buildCodexFunctionCallTraceMessage,
   buildCodexPromptWithAttachments,
   buildCodexSpawnSpec,
+  finalizeCodexTraceMessage,
 } from '../backend/codexInteraction.ts';
 import type { MessageAttachment, SessionSummary } from '../src/data/types.ts';
 
@@ -476,4 +477,38 @@ run('buildCodexFunctionCallTraceMessage supports app-server tool items with obje
     },
     status: 'success',
   });
+});
+
+run('finalizeCodexTraceMessage settles pending command traces when Codex completes', () => {
+  const finalized = finalizeCodexTraceMessage(
+    {
+      id: 'trace-1',
+      role: 'system',
+      kind: 'tool_use',
+      timestamp: '4/17 18:10',
+      title: 'Command',
+      content: 'git status --short',
+      status: 'running',
+    },
+    'success',
+  );
+
+  assert.equal(finalized.status, 'success');
+});
+
+run('finalizeCodexTraceMessage marks pending traces as error when Codex fails', () => {
+  const finalized = finalizeCodexTraceMessage(
+    {
+      id: 'trace-2',
+      role: 'system',
+      kind: 'tool_use',
+      timestamp: '4/17 18:11',
+      title: 'Command',
+      content: 'git status --short',
+      status: 'running',
+    },
+    'error',
+  );
+
+  assert.equal(finalized.status, 'error');
 });

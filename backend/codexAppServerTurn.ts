@@ -8,12 +8,14 @@ import {
   toCodexTokenUsage,
   buildCodexCommandTraceMessage,
   buildCodexFunctionCallTraceMessage,
+  finalizeCodexTraceMessages,
 } from './codexInteraction.js';
 import {
   findSession,
   getProjects,
   renameNativeCodexThread,
   setSessionRuntime,
+  updateAssistantMessageInMemory,
   updateAssistantMessage,
 } from '../electron/sessionStore.js';
 import { stopPendingSessionMessages } from '../electron/sessionStop.js';
@@ -369,7 +371,7 @@ const syncStreamingAssistantMessage = async (
   content: string,
 ) => {
   const title = buildMessageTitle(content, 'Codex response');
-  await updateAssistantMessage(sessionId, assistantMessageId, (message) => {
+  await updateAssistantMessageInMemory(sessionId, assistantMessageId, (message) => {
     message.title = title;
     message.content = content;
     message.status = 'streaming';
@@ -407,7 +409,7 @@ const syncCommentaryTraceMessage = async (
     status,
   };
   state.traceMessages.set(itemId, trace);
-  await emitTraceMessage(ctx, sessionId, trace);
+  await emitTraceMessage(ctx, sessionId, trace, { persist: status !== 'running' });
 };
 
 const syncCommandTraceMessage = async (
@@ -429,7 +431,7 @@ const syncCommandTraceMessage = async (
   }
 
   state.traceMessages.set(itemId, trace);
-  await emitTraceMessage(ctx, sessionId, trace);
+  await emitTraceMessage(ctx, sessionId, trace, { persist: trace.status !== 'running' });
 };
 
 const syncFunctionTraceMessage = async (
@@ -458,7 +460,7 @@ const syncFunctionTraceMessage = async (
   }
 
   state.traceMessages.set(itemId, trace);
-  await emitTraceMessage(ctx, sessionId, trace);
+  await emitTraceMessage(ctx, sessionId, trace, { persist: trace.status !== 'running' });
 };
 
 export const handleAppServerNotification = async (
@@ -868,6 +870,7 @@ export const runCodexAppServerTurn = async (
     }
 
     if (state.error && !state.finalContent) {
+      await finalizeCodexTraceMessages(ctx, sessionId, state.traceMessages, 'error');
       await updateAssistantMessage(sessionId, prepared.assistantMessageId, (message) => {
         message.title = 'Codex error';
         message.content = state.error;
@@ -907,6 +910,7 @@ export const runCodexAppServerTurn = async (
       ? options.parseFinalMessage(rawContent)
       : rawContent;
     activeTurn.completed = true;
+    await finalizeCodexTraceMessages(ctx, sessionId, state.traceMessages, 'success');
 
     await updateAssistantMessage(sessionId, prepared.assistantMessageId, (message) => {
       message.title = buildMessageTitle(content, 'Codex response');
@@ -944,6 +948,7 @@ export const runCodexAppServerTurn = async (
   } catch (error) {
     activeAppServerTurns.delete(sessionId);
     const errorMessage = error instanceof Error ? error.message : 'Codex app-server failed.';
+    await finalizeCodexTraceMessages(ctx, sessionId, activeTurn.traceMessages, 'error');
 
     await updateAssistantMessage(sessionId, prepared.assistantMessageId, (message) => {
       message.title = 'Codex error';

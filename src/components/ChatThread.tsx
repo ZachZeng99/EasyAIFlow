@@ -1,6 +1,9 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
 import { DiffContent } from './DiffContent';
 import { InlinePermissionCard } from './InlinePermissionCard';
 import { InlineAskUserQuestionCard } from './InlineAskUserQuestionCard';
@@ -324,7 +327,7 @@ function ChatThreadComponent({
                         </button>
                         {isOpen ? (
                           <div className="markdown-body trace-markdown">
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                            <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{message.content}</ReactMarkdown>
                             {(() => {
                               const request = parsePermissionRequest(message.content);
                               if (!request || !onRequestPermission) {
@@ -365,7 +368,7 @@ function ChatThreadComponent({
 
               {item.message.role === 'assistant' ? (
                 <div className="markdown-body">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.message.content}</ReactMarkdown>
+                  <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{item.message.content}</ReactMarkdown>
                 </div>
               ) : (
                 <pre className="message-body">{item.message.content}</pre>

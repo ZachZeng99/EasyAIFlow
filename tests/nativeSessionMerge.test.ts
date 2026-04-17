@@ -105,3 +105,40 @@ run('mergeNativeImportedSessions keeps meaningful local sessions and sorts by up
     ['imported-new', 'local', 'imported-old'],
   );
 });
+
+run('mergeNativeImportedSessions drops stale imported placeholders that no longer parse into real history', () => {
+  const staleImported = makeSession({
+    id: 'stale-imported',
+    title: 'Imported e4643a0c',
+    preview: 'Imported Claude history.',
+    claudeSessionId: 'e4643a0c-d155-4ddf-a88d-307a803a137b',
+    updatedAt: 500,
+    messages: [],
+  });
+  const local = makeSession({
+    id: 'local',
+    title: 'Scratch',
+    preview: 'Draft',
+    updatedAt: 300,
+    messages: [
+      {
+        id: 'msg-1',
+        role: 'user',
+        timestamp: 'now',
+        title: 'Draft',
+        content: 'Work in progress',
+      },
+    ],
+  });
+
+  const merged = mergeNativeImportedSessions(
+    [staleImported, local],
+    [],
+    new Set(),
+  );
+
+  assert.deepEqual(
+    merged.map((session) => session.id),
+    ['local'],
+  );
+});

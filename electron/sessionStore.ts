@@ -78,6 +78,14 @@ type NativeCleanupResult = {
   warnings: string[];
 };
 
+type ParsedCodexImportedSession = NonNullable<Awaited<ReturnType<typeof parseCodexSessionFile>>>;
+type ParsedNativeClaudeSession = Awaited<ReturnType<typeof parseNativeClaudeSessionFile>>;
+
+type NativeImportCache = {
+  parsedCodexSessions?: ParsedCodexImportedSession[];
+  parsedClaudeSessionsByFile?: Map<string, ParsedNativeClaudeSession | null>;
+};
+
 let cachedState: AppState | null = null;
 const storePath = () => path.join(getRuntimePaths().userDataPath, 'easyaiflow-sessions.json');
 const nativeClaudeProjectsRoot = () =>
@@ -1569,6 +1577,10 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
     interrupted = true;
   }
 
+  if (messages.length === 0 && !firstUserText && !lastAssistantText && !lastErrorText && !interrupted) {
+    return null;
+  }
+
   const summary = deriveImportedSessionSummary({
     customTitle,
     firstUserText,
@@ -1589,6 +1601,37 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
     timeLabel: toTimeLabel(lastTimestamp),
     updatedAt: toUpdatedAt(lastTimestamp),
   };
+};
+
+const parseCachedNativeClaudeSessionFile = async (
+  filePath: string,
+  cache?: NativeImportCache,
+): Promise<ParsedNativeClaudeSession | null> => {
+  if (!cache) {
+    try {
+      return await parseNativeClaudeSessionFile(filePath);
+    } catch {
+      return null;
+    }
+  }
+
+  if (!cache.parsedClaudeSessionsByFile) {
+    cache.parsedClaudeSessionsByFile = new Map();
+  }
+
+  if (cache.parsedClaudeSessionsByFile.has(filePath)) {
+    return cache.parsedClaudeSessionsByFile.get(filePath) ?? null;
+  }
+
+  let parsed: ParsedNativeClaudeSession | null = null;
+  try {
+    parsed = await parseNativeClaudeSessionFile(filePath);
+  } catch {
+    parsed = null;
+  }
+
+  cache.parsedClaudeSessionsByFile.set(filePath, parsed);
+  return parsed;
 };
 
 const codexSessionsRoot = () =>
@@ -1648,6 +1691,217 @@ const extractCodexMessageText = (content: unknown): string => {
     .trim();
 };
 
+const getImportedCodexString = (value: unknown) => (typeof value === 'string' ? value : '');
+
+const normalizeImportedCodexToolName = (value: string) =>
+  value.trim().startsWith('functions.') ? value.trim().slice('functions.'.length) : value.trim();
+
+const stringifyImportedCodexStructuredValue = (value: unknown): string => {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return '';
+    }
+
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try {
+        return stringifyImportedCodexStructuredValue(JSON.parse(trimmed));
+      } catch {
+        return trimmed;
+      }
+    }
+
+    return trimmed;
+  }
+
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => stringifyImportedCodexStructuredValue(entry))
+      .filter(Boolean)
+      .join('\n\n')
+      .trim();
+  }
+
+  if (value && typeof value === 'object') {
+    const candidate = value as Record<string, unknown>;
+    if (typeof candidate.output === 'string' && candidate.output.trim()) {
+      return candidate.output.trim();
+    }
+    if (typeof candidate.text === 'string' && candidate.text.trim()) {
+      return candidate.text.trim();
+    }
+    if (typeof candidate.message === 'string' && candidate.message.trim()) {
+      return candidate.message.trim();
+    }
+    if (Array.isArray(candidate.content)) {
+      const nested = stringifyImportedCodexStructuredValue(candidate.content);
+      if (nested) {
+        return nested;
+      }
+    }
+    if (Array.isArray(candidate.contentItems)) {
+      const nested = stringifyImportedCodexStructuredValue(candidate.contentItems);
+      if (nested) {
+        return nested;
+      }
+    }
+    if (candidate.metadata && typeof candidate.metadata === 'object') {
+      const nested = stringifyImportedCodexStructuredValue(candidate.metadata);
+      if (nested) {
+        return nested;
+      }
+    }
+    return JSON.stringify(candidate, null, 2).trim();
+  }
+
+  return '';
+};
+
+const parseImportedCodexArgumentsObject = (value: unknown) => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('{')) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const buildImportedCodexCodeChangeSuccessLine = (toolName: string) => {
+  switch (normalizeImportedCodexToolName(toolName)) {
+    case 'Edit':
+    case 'MultiEdit':
+      return 'The file has been updated successfully.';
+    case 'Write':
+      return 'The file has been written successfully.';
+    case 'ApplyPatch':
+    case 'apply_patch':
+      return 'The file has been patched successfully.';
+    default:
+      return '';
+  }
+};
+
+const buildImportedCodexFunctionTraceMessage = (payload: {
+  item: Record<string, unknown>;
+  status: 'running' | 'success' | 'error';
+  previous?: ConversationMessage;
+  timestamp?: string;
+}) => {
+  const callId = getImportedCodexString(payload.item.call_id).trim() || getImportedCodexString(payload.item.id).trim();
+  if (!callId) {
+    return null;
+  }
+
+  const rawName =
+    getImportedCodexString(payload.item.name).trim() ||
+    getImportedCodexString(payload.item.tool).trim() ||
+    payload.previous?.title ||
+    'Tool';
+  const name = normalizeImportedCodexToolName(rawName);
+  if (name === 'shell_command') {
+    return null;
+  }
+
+  const rawArguments = payload.item.arguments ?? payload.item.input ?? payload.item.prompt;
+  const argumentsText = stringifyImportedCodexStructuredValue(rawArguments);
+  const parsedArguments = parseImportedCodexArgumentsObject(rawArguments);
+  const outputText = stringifyImportedCodexStructuredValue(
+    payload.item.output ?? payload.item.result ?? payload.item.contentItems ?? payload.item.error,
+  );
+  const recordedDiff =
+    payload.previous?.recordedDiff ??
+    (parsedArguments ? buildRecordedCodeChangeDiff(name, parsedArguments) : undefined);
+  const filePath = recordedDiff?.filePath || getImportedCodexString(parsedArguments?.file_path).trim();
+  const contentParts = (payload.previous?.content?.trim() ?? '')
+    .split(/\n{2,}/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (!payload.previous && (filePath || argumentsText)) {
+    contentParts.push(filePath || argumentsText);
+  }
+
+  if (recordedDiff && payload.status === 'success') {
+    const successLine = buildImportedCodexCodeChangeSuccessLine(name);
+    if (successLine && !contentParts.includes(successLine)) {
+      contentParts.push(successLine);
+    }
+  } else if (outputText) {
+    contentParts.push(outputText);
+  }
+
+  return {
+    id: payload.previous?.id ?? callId,
+    role: 'system' as const,
+    kind: 'tool_use' as const,
+    timestamp: payload.previous?.timestamp ?? payload.timestamp ?? toTimeLabel(undefined),
+    title: payload.previous?.title ?? name,
+    content: contentParts.join('\n\n'),
+    recordedDiff,
+    status: payload.status,
+  };
+};
+
+const buildImportedCodexCommandTraceMessage = (payload: {
+  item: Record<string, unknown>;
+  status: 'success' | 'error';
+  previous?: ConversationMessage;
+  timestamp?: string;
+}) => {
+  const rawCommand = payload.item.command;
+  const command =
+    typeof rawCommand === 'string'
+      ? rawCommand.trim()
+      : Array.isArray(rawCommand)
+        ? rawCommand.map((part) => (typeof part === 'string' ? part : '')).filter(Boolean).join(' ').trim()
+        : '';
+  if (!command) {
+    return null;
+  }
+
+  const output = stringifyImportedCodexStructuredValue(
+    payload.item.aggregated_output ?? payload.item.aggregatedOutput ?? payload.item.stdout ?? payload.item.stderr,
+  );
+  const exitCode =
+    typeof payload.item.exit_code === 'number'
+      ? payload.item.exit_code
+      : typeof payload.item.exitCode === 'number'
+        ? payload.item.exitCode
+        : null;
+  const contentParts = [command];
+  if (output) {
+    contentParts.push(output);
+  }
+  if (payload.status === 'error' && exitCode !== null) {
+    contentParts.push(`Exit code: ${exitCode}`);
+  }
+
+  return {
+    id: (payload.previous?.id ?? getImportedCodexString(payload.item.call_id).trim()) || randomUUID(),
+    role: 'system' as const,
+    kind: 'tool_use' as const,
+    timestamp: payload.previous?.timestamp ?? payload.timestamp ?? toTimeLabel(undefined),
+    title: 'Command',
+    content: contentParts.join('\n\n'),
+    status: payload.status,
+  };
+};
+
 const isCodexImportedContextMessage = (text: string) => {
   const trimmed = text.trim();
   return (
@@ -1687,6 +1941,40 @@ const readCodexThreadNameIndex = async () => {
   return result;
 };
 
+const loadParsedCodexImportedSessions = async (cache?: NativeImportCache): Promise<ParsedCodexImportedSession[]> => {
+  if (cache?.parsedCodexSessions) {
+    return cache.parsedCodexSessions;
+  }
+
+  const files = [
+    ...(await listJsonlFilesRecursively(codexSessionsRoot())),
+    ...(await listJsonlFilesRecursively(codexArchivedSessionsRoot())),
+  ];
+  const threadNameIndex = await readCodexThreadNameIndex();
+  const parsedSessions: ParsedCodexImportedSession[] = [];
+
+  for (const file of files) {
+    let parsed: Awaited<ReturnType<typeof parseCodexSessionFile>> | null = null;
+    try {
+      parsed = await parseCodexSessionFile(file, threadNameIndex);
+    } catch {
+      continue;
+    }
+
+    if (!parsed) {
+      continue;
+    }
+
+    parsedSessions.push(parsed);
+  }
+
+  if (cache) {
+    cache.parsedCodexSessions = parsedSessions;
+  }
+
+  return parsedSessions;
+};
+
 const parseCodexSessionFile = async (
   filePath: string,
   threadNameIndex: Map<string, string>,
@@ -1694,6 +1982,7 @@ const parseCodexSessionFile = async (
   const raw = await readFile(filePath, 'utf8');
   const lines = raw.split(/\r?\n/).filter(Boolean);
   const messages: ConversationMessage[] = [];
+  const toolTraceById = new Map<string, ConversationMessage>();
   let workspace = '';
   let model = 'gpt-5.4';
   let firstUserText = '';
@@ -1757,6 +2046,14 @@ const parseCodexSessionFile = async (
               };
               model_context_window?: number;
             };
+            call_id?: unknown;
+            id?: unknown;
+            command?: unknown;
+            aggregated_output?: unknown;
+            aggregatedOutput?: unknown;
+            exit_code?: unknown;
+            exitCode?: unknown;
+            status?: unknown;
           }
         | undefined;
       if (payload?.type === 'token_count' && payload.info?.total_token_usage) {
@@ -1772,6 +2069,33 @@ const parseCodexSessionFile = async (
           cached,
           windowSource: payload.info.model_context_window ? 'runtime' : 'unknown',
         };
+        continue;
+      }
+
+      if (payload?.type === 'exec_command_end') {
+        const callId = getImportedCodexString(payload.call_id).trim();
+        const trace = buildImportedCodexCommandTraceMessage({
+          item: payload as Record<string, unknown>,
+          status:
+            (typeof payload.status === 'string' && payload.status === 'failed') ||
+            (typeof payload.exit_code === 'number' && payload.exit_code !== 0) ||
+            (typeof payload.exitCode === 'number' && payload.exitCode !== 0)
+              ? 'error'
+              : 'success',
+          previous: callId ? toolTraceById.get(callId) : undefined,
+          timestamp: toTimeLabel(lastTimestamp),
+        });
+        if (trace) {
+          if (callId) {
+            toolTraceById.set(callId, trace);
+          }
+          const existingIndex = messages.findIndex((message) => message.id === trace.id);
+          if (existingIndex >= 0) {
+            messages[existingIndex] = trace;
+          } else {
+            messages.push(trace);
+          }
+        }
       }
       continue;
     }
@@ -1785,8 +2109,60 @@ const parseCodexSessionFile = async (
           type?: unknown;
           role?: unknown;
           content?: unknown;
+          call_id?: unknown;
+          id?: unknown;
+          name?: unknown;
+          tool?: unknown;
+          arguments?: unknown;
+          input?: unknown;
+          output?: unknown;
+          result?: unknown;
+          contentItems?: unknown;
+          error?: unknown;
         }
       | undefined;
+
+    if (
+      payload?.type === 'function_call' ||
+      payload?.type === 'custom_tool_call'
+    ) {
+      const trace = buildImportedCodexFunctionTraceMessage({
+        item: payload as Record<string, unknown>,
+        status: 'running',
+        timestamp: toTimeLabel(lastTimestamp),
+      });
+      if (trace) {
+        toolTraceById.set(trace.id, trace);
+        messages.push(trace);
+      }
+      continue;
+    }
+
+    if (
+      payload?.type === 'function_call_output' ||
+      payload?.type === 'custom_tool_call_output'
+    ) {
+      const callId = getImportedCodexString(payload.call_id).trim() || getImportedCodexString(payload.id).trim();
+      const trace = buildImportedCodexFunctionTraceMessage({
+        item: payload as Record<string, unknown>,
+        status: payload.error ? 'error' : 'success',
+        previous: callId ? toolTraceById.get(callId) : undefined,
+        timestamp: toTimeLabel(lastTimestamp),
+      });
+      if (trace) {
+        if (callId) {
+          toolTraceById.set(callId, trace);
+        }
+        const existingIndex = messages.findIndex((message) => message.id === trace.id);
+        if (existingIndex >= 0) {
+          messages[existingIndex] = trace;
+        } else {
+          messages.push(trace);
+        }
+      }
+      continue;
+    }
+
     if (payload?.type !== 'message' || (payload.role !== 'user' && payload.role !== 'assistant')) {
       continue;
     }
@@ -2053,7 +2429,11 @@ const applySessionTitleRename = (
   }
 };
 
-const importNativeClaudeSessions = async (project: ProjectRecord, deletedImports: AppState['deletedImports']) => {
+const importNativeClaudeSessions = async (
+  project: ProjectRecord,
+  deletedImports: AppState['deletedImports'],
+  cache?: NativeImportCache,
+) => {
   const temporary = project.dreams.find((dream) => dream.isTemporary);
   if (!temporary) {
     return;
@@ -2092,12 +2472,8 @@ const importNativeClaudeSessions = async (project: ProjectRecord, deletedImports
   const importedSessions: SessionRecord[] = [];
 
   for (const file of files) {
-    let parsed:
-      | Awaited<ReturnType<typeof parseNativeClaudeSessionFile>>
-      | undefined;
-    try {
-        parsed = await parseNativeClaudeSessionFile(file);
-    } catch {
+    const parsed = await parseCachedNativeClaudeSessionFile(file, cache);
+    if (!parsed) {
       continue;
     }
     const workspace = parsed.workspace || project.rootPath;
@@ -2187,7 +2563,11 @@ const mergeImportedCodexSessions = (
   ].sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));
 };
 
-const importNativeCodexSessions = async (project: ProjectRecord, deletedImports: AppState['deletedImports']) => {
+const importNativeCodexSessions = async (
+  project: ProjectRecord,
+  deletedImports: AppState['deletedImports'],
+  cache?: NativeImportCache,
+) => {
   const temporary = project.dreams.find((dream) => dream.isTemporary);
   if (!temporary) {
     return;
@@ -2200,27 +2580,12 @@ const importNativeCodexSessions = async (project: ProjectRecord, deletedImports:
       .filter((session): session is SessionRecord & { codexThreadId: string } => Boolean(session.codexThreadId))
       .map((session) => [session.codexThreadId, session]),
   );
-
-  const files = [
-    ...(await listJsonlFilesRecursively(codexSessionsRoot())),
-    ...(await listJsonlFilesRecursively(codexArchivedSessionsRoot())),
-  ];
-  const threadNameIndex = await readCodexThreadNameIndex();
+  const parsedSessions = await loadParsedCodexImportedSessions(cache);
 
   const seenCodexIds = new Set<string>();
   const importedSessions: SessionRecord[] = [];
 
-  for (const file of files) {
-    let parsed: Awaited<ReturnType<typeof parseCodexSessionFile>> | null = null;
-    try {
-      parsed = await parseCodexSessionFile(file, threadNameIndex);
-    } catch {
-      continue;
-    }
-
-    if (!parsed) {
-      continue;
-    }
+  for (const parsed of parsedSessions) {
     if (deletedImports.codexThreadIds.includes(parsed.nativeSessionId)) {
       continue;
     }
@@ -2281,12 +2646,19 @@ const importNativeCodexSessions = async (project: ProjectRecord, deletedImports:
   );
 };
 
-const importNativeProjectSessions = async (project: ProjectRecord, deletedImports: AppState['deletedImports']) => {
-  await importNativeClaudeSessions(project, deletedImports);
-  await importNativeCodexSessions(project, deletedImports);
+const importNativeProjectSessions = async (
+  project: ProjectRecord,
+  deletedImports: AppState['deletedImports'],
+  cache?: NativeImportCache,
+) => {
+  await importNativeClaudeSessions(project, deletedImports, cache);
+  await importNativeCodexSessions(project, deletedImports, cache);
 };
 
-const recoverExistingSessionsFromNativeHistory = async (projects: ProjectRecord[]) => {
+const recoverExistingSessionsFromNativeHistory = async (
+  projects: ProjectRecord[],
+  cache?: NativeImportCache,
+) => {
   const sessions = projects.flatMap((project) =>
     project.dreams.flatMap((dream) => dream.sessions as SessionRecord[]),
   );
@@ -2301,15 +2673,7 @@ const recoverExistingSessionsFromNativeHistory = async (projects: ProjectRecord[
       continue;
     }
 
-    let parsed:
-      | Awaited<ReturnType<typeof parseNativeClaudeSessionFile>>
-      | undefined;
-    try {
-      parsed = await parseNativeClaudeSessionFile(filePath);
-    } catch {
-      parsed = undefined;
-    }
-
+    const parsed = await parseCachedNativeClaudeSessionFile(filePath, cache);
     if (!parsed || !shouldRecoverSessionFromNative(session, parsed)) {
       continue;
     }
@@ -2442,6 +2806,18 @@ const buildInitialProjects = () => {
 
 const cloneProjects = (projects: ProjectRecord[]) => JSON.parse(JSON.stringify(projects)) as ProjectRecord[];
 const cloneVisibleProjects = (projects: ProjectRecord[]) => cloneProjects(filterVisibleProjects(projects));
+const summarizeProjectsForBootstrap = (projects: ProjectRecord[]) =>
+  filterVisibleProjects(projects).map((project) => ({
+    ...project,
+    dreams: project.dreams.map((dream) => ({
+      ...dream,
+      sessions: dream.sessions.map((session) => ({
+        ...(session as SessionRecord),
+        messages: [],
+        messagesLoaded: false,
+      })),
+    })),
+  })) as ProjectRecord[];
 
 const ensureStateShape = (value: unknown): AppState => {
   if (!value || typeof value !== 'object' || !Array.isArray((value as { projects?: unknown }).projects)) {
@@ -2459,16 +2835,17 @@ const ensureStateShape = (value: unknown): AppState => {
 };
 
 const hydrateLoadedState = async (state: AppState) => {
+  const importCache: NativeImportCache = {};
   for (const project of state.projects) {
     try {
-      await importNativeProjectSessions(project, state.deletedImports);
+      await importNativeProjectSessions(project, state.deletedImports, importCache);
     } catch {
       // Preserve the persisted project tree when auxiliary native-session import fails.
     }
   }
 
   try {
-    await recoverExistingSessionsFromNativeHistory(state.projects);
+    await recoverExistingSessionsFromNativeHistory(state.projects, importCache);
   } catch {
     // Keep the persisted project tree even if native-history recovery cannot complete.
   }
@@ -2495,6 +2872,8 @@ export const loadState = async () => {
 
   return cachedState;
 };
+
+const getMutableState = async () => cachedState ?? await loadState();
 
 let pendingSaveTimer: ReturnType<typeof setTimeout> | null = null;
 const SAVE_DEBOUNCE_MS = 800;
@@ -2534,6 +2913,11 @@ export const flushPendingSave = async () => {
 export const getProjects = async () => {
   const state = await loadState();
   return cloneVisibleProjects(state.projects);
+};
+
+export const getProjectsForBootstrap = async () => {
+  const state = await loadState();
+  return summarizeProjectsForBootstrap(state.projects);
 };
 
 const forEachSession = (projects: ProjectRecord[], visitor: (session: SessionRecord, dreamName: string, projectName: string) => void) => {
@@ -2714,6 +3098,28 @@ export const upsertSessionMessage = async (
   await saveState(state);
 };
 
+export const upsertSessionMessageInMemory = async (
+  sessionId: string,
+  message: ConversationMessage,
+) => {
+  const state = await getMutableState();
+
+  forEachSession(state.projects, (session) => {
+    if (session.id !== sessionId) {
+      return;
+    }
+
+    const index = session.messages?.findIndex((item) => item.id === message.id) ?? -1;
+    if (index >= 0) {
+      session.messages[index] = message;
+    } else {
+      const nextMessage = assignGroupMessageSeq(session, message);
+      session.messages = [...(session.messages ?? []), nextMessage];
+    }
+    session.updatedAt = Date.now();
+  });
+};
+
 export const updateAssistantMessage = async (
   sessionId: string,
   messageId: string,
@@ -2734,6 +3140,26 @@ export const updateAssistantMessage = async (
   });
 
   await saveState(state);
+};
+
+export const updateAssistantMessageInMemory = async (
+  sessionId: string,
+  messageId: string,
+  updater: (message: ConversationMessage, session: SessionSummary) => void,
+) => {
+  const state = await getMutableState();
+
+  forEachSession(state.projects, (session) => {
+    if (session.id !== sessionId) {
+      return;
+    }
+
+    const target = session.messages?.find((message) => message.id === messageId);
+    if (target) {
+      updater(target, session);
+      session.updatedAt = Date.now();
+    }
+  });
 };
 
 export const setSessionRuntime = async (
