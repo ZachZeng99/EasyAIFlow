@@ -39,6 +39,10 @@ import {
   updateSessionContextReferences,
   flushPendingSave,
 } from './sessionStore.js';
+import {
+  createBeforeQuitHandler,
+  settleClaudeSessionsForShutdown,
+} from './appShutdown.js';
 import { getFileDiff } from './fileDiff.js';
 import { shouldOpenExternally } from './externalNavigation.js';
 import type {
@@ -65,6 +69,26 @@ const ctx: ClaudeInteractionContext = {
 };
 
 const state = createClaudeInteractionState();
+
+const killClaudeRuns = () => {
+  const children = new Set<{
+    killed?: boolean;
+    kill: () => void;
+  }>();
+
+  state.activeRuns.forEach((run) => {
+    children.add(run.child);
+  });
+  state.residentSessions.forEach((resident) => {
+    children.add(resident.child);
+  });
+
+  children.forEach((child) => {
+    if (!child.killed) {
+      child.kill();
+    }
+  });
+};
 
 const openProjectDirectory = async () => {
   const result = await dialog.showOpenDialog({
@@ -339,15 +363,17 @@ app.whenReady().then(async () => {
   });
 });
 
-app.on('before-quit', () => {
-  void flushPendingSave();
-  stopAllCodexRuns();
-  state.activeRuns.forEach((run) => {
-    if (!run.child.killed) {
-      run.child.kill();
-    }
-  });
-});
+app.on(
+  'before-quit',
+  createBeforeQuitHandler({
+    prepareClaudeShutdown: () => settleClaudeSessionsForShutdown(ctx, state, { flushPendingSaveImpl: flushPendingSave }),
+    stopAllCodexRuns,
+    killClaudeRuns,
+    quit: () => {
+      app.quit();
+    },
+  }),
+);
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
