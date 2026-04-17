@@ -1,0 +1,25 @@
+
+> easyaiflow@0.1.0 dev:web
+> concurrently -k "npm:dev:web:client" "npm:dev:server"
+
+[dev:web:client] 
+[dev:web:client] > easyaiflow@0.1.0 dev:web:client
+[dev:web:client] > vite
+[dev:web:client] 
+[dev:server] 
+[dev:server] > easyaiflow@0.1.0 dev:server
+[dev:server] > tsx server/server.ts
+[dev:server] 
+[dev:web:client] 
+[dev:web:client]   [32m[1mVITE[22m v7.3.1[39m  [2mready in [0m[1m501[22m[2m[0m ms[22m
+[dev:web:client] 
+[dev:web:client]   [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m4273[22m/[39m
+[dev:web:client]   [32m➜[39m  [1mNetwork[22m: [36mhttp://100.67.70.45:[1m4273[22m/[39m
+[dev:web:client]   [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.0.8:[1m4273[22m/[39m
+[dev:web:client]   [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.160.1:[1m4273[22m/[39m
+[dev:web:client] [2m13:28:28[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/events[39m
+[dev:web:client] Error: connect ECONNREFUSED 127.0.0.1:8887
+[dev:web:client]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+[dev:server] EasyAIFlow web server listening on http://0.0.0.0:8887
+[dev:web:client] [2m13:39:36[22m [36m[1m[vite][22m[39m [32mvite.config.js changed, restarting server...[39m
+[dev:web:client] [2m13:39:36[22m [36m[1m[vite][22m[39m server restarted.
