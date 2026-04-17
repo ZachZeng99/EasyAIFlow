@@ -453,6 +453,9 @@ const createMirroredContext = (
   return {
     ...ctx,
     broadcastEvent: (event) => {
+      if (!('sessionId' in event)) {
+        return;
+      }
       if (event.sessionId !== spec.backingSessionId) {
         return;
       }
@@ -646,6 +649,9 @@ const runGroupParticipantTurn = async (
 
     interceptor = (event) => {
       // Only handle events for the backing session.
+      if (!('sessionId' in event)) {
+        return;
+      }
       if (event.sessionId !== backingSession.id) {
         return;
       }

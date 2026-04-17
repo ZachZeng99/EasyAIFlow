@@ -53,3 +53,52 @@ await run('web bridge falls back to RPC clipboard writes when the browser Clipbo
   assert.match(calls[0]?.body ?? '', /"method":"clipboard:write-text"/);
   assert.match(calls[0]?.body ?? '', /\[\[session:session-1\]\]/);
 });
+
+await run('web bridge emits an interaction sync when the SSE connection opens', async () => {
+  const originalEventSource = globalThis.EventSource;
+  const events: Array<{ type: string }> = [];
+
+  class MockEventSource {
+    static instances: MockEventSource[] = [];
+    onopen: ((event: Event) => void) | null = null;
+    onmessage: ((event: MessageEvent<string>) => void) | null = null;
+    closed = false;
+
+    constructor(_url: string | URL) {
+      MockEventSource.instances.push(this);
+    }
+
+    close() {
+      this.closed = true;
+    }
+  }
+
+  Object.defineProperty(globalThis, 'EventSource', {
+    configurable: true,
+    value: MockEventSource,
+  });
+
+  try {
+    const unsubscribe = bridge.onClaudeEvent((event) => {
+      events.push(event as { type: string });
+    });
+
+    const source = MockEventSource.instances[0];
+    assert.ok(source);
+
+    source.onopen?.({} as Event);
+    unsubscribe();
+
+    assert.equal(events[0]?.type, 'interaction-sync');
+    assert.equal(source.closed, true);
+  } finally {
+    if (typeof originalEventSource === 'undefined') {
+      delete (globalThis as typeof globalThis & { EventSource?: typeof EventSource }).EventSource;
+    } else {
+      Object.defineProperty(globalThis, 'EventSource', {
+        configurable: true,
+        value: originalEventSource,
+      });
+    }
+  }
+});

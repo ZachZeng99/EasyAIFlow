@@ -274,6 +274,9 @@ export type DeleteEntityResult = {
 
 export type ClaudeStreamEvent =
   | {
+      type: 'interaction-sync';
+    }
+  | {
       type: 'status';
       sessionId: string;
       sourceSessionId?: string;

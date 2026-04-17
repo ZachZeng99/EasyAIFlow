@@ -149,6 +149,9 @@ const mergeProjectSnapshots = (currentProjects: ProjectRecord[], nextProjects: P
 };
 
 const applyClaudeEvent = (projects: ProjectRecord[], event: ClaudeStreamEvent) =>
+  event.type === 'interaction-sync'
+    ? projects
+    :
   updateSessionInProjects(projects, event.sessionId, (session) => {
     const updatedAt = Date.now();
     const providerName = session.sessionKind === 'group' ? 'Group room' : getProviderDisplayName(session.provider);
@@ -971,6 +974,10 @@ export default function App() {
     };
 
     const processEvent = (event: ClaudeStreamEvent) => {
+      if (event.type === 'interaction-sync') {
+        setSessionInteractions(new Map());
+        return;
+      }
       if (event.type === 'permission-request') {
         updateSessionInteraction(event.sessionId, (state) => ({
           ...state,
@@ -1029,6 +1036,7 @@ export default function App() {
         playReplyCompleteTone();
       }
       if (
+        'sessionId' in event &&
         event.sessionId !== activeSelectedSessionId &&
         (
           event.type === 'complete' ||

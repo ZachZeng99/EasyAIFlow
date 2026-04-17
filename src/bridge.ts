@@ -246,6 +246,9 @@ const webBridge: EasyAIFlowBridge = {
   disconnectSession: (payload) => callWebRpc('disconnectSession', payload),
   onClaudeEvent: (listener) => {
     const source = new EventSource('/api/events');
+    source.onopen = () => {
+      listener({ type: 'interaction-sync' });
+    };
     source.onmessage = (event) => {
       try {
         const payload = JSON.parse(event.data) as ClaudeStreamEvent;

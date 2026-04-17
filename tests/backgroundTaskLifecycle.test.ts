@@ -211,6 +211,24 @@ run('parseBackgroundLaunchFromToolResult detects real background command launche
   });
 });
 
+run('parseBackgroundLaunchFromToolResult ignores structured tasks that already settled', () => {
+  const task = parseBackgroundLaunchFromToolResult({
+    toolUseId: 'tool-bash-bg',
+    content: 'Background command finished quickly.',
+    toolUseResult: {
+      stdout: 'done',
+      stderr: '',
+      interrupted: false,
+      isImage: false,
+      noOutputExpected: false,
+      backgroundTaskId: 'b78b0ei9u',
+      status: 'completed',
+    },
+  });
+
+  assert.equal(task, null);
+});
+
 run('extractBackgroundTaskResolutionFromToolUseResult marks completed async agent results as settled', () => {
   const task = extractBackgroundTaskResolutionFromToolUseResult({
     resultText: '## Comprehensive Report\nThe task finished successfully.',

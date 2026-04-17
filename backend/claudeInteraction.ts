@@ -977,8 +977,12 @@ export const parseBackgroundLaunchFromToolResult = (payload: {
   const structuredOutputFile = getNonEmptyString(structured?.outputFile);
   const structuredStatus = getNonEmptyString(structured?.status);
   const structuredDescription = getNonEmptyString(structured?.description);
+  const settledStructuredStatuses = new Set(['completed', 'failed', 'killed', 'stopped', 'cancelled']);
 
   if (structuredTaskId && getNonEmptyString(structured?.backgroundTaskId)) {
+    if (structuredStatus && settledStructuredStatuses.has(structuredStatus)) {
+      return null;
+    }
     return {
       taskId: structuredTaskId,
       status: 'running' as const,

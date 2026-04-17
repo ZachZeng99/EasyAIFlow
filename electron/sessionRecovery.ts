@@ -7,7 +7,12 @@ const recoverMessage = (
 ): ConversationMessage => {
   const providerName = getProviderDisplayName(provider);
 
-  if (message.status !== 'running' && message.status !== 'streaming' && message.status !== 'queued') {
+  if (
+    message.status !== 'running' &&
+    message.status !== 'streaming' &&
+    message.status !== 'queued' &&
+    message.status !== 'background'
+  ) {
     return message;
   }
 

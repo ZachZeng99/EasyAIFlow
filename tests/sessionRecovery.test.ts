@@ -52,6 +52,15 @@ run('recoverStaleSessionMessages completes non-empty streaming assistant message
   assert.equal(message.content, 'partial reply');
 });
 
+run('recoverStaleSessionMessages completes non-empty background assistant messages after restart', () => {
+  const [message] = recoverStaleSessionMessages([
+    makeMessage({ role: 'assistant', kind: 'message', status: 'background', content: 'Background task already launched.' }),
+  ]);
+
+  assert.equal(message.status, 'complete');
+  assert.equal(message.content, 'Background task already launched.');
+});
+
 run('recoverStaleSessionMessages marks queued assistant messages as interrupted', () => {
   const [message] = recoverStaleSessionMessages([
     makeMessage({ role: 'assistant', kind: 'message', status: 'queued', title: 'Claude queued' }),
