@@ -8,7 +8,7 @@ type ContextPanelProps = {
   session: SessionSummary;
   messages: ConversationMessage[];
   interaction?: SessionInteractionState;
-  requestedEffort: 'low' | 'medium' | 'high' | 'max';
+  requestedEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   appVersion: string;
   gitSnapshot: GitSnapshot;
   onRequestDiff: (filePath: string) => Promise<DiffPayload>;

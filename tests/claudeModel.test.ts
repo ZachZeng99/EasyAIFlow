@@ -40,6 +40,14 @@ run('resolveClaudeModelArg expands sonnet alias to a canonical Claude model when
   assert.equal(resolveClaudeModelArg('sonnet[1m]'), 'claude-sonnet-4-6');
 });
 
+run('resolveClaudeModelArg expands opus alias to the latest default Claude Opus model when env overrides are absent', () => {
+  assert.equal(resolveClaudeModelArg('opus[1m]'), 'claude-opus-4-7[1m]');
+});
+
+run('resolveClaudeModelArg treats bare claude as the default opus alias', () => {
+  assert.equal(resolveClaudeModelArg('claude'), 'claude-opus-4-7');
+});
+
 run('resolveClaudeModelArg keeps explicit model names unchanged', () => {
   assert.equal(resolveClaudeModelArg('kimi-k2.5', { _env: { ANTHROPIC_MODEL: 'other' } }), 'kimi-k2.5');
 });
@@ -48,12 +56,20 @@ run('normalizeClaudeModelSelection maps native sonnet model names back to UI ali
   assert.equal(normalizeClaudeModelSelection('claude-sonnet-4-6'), 'sonnet');
 });
 
+run('normalizeClaudeModelSelection maps native opus model names back to UI alias', () => {
+  assert.equal(normalizeClaudeModelSelection('claude-opus-4-7'), 'opus[1m]');
+});
+
+run('normalizeClaudeModelSelection maps bare claude back to the default UI alias', () => {
+  assert.equal(normalizeClaudeModelSelection('claude'), 'opus[1m]');
+});
+
 run('shouldSwitchClaudeSessionModel only switches persisted sessions and ignores slash prompts', () => {
   assert.equal(
     shouldSwitchClaudeSessionModel({
       claudeSessionId: 'session-123',
       currentResolvedModel: 'claude-sonnet-4-6',
-      requestedResolvedModel: 'claude-opus-4-6[1m]',
+      requestedResolvedModel: 'claude-opus-4-7[1m]',
       prompt: 'continue this task',
     }),
     true,
@@ -71,7 +87,7 @@ run('shouldSwitchClaudeSessionModel only switches persisted sessions and ignores
     shouldSwitchClaudeSessionModel({
       claudeSessionId: 'session-123',
       currentResolvedModel: 'claude-sonnet-4-6',
-      requestedResolvedModel: 'claude-opus-4-6[1m]',
+      requestedResolvedModel: 'claude-opus-4-7[1m]',
       prompt: '/clear',
     }),
     false,

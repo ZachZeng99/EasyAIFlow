@@ -13,7 +13,11 @@ import {
 import type { ClaudeInteractionContext } from '../backend/claudeInteractionContext.js';
 import { createClaudeInteractionState } from '../backend/claudeInteractionState.js';
 import { getGitSnapshot } from '../backend/claudeHelpers.js';
-import { grantPathPermission, getConfiguredClaudeModel } from '../backend/claudeInteraction.js';
+import {
+  getSessionInteractionSnapshots,
+  grantPathPermission,
+  getConfiguredClaudeModel,
+} from '../backend/claudeInteraction.js';
 import {
   handleRespondToPermission,
   handleRespondToAskUserQuestion,
@@ -31,6 +35,7 @@ import {
   handleDeleteStreamwork,
   handleDeleteSession,
 } from '../backend/claudeRpcOperations.js';
+import { getCodexAppServerInteractionSnapshots } from '../backend/codexAppServerTurn.js';
 import { writeTextToSystemClipboard } from '../backend/systemClipboard.js';
 import {
   createProject,
@@ -85,6 +90,70 @@ const ctx: ClaudeInteractionContext = {
 };
 
 const state = createClaudeInteractionState();
+
+const writeSseEvent = (
+  client: ServerResponse<IncomingMessage>,
+  event: ClaudeStreamEvent,
+) => {
+  client.write(`data: ${JSON.stringify(event)}\n\n`);
+};
+
+const replayInteractionSnapshots = (client: ServerResponse<IncomingMessage>) => {
+  const interactions = {
+    ...getSessionInteractionSnapshots(state),
+    ...getCodexAppServerInteractionSnapshots(),
+  };
+
+  Object.entries(interactions).forEach(([sessionId, interaction]) => {
+    interaction.runtime &&
+      writeSseEvent(client, {
+        type: 'runtime-state',
+        sessionId,
+        runtime: interaction.runtime,
+      });
+
+    interaction.backgroundTasks?.forEach((task) => {
+      writeSseEvent(client, {
+        type: 'background-task',
+        sessionId,
+        task,
+      });
+    });
+
+    const pendingPermissions = [
+      ...(interaction.permission ? [interaction.permission] : []),
+      ...(interaction.pendingPermissions ?? []),
+    ];
+    pendingPermissions.forEach((request) => {
+      if (!request.requestId) {
+        return;
+      }
+      writeSseEvent(client, {
+        type: 'permission-request',
+        sessionId,
+        requestId: request.requestId,
+        toolName: 'Permission Request',
+        targetPath: request.path,
+        sensitive: request.sensitive,
+      });
+    });
+
+    interaction.askUserQuestion &&
+      writeSseEvent(client, {
+        type: 'ask-user-question',
+        sessionId,
+        toolUseId: interaction.askUserQuestion.toolUseId,
+        questions: interaction.askUserQuestion.questions,
+      });
+
+    interaction.planModeRequest &&
+      writeSseEvent(client, {
+        type: 'plan-mode-request',
+        sessionId,
+        request: interaction.planModeRequest.request,
+      });
+  });
+};
 
 // ---------------------------------------------------------------------------
 // RPC handlers
@@ -163,7 +232,7 @@ const rpcHandlers = {
     cwd: string;
     prompt: string;
     model?: string;
-    effort?: 'low' | 'medium' | 'high' | 'max';
+    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
     baseClaudeSessionId?: string;
   }) => handleBtwMessage(ctx, state, payload),
   discardBtwSession: async (payload: { cwd: string; claudeSessionId?: string }) => {
@@ -266,18 +335,18 @@ const rpcHandlers = {
     session?: SessionSummary;
     references?: ContextReference[];
     model?: string;
-    effort?: 'low' | 'medium' | 'high' | 'max';
+    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   }) => handleSendMessage(ctx, state, payload),
   switchModel: async (payload: {
     sessionId: string;
     session?: SessionSummary;
     model: string;
-    effort?: 'low' | 'medium' | 'high' | 'max';
+    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   }) => handleSwitchModel(ctx, state, payload),
   switchEffort: async (payload: {
     sessionId: string;
     session?: SessionSummary;
-    effort: 'low' | 'medium' | 'high' | 'max';
+    effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   }) => handleSwitchEffort(ctx, state, payload),
   stopSessionRun: async (payload: { sessionId: string }) =>
     handleStopSession(ctx, state, payload),
@@ -455,6 +524,7 @@ createServer(async (request, response) => {
     });
     response.write(': connected\n\n');
     eventClients.add(response);
+    replayInteractionSnapshots(response);
     const heartbeat = setInterval(() => {
       response.write(': heartbeat\n\n');
     }, 15_000);

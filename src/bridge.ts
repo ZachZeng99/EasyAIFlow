@@ -58,7 +58,7 @@ export type EasyAIFlowBridge = {
     cwd: string;
     prompt: string;
     model?: string;
-    effort?: 'low' | 'medium' | 'high' | 'max';
+    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
     baseClaudeSessionId?: string;
   }) => Promise<BtwResponse>;
   discardBtwSession: (payload: { cwd: string; claudeSessionId?: string }) => Promise<void>;
@@ -139,7 +139,7 @@ export type EasyAIFlowBridge = {
     session?: SessionSummary;
     references?: ContextReference[];
     model?: string;
-    effort?: 'low' | 'medium' | 'high' | 'max';
+    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   }) => Promise<{
     projects: ProjectRecord[];
     queued: {
@@ -152,14 +152,14 @@ export type EasyAIFlowBridge = {
     sessionId: string;
     session?: SessionSummary;
     model: string;
-    effort?: 'low' | 'medium' | 'high' | 'max';
+    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   }) => Promise<{
     projects: ProjectRecord[];
   }>;
   switchEffort: (payload: {
     sessionId: string;
     session?: SessionSummary;
-    effort: 'low' | 'medium' | 'high' | 'max';
+    effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   }) => Promise<{
     projects: ProjectRecord[];
   }>;

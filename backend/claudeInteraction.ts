@@ -509,7 +509,7 @@ const emitRuntimeState = (
   sessionId: string,
   phase: import('../src/data/types.js').SessionRuntimePhase,
   processActive: boolean,
-  appliedEffort?: 'low' | 'medium' | 'high' | 'max',
+  appliedEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max',
 ) => {
   ctx.broadcastEvent({
     type: 'runtime-state',
@@ -1244,7 +1244,7 @@ export const handleClaudeLine = async (
     persistentSession?: boolean;
     onBackgroundTaskOwner?: (taskId: string, assistantMessageId: string, runState: ClaudeRunState) => void;
     onBackgroundActivated?: (assistantMessageId: string, runState: ClaudeRunState) => void;
-    appliedEffort?: 'low' | 'medium' | 'high' | 'max';
+    appliedEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   },
 ) => {
   if (!line.trim()) {
@@ -2302,7 +2302,7 @@ export const switchClaudeSessionModel = async (
     sessionId: string;
     session?: SessionSummary;
     model: string;
-    effort?: 'low' | 'medium' | 'high' | 'max';
+    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   },
 ) => {
   const requestedModel = payload.model.trim();
@@ -2356,7 +2356,7 @@ export const switchClaudeSessionEffort = async (
   payload: {
     sessionId: string;
     session?: SessionSummary;
-    effort: 'low' | 'medium' | 'high' | 'max';
+    effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   },
 ) => {
   const session =
@@ -2555,7 +2555,7 @@ export const runBtwPrompt = async (
   options?: {
     sessionId?: string;
     model?: string;
-    effort?: 'low' | 'medium' | 'high' | 'max';
+    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
     baseClaudeSessionId?: string;
   },
 ): Promise<BtwResponse> =>

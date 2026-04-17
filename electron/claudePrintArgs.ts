@@ -1,6 +1,6 @@
 type ClaudePrintArgOptions = {
   model?: string;
-  effort?: 'low' | 'medium' | 'high' | 'max';
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   sessionArgs?: string[];
   tools?: string;
   permissionMode?: 'acceptEdits' | 'bypassPermissions' | 'default' | 'dontAsk' | 'plan' | 'auto';

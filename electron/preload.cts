@@ -11,7 +11,7 @@ contextBridge.exposeInMainWorld('easyAIFlow', {
     cwd: string;
     prompt: string;
     model?: string;
-    effort?: 'low' | 'medium' | 'high' | 'max';
+    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
     baseClaudeSessionId?: string;
   }) => ipcRenderer.invoke('claude:btw-message', payload),
   discardBtwSession: (payload: { cwd: string; claudeSessionId?: string }) => ipcRenderer.invoke('claude:btw-discard', payload),
@@ -77,20 +77,20 @@ contextBridge.exposeInMainWorld('easyAIFlow', {
     session?: import('../src/data/types.js').SessionSummary;
     references?: import('../src/data/types.js').ContextReference[];
     model?: string;
-    effort?: 'low' | 'medium' | 'high' | 'max';
+    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   }) =>
     ipcRenderer.invoke('claude:send-message', payload),
   switchModel: (payload: {
     sessionId: string;
     session?: import('../src/data/types.js').SessionSummary;
     model: string;
-    effort?: 'low' | 'medium' | 'high' | 'max';
+    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   }) =>
     ipcRenderer.invoke('claude:switch-model', payload),
   switchEffort: (payload: {
     sessionId: string;
     session?: import('../src/data/types.js').SessionSummary;
-    effort: 'low' | 'medium' | 'high' | 'max';
+    effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   }) =>
     ipcRenderer.invoke('claude:switch-effort', payload),
   stopSessionRun: (payload: { sessionId: string }) => ipcRenderer.invoke('claude:stop-session', payload),

@@ -3,7 +3,7 @@ type ClaudeSettings = {
   _env?: Record<string, unknown>;
 };
 
-const DEFAULT_OPUS_MODEL = 'claude-opus-4-6';
+const DEFAULT_OPUS_MODEL = 'claude-opus-4-7';
 const DEFAULT_SONNET_MODEL = 'claude-sonnet-4-6';
 const DEFAULT_HAIKU_MODEL = 'claude-haiku-4-5';
 
@@ -19,6 +19,9 @@ export const normalizeClaudeModelSelection = (value: string | undefined) => {
   }
 
   const normalized = trimmed.toLowerCase();
+  if (normalized === 'claude') {
+    return 'opus[1m]';
+  }
   if (normalized.includes('opus')) {
     return 'opus[1m]';
   }
@@ -43,7 +46,7 @@ export const resolveClaudeModelArg = (requestedModel: string | undefined, settin
   const modelString = has1mTag ? normalized.replace(/\[1m\]$/i, '').trim() : normalized;
   const with1m = (model: string) => `${model}${has1mTag ? '[1m]' : ''}`;
 
-  if (modelString === 'opus') {
+  if (modelString === 'claude' || modelString === 'opus') {
     return with1m(
       readEnvModel(settings, 'ANTHROPIC_DEFAULT_OPUS_MODEL') ??
         readEnvModel(settings, 'ANTHROPIC_MODEL') ??

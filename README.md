@@ -1,8 +1,8 @@
 # EasyAIFlow
 
-> 面向本地 AI 编码工作流的桌面/Web 客户端 — 以 Claude CLI 为核心，支持会话通信、普通任务与交互式控制。
+> 面向本地 AI 编码工作流的桌面/Web 客户端，支持 Claude 与 Codex 双 provider、普通会话、Group Chat、交互式控制与本地历史导入。
 >
-> A desktop/web client for local AI coding workflows — built around Claude CLI, with session communication, standard tasks, and interactive control.
+> A desktop/web client for local AI coding workflows with dual Claude/Codex providers, standard sessions, group chat rooms, interactive control, and native history import.
 
 ![EasyAIFlow Screenshot](./screenshot.png)
 
@@ -11,13 +11,15 @@
 ## 目录 / Table of Contents
 
 - [功能亮点 / Features](#功能亮点--features)
-- [会话通信 / Session Communication](#会话通信--session-communication)
+- [多 Provider 会话 / Multi-provider Sessions](#多-provider-会话--multi-provider-sessions)
+- [群聊房间 / Group Rooms](#群聊房间--group-rooms)
 - [交互式对话系统 / Interactive Dialog System](#交互式对话系统--interactive-dialog-system)
 - [双运行时架构 / Dual Runtime Architecture](#双运行时架构--dual-runtime-architecture)
 - [技术栈 / Tech Stack](#技术栈--tech-stack)
 - [快速开始 / Getting Started](#快速开始--getting-started)
 - [命令参考 / Commands](#命令参考--commands)
 - [项目结构 / Project Structure](#项目结构--project-structure)
+- [数据模型 / Data Model](#数据模型--data-model)
 - [License](#license)
 
 ---
@@ -26,77 +28,98 @@
 
 ### 中文
 
-- **三层会话结构**：Project → Streamwork → Session，灵活组织多项目、多任务线的对话
-- **实时流式通信**：基于 NDJSON 逐行解析 Claude 输出，支持流式渲染、工具调用追踪、Token 用量统计
-- **交互式控制**：权限请求、Plan Mode 审批、Ask User Question 三种暂停机制，让用户全程掌控 AI 行为
-- **上下文引用**：通过 `[[session:id]]` / `[[streamwork:id]]` 跨会话注入历史上下文
-- **Git 快照 & 代码变更追踪**：每个 Session 记录分支状态、文件变更、diff 预览
-- **BTW 面板**：临时快速提问，不打断主对话流
-- **桌面 + Web 双运行时**：同一套业务逻辑，既能打包为 Windows 桌面应用，也能作为 Web 服务部署
+- **双 provider 架构**：同一个应用里同时支持 Claude 与 Codex，会话级切换而不是分裂成两套产品
+- **三层会话结构**：Project → Streamwork → Session，便于按项目和任务线组织上下文
+- **Group Chat 房间**：可在同一房间中用 `@claude`、`@codex`、`@all` 定向对话，让两个 provider 共用一条可见时间线
+- **实时流式与工具追踪**：支持流式文本、状态更新、trace、代码变更 diff、Token 用量与运行态展示
+- **Codex resident app-server**：Codex 会话可保持常驻线程，支持后续 turn 复用与断开控制
+- **交互式控制**：Claude 会话支持 Permission Request、Plan Mode、Ask User Question 三类暂停机制
+- **上下文引用**：通过 `[[session:id]]` / `[[streamwork:id]]` 引用其他会话历史，支持摘要或全文模式
+- **原生历史导入与清理**：可导入本地 Claude/Codex 历史；重命名、删除时会同步清理对应原生记录
+- **桌面 + Web 双运行时**：同一套业务逻辑支持 Electron 桌面模式和 HTTP/SSE Web 模式
 
 ### English
 
-- **Three-tier session hierarchy**: Project → Streamwork → Session for organizing multi-project, multi-task conversations
-- **Real-time streaming**: NDJSON line-by-line parsing of Claude output with progressive rendering, tool-call tracing, and token usage metrics
-- **Interactive control**: Permission requests, Plan Mode approval, and Ask User Question — three pause mechanisms that keep the user in control
-- **Context references**: Inject cross-session history via `[[session:id]]` / `[[streamwork:id]]` syntax
-- **Git snapshot & code change tracking**: Per-session branch state, file change lists, and diff preview
-- **BTW panel**: Quick side-queries without interrupting the main conversation
-- **Desktop + Web dual runtime**: Same business logic, packaged as a Windows desktop app or deployed as a web service
+- **Dual-provider architecture**: Claude and Codex live inside one app, with per-session routing instead of two separate products
+- **Three-tier session hierarchy**: Project -> Streamwork -> Session for organizing work by project and task line
+- **Group chat rooms**: Use `@claude`, `@codex`, and `@all` in one visible room timeline shared by both providers
+- **Streaming and trace visibility**: Progressive text, status updates, tool traces, recorded diffs, token usage, and runtime state
+- **Resident Codex app-server**: Codex sessions can keep a live thread around for follow-up turns and controlled disconnects
+- **Interactive control**: Claude sessions support Permission Request, Plan Mode, and Ask User Question pauses
+- **Context references**: Reuse prior work with `[[session:id]]` / `[[streamwork:id]]`, in summary or full-history mode
+- **Native import and cleanup**: Import local Claude/Codex history and keep native stores in sync on rename/delete
+- **Desktop + Web dual runtime**: The same business logic runs in Electron desktop mode and HTTP/SSE web mode
 
 ---
 
-## 会话通信 / Session Communication
+## 多 Provider 会话 / Multi-provider Sessions
 
 ### 中文
 
-EasyAIFlow 的核心是**会话驱动**的 Claude CLI 集成。每个 Session 拥有独立的 Claude 子进程生命周期：
+EasyAIFlow 的核心不是单一 CLI 包装，而是**按 session 路由的 provider runtime**：
 
+- **Claude 标准会话**：通过 Claude CLI 运行，支持 streaming、权限审批、Plan Mode、Ask User Question、BTW 面板
+- **Codex 标准会话**：通过 `codex app-server` 运行，支持 resident thread、命令 trace、函数调用 trace、代码变更记录
+- **统一前端事件模型**：无论底层是 Claude 还是 Codex，后端都会归一化为统一的 `ClaudeStreamEvent` 事件流，前端只消费一套状态机
+
+典型流程：
+
+```text
+用户消息
+  -> bridge.ts
+  -> backend 解析 session kind / provider
+     -> Claude runtime
+     -> Codex app-server runtime
+     -> 或 group room fan-out
+  -> 统一事件流 (delta / status / trace / complete / error ...)
+  -> React UI 实时更新
 ```
-用户消息 → Bridge 层 → 后端 spawn Claude 子进程
-                         ↓
-                  stdout NDJSON 逐行解析
-                         ↓
-            ┌─── delta (流式文本) ──→ 逐字渲染
-            ├─── status / trace ──→ 工具调用面板
-            ├─── permission-request ──→ 权限对话框
-            ├─── plan-mode-request ──→ Plan 审批卡片
-            ├─── ask-user-question ──→ 用户问答卡片
-            └─── complete / error ──→ 消息完成或错误
-                         ↓
-              用户响应 → 写入 Claude stdin → 继续执行
-```
-
-**会话状态**：`idle` → `responding` → `awaiting_reply` → `idle`，前端实时反映每个 Session 的活动状态。
-
-**数据持久化**：所有会话数据（元数据 + 完整消息历史）保存在本地 JSON 文件中（默认 `~/.EasyAIFlow/`），支持跨重启恢复。
-
-**上下文引用**：在 Composer 中输入 `[[session:xxx]]` 或 `[[streamwork:xxx]]`，可将其他会话或 Streamwork 的历史摘要/全文注入当前对话上下文，实现跨 Session 的知识传递。
 
 ### English
 
-At its core, EasyAIFlow is a **session-driven** Claude CLI integration. Each Session manages an independent Claude child process lifecycle:
+EasyAIFlow is not just a thin CLI wrapper. It is a **session-routed provider runtime layer**:
 
-```
-User message → Bridge layer → Backend spawns Claude child process
-                                ↓
-                      stdout NDJSON line-by-line parsing
-                                ↓
-               ┌─── delta (streaming text) ──→ progressive render
-               ├─── status / trace ──→ tool-call panel
-               ├─── permission-request ──→ permission dialog
-               ├─── plan-mode-request ──→ plan approval card
-               ├─── ask-user-question ──→ user question card
-               └─── complete / error ──→ message done or error
-                                ↓
-                 User response → write to Claude stdin → resume
-```
+- **Claude standard sessions** run through Claude CLI with streaming, permission review, plan-mode approval, Ask User Question, and the BTW panel
+- **Codex standard sessions** run through `codex app-server` with resident threads, command traces, function-call traces, and recorded code changes
+- **Unified frontend events** keep the UI on a single event model even though Claude and Codex have different native runtimes
 
-**Session states**: `idle` → `responding` → `awaiting_reply` → `idle`, reflected in real-time in the UI.
+---
 
-**Persistence**: All session data (metadata + full message history) is saved to a local JSON file (default `~/.EasyAIFlow/`), surviving app restarts.
+## 群聊房间 / Group Rooms
 
-**Context references**: Type `[[session:xxx]]` or `[[streamwork:xxx]]` in the Composer to inject another session's or streamwork's history (summary or full) into the current conversation context — enabling cross-session knowledge transfer.
+### 中文
+
+Group Room 是当前版本里最重要的新能力之一。它的实现不是简单把两段文本拼在一起，而是：
+
+- 房间本身是一个**可见 session**，`sessionKind = group`
+- 每个参与者都有一个**隐藏 backing session**，`sessionKind = group_member`
+- Claude backing session 保留 Claude 原生上下文
+- Codex backing session 保留 Codex thread / app-server 上下文
+- 房间消息按 `seq` 编号，并记录 `speakerLabel`、`targetParticipantIds`、trace 与完成态
+
+使用方式：
+
+- `@claude`：只让 Claude 回答
+- `@codex`：只让 Codex 回答
+- `@all`：让两边都回答
+- 不写 `@`：默认回给上一个成功回应的参与者
+
+### English
+
+Group rooms are backed by real session state, not just prompt tricks:
+
+- The room itself is a **visible session** with `sessionKind = group`
+- Each participant owns a **hidden backing session** with `sessionKind = group_member`
+- Claude keeps Claude-native session continuity
+- Codex keeps Codex thread/app-server continuity
+- Room messages track `seq`, `speakerLabel`, `targetParticipantIds`, traces, and completion state
+
+Targeting rules:
+
+- `@claude` -> Claude only
+- `@codex` -> Codex only
+- `@all` -> both participants
+- no `@` -> fall back to the last successful responder
 
 ---
 
@@ -104,23 +127,27 @@ User message → Bridge layer → Backend spawns Claude child process
 
 ### 中文
 
-Claude 在执行过程中可能暂停并请求用户输入，EasyAIFlow 支持三种交互机制：
+Claude 在执行过程中可以暂停并请求用户输入，EasyAIFlow 当前支持三种交互机制：
 
 | 类型 | 触发场景 | 用户操作 |
 |------|---------|---------|
-| **Permission Request** | Claude 需要访问文件/执行命令 | 允许 / 拒绝（支持路径级别持久授权） |
-| **Plan Mode** | Claude 进入计划模式等待审批 | 批准 / 修订 / 手动执行（支持多种审批策略） |
-| **Ask User Question** | Claude 向用户提出多选/单选问题 | 选择答案 + 可选备注 |
+| **Permission Request** | Claude 需要访问文件或执行命令 | 允许 / 拒绝（支持路径级持久授权） |
+| **Plan Mode** | Claude 进入计划模式等待审批 | 批准 / 修订 / 手动执行 |
+| **Ask User Question** | Claude 发起单选或多选问题 | 选择答案并可附加备注 |
+
+补充说明：这些交互式控制目前是 **Claude runtime** 能力；Codex runtime 侧重点是 resident thread、trace 和 group-room 协同。
 
 ### English
 
-Claude may pause execution to request user input. EasyAIFlow supports three interactive mechanisms:
+Claude sessions can pause and request user input through three mechanisms:
 
 | Type | Trigger | User Action |
 |------|---------|-------------|
-| **Permission Request** | Claude needs file/command access | Allow / Deny (with path-level persistent authorization) |
-| **Plan Mode** | Claude enters planning and awaits approval | Approve / Revise / Manual execute (multiple approval strategies) |
-| **Ask User Question** | Claude asks single/multi-choice questions | Select answer(s) + optional notes |
+| **Permission Request** | Claude needs file or command access | Allow / Deny, with path-level persistence |
+| **Plan Mode** | Claude pauses for plan approval | Approve / Revise / Execute manually |
+| **Ask User Question** | Claude asks single- or multi-choice questions | Select answers and add optional notes |
+
+Note: these interactive controls currently belong to the **Claude runtime**. The Codex runtime focuses on resident threads, traces, and group-room coordination.
 
 ---
 
@@ -128,44 +155,44 @@ Claude may pause execution to request user input. EasyAIFlow supports three inte
 
 ### 中文
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    React 前端 (src/)                      │
-│          bridge.ts — 自动检测并适配运行时                    │
-└────────────┬───────────────────────┬────────────────────┘
-             │                       │
-    ┌────────▼────────┐    ┌────────▼─────────┐
-    │   Electron IPC   │    │   HTTP JSON-RPC   │
-    │  (桌面模式)       │    │   + SSE 事件流     │
-    │  preload.cts     │    │   (Web 模式)       │
-    │  main.ts         │    │   server.ts        │
-    └────────┬────────┘    └────────┬─────────┘
-             │                       │
-    ┌────────▼───────────────────────▼────────┐
-    │         backend/ — 共享业务逻辑            │
-    │        Claude CLI 交互 · 持久化            │
-    └─────────────────────────────────────────┘
+```text
+┌────────────────────────────────────────────────────────────┐
+│                    React 前端 (src/)                        │
+│            bridge.ts 自动适配 Desktop / Web 运行时          │
+└───────────────┬──────────────────────────┬─────────────────┘
+                │                          │
+       ┌────────▼────────┐        ┌────────▼─────────┐
+       │  Electron IPC    │        │ HTTP JSON-RPC +  │
+       │  preload + main  │        │ SSE events       │
+       │  桌面模式         │        │ Web 模式         │
+       └────────┬────────┘        └────────┬─────────┘
+                │                          │
+       ┌────────▼──────────────────────────▼────────┐
+       │                backend/                     │
+       │ Claude runtime · Codex app-server runtime  │
+       │ group chat orchestration · persistence      │
+       └────────────────────────────────────────────┘
 ```
 
 ### English
 
-```
-┌──────────────────────────────────────────────────────────┐
-│                   React Frontend (src/)                    │
-│           bridge.ts — auto-detects runtime adapter         │
-└────────────┬────────────────────────┬────────────────────┘
-             │                        │
-    ┌────────▼─────────┐    ┌────────▼──────────┐
-    │   Electron IPC    │    │   HTTP JSON-RPC    │
-    │  (Desktop mode)   │    │   + SSE events      │
-    │  preload.cts      │    │   (Web mode)        │
-    │  main.ts          │    │   server.ts         │
-    └────────┬─────────┘    └────────┬──────────┘
-             │                        │
-    ┌────────▼────────────────────────▼─────────┐
-    │          backend/ — shared business logic   │
-    │          Claude CLI · persistence · I/O     │
-    └────────────────────────────────────────────┘
+```text
+┌────────────────────────────────────────────────────────────┐
+│                    React Frontend (src/)                    │
+│          bridge.ts auto-selects Desktop / Web runtime       │
+└───────────────┬──────────────────────────┬─────────────────┘
+                │                          │
+       ┌────────▼────────┐        ┌────────▼─────────┐
+       │  Electron IPC    │        │ HTTP JSON-RPC +  │
+       │  preload + main  │        │ SSE events       │
+       │  Desktop mode    │        │ Web mode         │
+       └────────┬────────┘        └────────┬─────────┘
+                │                          │
+       ┌────────▼──────────────────────────▼────────┐
+       │                backend/                     │
+       │ Claude runtime · Codex app-server runtime  │
+       │ group orchestration · persistence           │
+       └────────────────────────────────────────────┘
 ```
 
 ---
@@ -177,8 +204,9 @@ Claude may pause execution to request user input. EasyAIFlow supports three inte
 | 前端 / Frontend | React 19, React Markdown, Remark GFM, Vite 7 |
 | 桌面 / Desktop | Electron 37, Electron Builder (NSIS) |
 | 后端 / Backend | Node.js 20+, TypeScript 5.9 (strict), tsx |
-| 通信 / Communication | NDJSON streaming, IPC (desktop), JSON-RPC + SSE (web) |
-| 持久化 / Persistence | Local JSON file store |
+| Provider Runtime | Claude CLI, Codex CLI, `codex app-server` |
+| 通信 / Communication | NDJSON normalization, IPC (desktop), JSON-RPC + SSE (web) |
+| 持久化 / Persistence | Local JSON store + native Claude/Codex history import |
 
 ---
 
@@ -188,13 +216,14 @@ Claude may pause execution to request user input. EasyAIFlow supports three inte
 
 - Node.js 20+
 - npm 10+
-- 本地已安装可用的 [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) / A working local `claude` CLI installation
+- 本地可用的 `claude` CLI（Claude 会话需要）/ A working local `claude` CLI for Claude sessions
+- 本地可用的 `codex` CLI（Codex 会话和 Group Room 需要）/ A working local `codex` CLI for Codex sessions and group rooms
 - Windows（桌面模式）/ Any OS（Web 模式）
 
 ### 安装 / Install
 
 ```bash
-git clone https://github.com/anthropics/EasyAIFlow.git   # or your fork
+git clone https://github.com/ZachZeng99/EasyAIFlow.git
 cd EasyAIFlow
 npm install
 ```
@@ -209,6 +238,10 @@ npm run dev
 npm run dev:web
 ```
 
+默认情况下，Vite 前端运行在 `4273` 端口，Web 服务运行在 `8887` 端口。可通过 `EASYAIFLOW_WEB_CLIENT_PORT` 和 `EASYAIFLOW_WEB_SERVER_PORT` 覆盖。
+
+By default, the Vite client runs on port `4273` and the web server runs on port `8887`. Override them with `EASYAIFLOW_WEB_CLIENT_PORT` and `EASYAIFLOW_WEB_SERVER_PORT`.
+
 ---
 
 ## 命令参考 / Commands
@@ -217,9 +250,9 @@ npm run dev:web
 |---|---|
 | `npm run dev` | 启动桌面开发（Vite + Electron）/ Start desktop dev (Vite + Electron) |
 | `npm run dev:web` | 启动 Web 开发（Vite + HTTP 服务）/ Start web dev (Vite + HTTP server) |
-| `npm run dev:web:client` | 仅启动 Vite 前端（端口 4173）/ Vite frontend only (port 4173) |
-| `npm run dev:server` | 仅启动 Web 后端 / Web server only |
-| `npm run check` | TypeScript 类型检查（tsc -b）/ Type check all configs |
+| `npm run dev:web:client` | 仅启动 Vite 前端（默认端口 4273）/ Vite frontend only (default port 4273) |
+| `npm run dev:server` | 仅启动 Web 后端（默认端口 8887）/ Web server only (default port 8887) |
+| `npm run check` | TypeScript 类型检查（`tsc -b`）/ Type check all configs |
 | `npm run build` | 完整构建：类型检查 + Vite + Electron / Full build |
 | `npm run build:web` | Web 构建：类型检查 + Vite + 服务端 / Web-only build |
 | `npm run package:win` | 构建 + 打包 Windows NSIS 安装程序 / Build + Windows installer |
@@ -229,37 +262,30 @@ npm run dev:web
 
 ## 项目结构 / Project Structure
 
-```
+```text
 EasyAIFlow/
 ├── src/                          # React 前端 / Frontend
-│   ├── App.tsx                   # 主组件与状态管理 / Main component & state
-│   ├── bridge.ts                 # 双运行时抽象层 / Dual runtime abstraction
-│   ├── components/               # UI 组件 / UI components
-│   │   ├── ChatThread.tsx        #   聊天消息流 / Chat message stream
-│   │   ├── ChatComposer.tsx      #   消息输入 / Message input
-│   │   ├── ChatHistory.tsx       #   左侧导航 / Left panel navigation
-│   │   ├── ContextPanel.tsx      #   右侧上下文 / Right context panel
-│   │   ├── BtwPanel.tsx          #   BTW 快问面板 / Quick query panel
-│   │   ├── PlanModeDialog.tsx    #   Plan 审批 / Plan approval
-│   │   ├── AskUserQuestionDialog.tsx  #   用户问答 / User Q&A
-│   │   └── PermissionDialog.tsx  #   权限请求 / Permission request
-│   └── data/                     # 共享类型与逻辑 / Shared types & logic
-│       ├── types.ts              #   所有 TypeScript 类型定义 / All type defs
-│       ├── planMode.ts           #   Plan 模式处理 / Plan mode handling
-│       ├── askUserQuestion.ts    #   用户问答处理 / Question handling
-│       └── permissionRequest.ts  #   权限请求处理 / Permission handling
-├── electron/                     # Electron 主进程 / Main process
-│   ├── main.ts                   #   入口 & IPC 注册 / Entry & IPC handlers
-│   ├── claudeSpawn.ts            #   Claude 进程管理 / Process spawning
-│   ├── claudeControlMessages.ts  #   控制消息解析 / Control message parsing
-│   └── sessionStore.ts           #   会话持久化 / Session persistence
-├── backend/                      # 共享后端逻辑 / Shared backend
-│   ├── claudeInteraction.ts      #   Claude CLI 交互 / CLI interaction
-│   └── claudeRpcOperations.ts    #   RPC 操作实现 / RPC operations
+│   ├── App.tsx                   # 主状态与事件归并 / Main state + event reducer
+│   ├── bridge.ts                 # Desktop/Web runtime abstraction
+│   ├── components/               # Chat UI, dialogs, history, context, BTW
+│   └── data/                     # Shared types and pure UI/domain logic
+├── backend/                      # Shared runtime logic
+│   ├── claudeInteraction.ts      # Claude runtime
+│   ├── codexAppServer.ts         # Codex app-server client/process manager
+│   ├── codexAppServerTurn.ts     # Codex resident turn execution
+│   ├── codexInteraction.ts       # Codex trace/event normalization
+│   ├── groupChat.ts              # Group room orchestration
+│   └── providerSessionRuntime.ts # Provider routing for standard sessions
+├── electron/                     # Electron main-process code
+│   ├── main.ts                   # IPC handlers
+│   ├── preload.cts               # Context bridge
+│   ├── sessionStore.ts           # Persistent store + native import/recovery
+│   └── workspacePaths.ts         # Native workspace/session path helpers
 ├── server/
-│   └── server.ts                 # Web HTTP 服务 / Web HTTP server
-├── tests/                        # 测试文件（tsx 直接运行）/ Tests (run with tsx)
-├── CLAUDE.md                     # Claude Code 开发指南 / Dev instructions
+│   └── server.ts                 # Web JSON-RPC + SSE runtime
+├── tests/                        # Self-contained tests run with tsx
+├── AGENTS.md                     # Repo instructions for coding agents
+├── CLAUDE.md                     # Claude Code development notes
 └── package.json
 ```
 
@@ -267,13 +293,17 @@ EasyAIFlow/
 
 ## 数据模型 / Data Model
 
+```text
+ProjectRecord[]
+  └─ DreamRecord[]                  # Streamworks
+     └─ SessionSummary[]
+        ├─ standard                 # Claude or Codex one-on-one session
+        ├─ group                    # Visible group room
+        ├─ group_member             # Hidden room backing session
+        └─ ConversationMessage[]    # Room or session messages
 ```
-ProjectRecord[]                     # 项目 / Projects
-  └─ DreamRecord[]                  # Streamwork（任务线）/ Task streams
-     └─ SessionSummary[]            # 会话 / Sessions
-        │   kind: standard          #   普通对话 / Standard conversation
-        └─ ConversationMessage[]    # 消息记录 / Messages
-```
+
+Group rooms carry participant metadata, message sequence numbers, target mentions, and mirrored provider replies/traces. Hidden `group_member` sessions preserve each provider's own native continuity while keeping the room timeline unified.
 
 ---
 

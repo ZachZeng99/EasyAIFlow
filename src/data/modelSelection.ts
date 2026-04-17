@@ -10,6 +10,9 @@ export const normalizeModelSelectionValue = (value: string | undefined) => {
   }
 
   const normalized = trimmed.toLowerCase();
+  if (normalized === 'claude') {
+    return 'opus[1m]';
+  }
   if (normalized.includes('opus')) {
     return 'opus[1m]';
   }

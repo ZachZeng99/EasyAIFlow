@@ -163,7 +163,7 @@ app.whenReady().then(async () => {
         cwd: string;
         prompt: string;
         model?: string;
-        effort?: 'low' | 'medium' | 'high' | 'max';
+        effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
         baseClaudeSessionId?: string;
       },
     ) => handleBtwMessage(ctx, state, payload),
@@ -293,7 +293,7 @@ app.whenReady().then(async () => {
         sessionId: string;
         session?: SessionSummary;
         model: string;
-        effort?: 'low' | 'medium' | 'high' | 'max';
+        effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
       },
     ) => handleSwitchModel(ctx, state, payload),
   );
@@ -304,7 +304,7 @@ app.whenReady().then(async () => {
       payload: {
         sessionId: string;
         session?: SessionSummary;
-        effort: 'low' | 'medium' | 'high' | 'max';
+        effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
       },
     ) => handleSwitchEffort(ctx, state, payload),
   );
@@ -319,7 +319,7 @@ app.whenReady().then(async () => {
         session?: SessionSummary;
         references?: ContextReference[];
         model?: string;
-        effort?: 'low' | 'medium' | 'high' | 'max';
+        effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
       },
     ) => handleSendMessage(ctx, state, payload),
   );

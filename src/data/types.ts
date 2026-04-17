@@ -91,10 +91,12 @@ export type SessionRuntimePhase =
   | 'idle'
   | 'terminating';
 
+export type SessionEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
 export type SessionRuntimeState = {
   processActive: boolean;
   phase: SessionRuntimePhase;
-  appliedEffort?: 'low' | 'medium' | 'high' | 'max';
+  appliedEffort?: SessionEffort;
   updatedAt?: number;
 };
 

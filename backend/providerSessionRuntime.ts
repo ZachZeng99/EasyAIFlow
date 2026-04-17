@@ -37,20 +37,20 @@ export type ProviderSessionSendMessagePayload = {
   session?: SessionSummary;
   references?: ContextReference[];
   model?: string;
-  effort?: 'low' | 'medium' | 'high' | 'max';
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 };
 
 export type ProviderSessionSwitchModelPayload = {
   sessionId: string;
   session?: SessionSummary;
   model: string;
-  effort?: 'low' | 'medium' | 'high' | 'max';
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 };
 
 export type ProviderSessionSwitchEffortPayload = {
   sessionId: string;
   session?: SessionSummary;
-  effort: 'low' | 'medium' | 'high' | 'max';
+  effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 };
 
 type ProviderSessionRunResult = {

@@ -49,6 +49,7 @@ import type {
   ProjectRecord,
   SessionRecord,
   SessionActivityState,
+  SessionRuntimeState,
 } from './data/types';
 
 const makeAttachmentId = () => `attachment-${Math.random().toString(36).slice(2, 10)}`;
@@ -418,7 +419,7 @@ export default function App() {
   const [isSending, setIsSending] = useState(false);
   const [model, setModel] = useState('opus[1m]');
   const [modelSelectionSource, setModelSelectionSource] = useState<ModelSelectionSource>('implicit');
-  const [effort, setEffort] = useState<'low' | 'medium' | 'high' | 'max'>('high');
+  const [effort, setEffort] = useState<'low' | 'medium' | 'high' | 'xhigh' | 'max'>('max');
   const [composerNotice, setComposerNotice] = useState<string | null>(null);
   const [isResizingPane, setIsResizingPane] = useState(false);
   const [leftPaneWidth, setLeftPaneWidth] = useState(338);
@@ -509,6 +510,25 @@ export default function App() {
         loadingSessionRecordIds.current.delete(sessionId);
       });
   }, [allSessions, hydrateSessionRecord]);
+  const mergedGroupRuntimeCacheRef = useRef(
+    new Map<
+      string,
+      {
+        inputs: Array<SessionRuntimeState | undefined>;
+        result: SessionRuntimeState | undefined;
+      }
+    >(),
+  );
+  const effectiveInteractionCacheRef = useRef(
+    new Map<
+      string,
+      {
+        interaction: SessionInteractionState | undefined;
+        runtime: SessionRuntimeState | undefined;
+        result: SessionInteractionState | undefined;
+      }
+    >(),
+  );
   const getEffectiveSessionRuntime = useCallback(
     (session: Pick<SessionRecord, 'id' | 'sessionKind' | 'group'> | undefined) => {
       if (!session) {
@@ -520,12 +540,26 @@ export default function App() {
         return directRuntime;
       }
 
-      return mergeSessionRuntimeStates([
+      const inputs: Array<SessionRuntimeState | undefined> = [
         directRuntime,
         ...session.group.participants.map(
           (participant) => sessionInteractions.get(participant.backingSessionId)?.runtime,
         ),
-      ]);
+      ];
+
+      const cache = mergedGroupRuntimeCacheRef.current;
+      const cached = cache.get(session.id);
+      if (
+        cached &&
+        cached.inputs.length === inputs.length &&
+        cached.inputs.every((value, index) => value === inputs[index])
+      ) {
+        return cached.result;
+      }
+
+      const result = mergeSessionRuntimeStates(inputs);
+      cache.set(session.id, { inputs, result });
+      return result;
     },
     [sessionInteractions],
   );
@@ -537,11 +571,24 @@ export default function App() {
 
       const interaction = sessionInteractions.get(session.id);
       const runtime = getEffectiveSessionRuntime(session);
-      if (!runtime) {
-        return interaction;
+
+      const cache = effectiveInteractionCacheRef.current;
+      const cached = cache.get(session.id);
+      if (cached && cached.interaction === interaction && cached.runtime === runtime) {
+        return cached.result;
       }
 
-      return interaction ? { ...interaction, runtime } : { runtime };
+      let result: SessionInteractionState | undefined;
+      if (!runtime) {
+        result = interaction;
+      } else if (interaction && interaction.runtime === runtime) {
+        result = interaction;
+      } else {
+        result = interaction ? { ...interaction, runtime } : { runtime };
+      }
+
+      cache.set(session.id, { interaction, runtime, result });
+      return result;
     },
     [getEffectiveSessionRuntime, sessionInteractions],
   );

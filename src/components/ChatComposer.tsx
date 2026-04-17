@@ -31,8 +31,8 @@ type ChatComposerProps = {
   isResponding: boolean;
   allowSendWhileResponding?: boolean;
   model: string;
-  effort: 'low' | 'medium' | 'high' | 'max';
-  appliedEffort?: 'low' | 'medium' | 'high' | 'max';
+  effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  appliedEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   notice?: string | null;
   isGroupSession?: boolean;
   supportsPathDrop?: boolean;
@@ -41,7 +41,7 @@ type ChatComposerProps = {
   onAttachFiles: (files: FileList | null) => void;
   onRemoveAttachment: (attachmentId: string) => void;
   onModelChange: (value: string) => void;
-  onEffortChange: (value: 'low' | 'medium' | 'high' | 'max') => void;
+  onEffortChange: (value: 'low' | 'medium' | 'high' | 'xhigh' | 'max') => void;
   onUpdateContextReferenceMode: (referenceId: string, mode: ContextReferenceMode) => void;
   onRemoveContextReference: (referenceId: string) => void;
   onSend: () => void;
@@ -73,7 +73,7 @@ const formatSize = (value: number) => {
 const isImageAttachment = (attachment: ComposerAttachment) => attachment.mimeType.startsWith('image/');
 const MODEL_OPTIONS = {
   claude: [
-    { value: 'opus[1m]', label: 'opus4.6[1M]' },
+    { value: 'opus[1m]', label: 'opus4.7[1M]' },
     { value: 'sonnet', label: 'sonnet4.6' },
   ],
   codex: [
@@ -192,14 +192,18 @@ export function ChatComposer({
     const knownValues = new Set(baseOptions.map((option) => option.value));
     [model, sessionModel].forEach((value) => {
       const trimmed = value.trim();
-      if (!trimmed || knownValues.has(trimmed)) {
+      const normalizedValue =
+        normalizedProvider === 'claude'
+          ? normalizeModelSelectionValue(trimmed) ?? trimmed
+          : trimmed;
+      if (!trimmed || knownValues.has(normalizedValue)) {
         return;
       }
       baseOptions.unshift({
-        value: trimmed,
-        label: trimmed,
+        value: normalizedValue,
+        label: normalizedValue,
       });
-      knownValues.add(trimmed);
+      knownValues.add(normalizedValue);
     });
     return baseOptions;
   }, [isGroupSession, model, normalizedProvider, sessionModel]);
@@ -285,10 +289,18 @@ export function ChatComposer({
         {!isGroupSession && normalizedProvider === 'claude' ? (
           <label className="composer-control">
             <span>Thinking</span>
-            <select value={effort} onChange={(event) => onEffortChange(event.target.value as 'low' | 'medium' | 'high' | 'max')}>
+            <select
+              value={effort}
+              onChange={(event) =>
+                onEffortChange(
+                  event.target.value as 'low' | 'medium' | 'high' | 'xhigh' | 'max',
+                )
+              }
+            >
               <option value="low">Low</option>
               <option value="medium">Medium</option>
               <option value="high">High</option>
+              <option value="xhigh">XHigh</option>
               <option value="max">Max</option>
             </select>
           </label>
