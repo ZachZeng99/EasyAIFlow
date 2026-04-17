@@ -837,6 +837,20 @@ const shouldApplyRecoveredRoomMessages = (
     return true;
   }
 
+  // Skip recovery when a live turn is in flight: reconstructed messages
+  // hardcode status='complete', so replacing the room would prematurely
+  // finalize an in-progress assistant message with whatever partial content
+  // the backing has streamed so far.
+  const hasInFlight = current.some(
+    (message) =>
+      message.status === 'streaming' ||
+      message.status === 'queued' ||
+      message.status === 'running',
+  );
+  if (hasInFlight) {
+    return false;
+  }
+
   const reconstructedMaxSeq = getRecoveredRoomMessageMaxSeq(reconstructedMessages);
   const currentMaxSeq = getRecoveredRoomMessageMaxSeq(current);
   if (reconstructedMaxSeq > currentMaxSeq) {
