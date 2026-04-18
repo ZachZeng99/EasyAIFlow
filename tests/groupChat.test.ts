@@ -3,6 +3,7 @@ import {
   buildRoomSyncPrompt,
   buildCodexRoomChatPrompt,
   ignoreMissingSessionError,
+  resolveMirroredAssistantRoomMessageId,
 } from '../backend/groupChat.ts';
 import { resolveGroupTargets } from '../src/data/groupChat.ts';
 import type { ConversationMessage, GroupParticipant, SessionRecord } from '../src/data/types.ts';
@@ -346,6 +347,91 @@ run('resolveGroupTargets keeps explicit mentions instead of falling back to the 
   );
 
   assert.deepEqual(targets, ['claude']);
+});
+
+run('resolveMirroredAssistantRoomMessageId ignores foreign events once the backing assistant id is known', () => {
+  const room = makeRoomSession([
+    {
+      id: 'assistant-old',
+      role: 'assistant',
+      timestamp: '4/7 09:43',
+      title: 'Claude response',
+      content: '',
+      speakerId: 'claude',
+      speakerLabel: 'Claude',
+      provider: 'claude',
+      sourceSessionId: 'member-claude',
+      status: 'streaming',
+    },
+    {
+      id: 'assistant-new',
+      role: 'assistant',
+      timestamp: '4/7 09:44',
+      title: 'Claude response',
+      content: '',
+      speakerId: 'claude',
+      speakerLabel: 'Claude',
+      provider: 'claude',
+      sourceSessionId: 'member-claude',
+      status: 'streaming',
+    },
+  ]);
+
+  const resolved = resolveMirroredAssistantRoomMessageId(
+    {
+      roomSessionId: room.id,
+      backingSessionId: 'member-claude',
+      participant: makeParticipant({ id: 'claude', label: 'Claude', provider: 'claude', backingSessionId: 'member-claude' }),
+      roomAssistantMessageId: 'assistant-new',
+      backingAssistantMessageId: 'backing-new',
+    },
+    room,
+    'backing-old',
+  );
+
+  assert.equal(resolved, null);
+});
+
+run('resolveMirroredAssistantRoomMessageId falls back to the latest pending placeholder before the backing assistant id is known', () => {
+  const room = makeRoomSession([
+    {
+      id: 'assistant-old',
+      role: 'assistant',
+      timestamp: '4/7 09:43',
+      title: 'Claude response',
+      content: '',
+      speakerId: 'claude',
+      speakerLabel: 'Claude',
+      provider: 'claude',
+      sourceSessionId: 'member-claude',
+      status: 'complete',
+    },
+    {
+      id: 'assistant-new',
+      role: 'assistant',
+      timestamp: '4/7 09:44',
+      title: 'Claude response',
+      content: '',
+      speakerId: 'claude',
+      speakerLabel: 'Claude',
+      provider: 'claude',
+      sourceSessionId: 'member-claude',
+      status: 'streaming',
+    },
+  ]);
+
+  const resolved = resolveMirroredAssistantRoomMessageId(
+    {
+      roomSessionId: room.id,
+      backingSessionId: 'member-claude',
+      participant: makeParticipant({ id: 'claude', label: 'Claude', provider: 'claude', backingSessionId: 'member-claude' }),
+      roomAssistantMessageId: 'assistant-new',
+    },
+    room,
+    'backing-unknown',
+  );
+
+  assert.equal(resolved, 'assistant-new');
 });
 
 await runAsync('ignoreMissingSessionError swallows missing session failures', async () => {

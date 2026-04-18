@@ -19,7 +19,7 @@ import {
   updateAssistantMessage,
 } from '../electron/sessionStore.js';
 import { stopPendingSessionMessages } from '../electron/sessionStop.js';
-import { appServerManager, type CodexAppServerClient } from './codexAppServer.js';
+import { appServerManager, CodexAppServerClient } from './codexAppServer.js';
 import type { SessionInteractionState } from '../src/data/sessionInteraction.js';
 import type {
   ConversationMessage,
@@ -47,6 +47,7 @@ type ActiveAppServerTurn = {
   completed: boolean;
   disconnectOnFinish: boolean;
   traceMessages: Map<string, ConversationMessage>;
+  cleanupClient?: () => Promise<void>;
   settle?: () => void;
 };
 
@@ -709,14 +710,27 @@ export const runCodexAppServerTurn = async (
   emitRuntimeState(ctx, sessionId, 'running', true);
 
   let client: CodexAppServerClient | null = options?.client ?? null;
+  let ownsClient = false;
+  let clientCleanedUp = false;
+  const cleanupClient = async () => {
+    if (clientCleanedUp) {
+      return;
+    }
+    clientCleanedUp = true;
+    if (ownsClient && client) {
+      await client.close();
+    }
+  };
   let notificationHandler: ((n: { method: string; params: Record<string, unknown> }) => void) | null =
     null;
   let clientExitHandler: ((error: Error) => void) | null = null;
 
   try {
     if (!client) {
-      client = await appServerManager.acquire(prepared.session.workspace);
+      client = await CodexAppServerClient.create(prepared.session.workspace);
+      ownsClient = true;
     }
+    activeTurn.cleanupClient = cleanupClient;
 
     // Start or resume thread.
     let threadId = prepared.session.codexThreadId?.trim() || '';
@@ -856,6 +870,7 @@ export const runCodexAppServerTurn = async (
     if (activeTurn.stopped) {
       if (activeTurn.disconnectOnFinish) {
         emitRuntimeState(ctx, sessionId, 'inactive', false);
+        await cleanupClient();
       } else {
         emitResidentRuntimeState(ctx, sessionId);
       }
@@ -891,7 +906,7 @@ export const runCodexAppServerTurn = async (
       });
       if (activeTurn.disconnectOnFinish) {
         emitRuntimeState(ctx, sessionId, 'inactive', false);
-        appServerManager.release(prepared.session.workspace);
+        await cleanupClient();
       } else {
         emitResidentRuntimeState(ctx, sessionId);
       }
@@ -932,7 +947,7 @@ export const runCodexAppServerTurn = async (
     });
     if (activeTurn.disconnectOnFinish) {
       emitRuntimeState(ctx, sessionId, 'inactive', false);
-      appServerManager.release(prepared.session.workspace);
+      await cleanupClient();
     } else {
       emitResidentRuntimeState(ctx, sessionId);
     }
@@ -976,7 +991,7 @@ export const runCodexAppServerTurn = async (
         client.removeExitHandler(clientExitHandler);
       }
       if (activeTurn.disconnectOnFinish) {
-        appServerManager.release(prepared.session.workspace);
+        await cleanupClient();
       }
     }
 
@@ -1048,7 +1063,7 @@ export const interruptCodexAppServerTurn = async (
   }
   activeAppServerTurns.delete(sessionId);
   if (activeTurn.disconnectOnFinish) {
-    appServerManager.release(activeTurn.cwd);
+    await activeTurn.cleanupClient?.();
   }
 
   return { projects: result.projects };

@@ -654,7 +654,9 @@ await run('runCodexAppServerTurn names the native thread after the current sessi
     const sessionId = created.session.id;
     const sessionTitle = created.session.title;
     const namedThreads: Array<{ threadId: string; name: string }> = [];
-    let releaseCount = 0;
+    let createCount = 0;
+    let managerAcquireCount = 0;
+    let closeCount = 0;
     const fakeClient = {
       threadStart: async () => ({ thread: { id: 'thread-new' } }),
       threadResume: async () => ({ thread: { id: 'thread-new' } }),
@@ -666,13 +668,22 @@ await run('runCodexAppServerTurn names the native thread after the current sessi
       removeNotificationHandler: (_handler: (n: { method: string; params: Record<string, unknown> }) => void) => undefined,
       addExitHandler: (_handler: (error: Error) => void) => undefined,
       removeExitHandler: (_handler: (error: Error) => void) => undefined,
+      close: async () => {
+        closeCount += 1;
+      },
     };
+    const originalCreate = codexAppServer.CodexAppServerClient.create;
     const originalAcquire = codexAppServer.appServerManager.acquire;
     const originalRelease = codexAppServer.appServerManager.release;
-    codexAppServer.appServerManager.acquire = async (_cwd: string) => fakeClient as never;
-    codexAppServer.appServerManager.release = (_cwd: string) => {
-      releaseCount += 1;
+    codexAppServer.CodexAppServerClient.create = (async (_cwd: string) => {
+      createCount += 1;
+      return fakeClient as never;
+    }) as typeof codexAppServer.CodexAppServerClient.create;
+    codexAppServer.appServerManager.acquire = async (_cwd: string) => {
+      managerAcquireCount += 1;
+      throw new Error('shared app-server should not be used for nonresident turns');
     };
+    codexAppServer.appServerManager.release = (_cwd: string) => undefined;
 
     try {
       const result = await codexAppServerTurn.runCodexAppServerTurn(
@@ -690,10 +701,13 @@ await run('runCodexAppServerTurn names the native thread after the current sessi
       assert.ok(result.queued.assistantMessageId);
       assert.deepEqual(namedThreads, [{ threadId: 'thread-new', name: sessionTitle }]);
       assert.equal(updatedSession?.codexThreadId, 'thread-new');
-      assert.equal(releaseCount, 1);
+      assert.equal(createCount, 1);
+      assert.equal(managerAcquireCount, 0);
+      assert.equal(closeCount, 1);
       assert.equal(updatedIndex.id, 'thread-new');
       assert.equal(updatedIndex.thread_name, sessionTitle);
     } finally {
+      codexAppServer.CodexAppServerClient.create = originalCreate;
       codexAppServer.appServerManager.acquire = originalAcquire;
       codexAppServer.appServerManager.release = originalRelease;
     }
@@ -796,11 +810,10 @@ await run('runCodexAppServerTurn finalizes started command traces when the turn 
       },
       addExitHandler: (_handler: (error: Error) => void) => undefined,
       removeExitHandler: (_handler: (error: Error) => void) => undefined,
+      close: async () => undefined,
     };
-    const originalAcquire = codexAppServer.appServerManager.acquire;
-    const originalRelease = codexAppServer.appServerManager.release;
-    codexAppServer.appServerManager.acquire = async (_cwd: string) => fakeClient as never;
-    codexAppServer.appServerManager.release = (_cwd: string) => undefined;
+    const originalCreate = codexAppServer.CodexAppServerClient.create;
+    codexAppServer.CodexAppServerClient.create = (async (_cwd: string) => fakeClient as never) as typeof codexAppServer.CodexAppServerClient.create;
 
     try {
       await codexAppServerTurn.runCodexAppServerTurn(
@@ -818,8 +831,7 @@ await run('runCodexAppServerTurn finalizes started command traces when the turn 
       assert.match(commandTrace?.content ?? '', /git status --short/);
       assert.match(commandTrace?.content ?? '', /M src\/App\.tsx/);
     } finally {
-      codexAppServer.appServerManager.acquire = originalAcquire;
-      codexAppServer.appServerManager.release = originalRelease;
+      codexAppServer.CodexAppServerClient.create = originalCreate;
     }
   } finally {
     if (previousUserProfile === undefined) {
@@ -979,6 +991,124 @@ await run('disconnectCodexAppServerTurn releases the resident Codex app-server s
       assert.equal(releaseCount, 1);
       assert.equal(removeExitHandlerCount, 2);
     } finally {
+      codexAppServer.appServerManager.acquire = originalAcquire;
+      codexAppServer.appServerManager.release = originalRelease;
+    }
+  } finally {
+    if (previousUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = previousUserProfile;
+    }
+
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+await run('runCodexAppServerTurn uses a dedicated client for nonresident turns on the same cwd', async () => {
+  const tempBase = path.resolve('.tmp-tests');
+  await mkdir(tempBase, { recursive: true });
+  const tempRoot = await mkdtemp(path.join(tempBase, 'codex-app-server-dedicated-'));
+  const userDataPath = path.join(tempRoot, 'userData');
+  const homePath = path.join(tempRoot, 'home');
+  const workspacePath = path.join(tempRoot, 'workspace');
+
+  await mkdir(userDataPath, { recursive: true });
+  await mkdir(homePath, { recursive: true });
+  await mkdir(workspacePath, { recursive: true });
+
+  const previousUserProfile = process.env.USERPROFILE;
+  process.env.USERPROFILE = homePath;
+  configureRuntimePaths({ mode: 'web', userDataPath, homePath });
+
+  try {
+    const sessionStore = await importSessionStore();
+    const codexAppServer = await importCodexAppServer();
+    const codexAppServerTurn = await importFreshCodexAppServerTurn();
+    const project = await sessionStore.createProject('Dedicated', workspacePath);
+    const created = await sessionStore.createSession(project.session.id, false, 'codex');
+    const sessionId = created.session.id;
+    let notificationHandler: ((n: { method: string; params: Record<string, unknown> }) => void) | null = null;
+    let createCount = 0;
+    let managerAcquireCount = 0;
+    let closeCount = 0;
+    const fakeClient = {
+      threadStart: async () => ({ thread: { id: 'thread-dedicated' } }),
+      threadResume: async () => ({ thread: { id: 'thread-dedicated' } }),
+      threadSetName: async (_threadId: string, _name: string) => undefined,
+      turnStart: async () => {
+        notificationHandler?.({
+          method: 'item/started',
+          params: {
+            threadId: 'thread-dedicated',
+            turnId: 'turn-dedicated',
+            item: {
+              id: 'answer-dedicated',
+              type: 'agentMessage',
+              text: 'Dedicated response.',
+              phase: 'final_answer',
+            },
+          },
+        });
+        notificationHandler?.({
+          method: 'item/completed',
+          params: {
+            threadId: 'thread-dedicated',
+            turnId: 'turn-dedicated',
+            item: {
+              id: 'answer-dedicated',
+              type: 'agentMessage',
+              text: 'Dedicated response.',
+              phase: 'final_answer',
+            },
+          },
+        });
+        return { turn: { id: 'turn-dedicated', status: 'completed' } };
+      },
+      addNotificationHandler: (handler: (n: { method: string; params: Record<string, unknown> }) => void) => {
+        notificationHandler = handler;
+      },
+      removeNotificationHandler: (_handler: (n: { method: string; params: Record<string, unknown> }) => void) => {
+        notificationHandler = null;
+      },
+      addExitHandler: (_handler: (error: Error) => void) => undefined,
+      removeExitHandler: (_handler: (error: Error) => void) => undefined,
+      close: async () => {
+        closeCount += 1;
+      },
+    };
+    const originalCreate = codexAppServer.CodexAppServerClient.create;
+    const originalAcquire = codexAppServer.appServerManager.acquire;
+    const originalRelease = codexAppServer.appServerManager.release;
+    codexAppServer.CodexAppServerClient.create = (async (_cwd: string) => {
+      createCount += 1;
+      return fakeClient as never;
+    }) as typeof codexAppServer.CodexAppServerClient.create;
+    codexAppServer.appServerManager.acquire = async (_cwd: string) => {
+      managerAcquireCount += 1;
+      throw new Error('shared app-server should not be used for nonresident turns');
+    };
+    codexAppServer.appServerManager.release = (_cwd: string) => undefined;
+
+    try {
+      await codexAppServerTurn.runCodexAppServerTurn(
+        { broadcastEvent: (_event: Record<string, unknown>) => undefined } as never,
+        sessionId,
+        'Use an isolated client.',
+      );
+
+      const updatedSession = await sessionStore.findSession(sessionId);
+      const assistant = updatedSession?.messages.find(
+        (message: ConversationMessage) => message.role === 'assistant',
+      );
+
+      assert.equal(createCount, 1);
+      assert.equal(managerAcquireCount, 0);
+      assert.equal(closeCount, 1);
+      assert.equal(assistant?.status, 'complete');
+      assert.equal(assistant?.content, 'Dedicated response.');
+    } finally {
+      codexAppServer.CodexAppServerClient.create = originalCreate;
       codexAppServer.appServerManager.acquire = originalAcquire;
       codexAppServer.appServerManager.release = originalRelease;
     }

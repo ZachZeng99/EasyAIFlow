@@ -23,6 +23,12 @@ const makeMessage = (overrides: Partial<ConversationMessage>): ConversationMessa
   title: overrides.title ?? 'Claude response',
   content: overrides.content ?? '',
   status: overrides.status ?? 'streaming',
+  provider: overrides.provider,
+  speakerId: overrides.speakerId,
+  speakerLabel: overrides.speakerLabel,
+  sourceSessionId: overrides.sourceSessionId,
+  seq: overrides.seq,
+  targetParticipantIds: overrides.targetParticipantIds,
 });
 
 const makeProject = (message: ConversationMessage): ProjectRecord[] => {
@@ -187,6 +193,82 @@ run('normalizeProjectsFromPersistence completes non-empty streaming group room m
   assert.equal(message?.content, 'partial reply from codex');
 });
 
+run('normalizeProjectsFromPersistence rehydrates stale group room placeholders from backing session completions', () => {
+  const projects = makeProject(
+    makeMessage({
+      id: 'room-assistant-1',
+      status: 'streaming',
+      title: 'Codex response',
+      content: '',
+      provider: 'codex',
+      speakerId: 'codex',
+      speakerLabel: 'Codex',
+      sourceSessionId: 'member-codex',
+    }),
+  );
+  const room = projects[0]?.dreams[0]?.sessions[0] as SessionRecord;
+  room.provider = undefined;
+  room.model = '';
+  room.sessionKind = 'group';
+  room.group = {
+    kind: 'room',
+    nextMessageSeq: 3,
+    participants: [
+      {
+        id: 'codex',
+        label: 'Codex',
+        provider: 'codex',
+        backingSessionId: 'member-codex',
+        enabled: true,
+        lastAppliedRoomSeq: 2,
+      },
+    ],
+  };
+
+  const backing: SessionRecord = {
+    ...room,
+    id: 'member-codex',
+    title: '[Group] Test room',
+    provider: 'codex',
+    model: 'gpt-5.4',
+    sessionKind: 'group_member',
+    hidden: true,
+    group: {
+      kind: 'member',
+      roomSessionId: room.id,
+      participantId: 'codex',
+    },
+    messages: [
+      makeMessage({
+        id: 'backing-user-1',
+        role: 'user',
+        status: 'complete',
+        title: 'Prompt',
+        content: '<task>\nCurrent room prompt\n</task>',
+      }),
+      makeMessage({
+        id: 'backing-assistant-1',
+        role: 'assistant',
+        status: 'complete',
+        title: 'Codex found the cause',
+        content: 'Final backing answer.',
+        provider: 'codex',
+        speakerId: 'codex',
+        speakerLabel: 'Codex',
+      }),
+    ],
+  };
+  projects[0]?.dreams[0]?.sessions.push(backing);
+
+  const normalized = normalizeProjectsFromPersistence(projects);
+  const normalizedRoom = normalized[0]?.dreams[0]?.sessions.find((session) => session.id === room.id) as SessionRecord | undefined;
+  const message = normalizedRoom?.messages?.[0];
+
+  assert.equal(message?.status, 'complete');
+  assert.equal(message?.title, 'Codex found the cause');
+  assert.equal(message?.content, 'Final backing answer.');
+});
+
 run('normalizeProjectsForCache keeps group sessions provider-less', () => {
   const projects = makeProject(
     makeMessage({
@@ -283,5 +365,5 @@ run('normalizeProjectsFromPersistence infers group kinds before stale-message re
   assert.equal(normalizedSession?.sessionKind, 'group');
   assert.equal(normalizedSession?.provider, undefined);
   assert.equal(message?.status, 'error');
-  assert.equal(message?.content, 'Previous Claude run did not finish.');
+  assert.equal(message?.content, 'Previous Codex run did not finish.');
 });

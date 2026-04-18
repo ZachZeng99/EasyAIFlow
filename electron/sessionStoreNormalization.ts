@@ -28,6 +28,77 @@ const mapProjects = (
     })),
   }));
 
+const isPendingAssistantStatus = (status: SessionRecord['messages'][number]['status']) =>
+  status === 'queued' || status === 'streaming' || status === 'running' || status === 'background';
+
+const canBeRehydratedFromBackingSession = (message: SessionRecord['messages'][number]) =>
+  isPendingAssistantStatus(message.status) ||
+  (
+    message.status === 'error' &&
+    (
+      message.content.startsWith('Previous ') ||
+      message.content.startsWith('Queued ')
+    )
+  );
+
+const rehydrateGroupRoomMessagesFromBackingSessions = (projects: ProjectRecord[]) => {
+  const sessionsById = new Map<string, SessionRecord>();
+  projects.forEach((project) => {
+    project.dreams.forEach((dream) => {
+      dream.sessions.forEach((session) => {
+        sessionsById.set(session.id, session as SessionRecord);
+      });
+    });
+  });
+
+  return projects.map((project) => ({
+    ...project,
+    dreams: project.dreams.map((dream) => ({
+      ...dream,
+      sessions: dream.sessions.map((session) => {
+        const typedSession = session as SessionRecord;
+        if (typedSession.sessionKind !== 'group' || typedSession.group?.kind !== 'room') {
+          return typedSession;
+        }
+
+        return {
+          ...typedSession,
+          messages: (typedSession.messages ?? []).map((message) => {
+            if (
+              message.role !== 'assistant' ||
+              !message.sourceSessionId ||
+              !canBeRehydratedFromBackingSession(message)
+            ) {
+              return message;
+            }
+
+            const backingSession = sessionsById.get(message.sourceSessionId);
+            const backingAssistant = [...(backingSession?.messages ?? [])]
+              .reverse()
+              .find(
+                (candidate) =>
+                  candidate.role === 'assistant' && !isPendingAssistantStatus(candidate.status),
+              );
+
+            if (!backingAssistant) {
+              return message;
+            }
+
+            return {
+              ...message,
+              title: backingAssistant.title,
+              content: backingAssistant.content,
+              status: backingAssistant.status,
+              timestamp: backingAssistant.timestamp,
+              provider: message.provider ?? backingAssistant.provider,
+            };
+          }),
+        };
+      }),
+    })),
+  }));
+};
+
 export const normalizeProjectsForCache = (projects: ProjectRecord[]) =>
   mapProjects(projects, (session) => {
     const sessionKind = inferSessionKind(session);
@@ -41,17 +112,19 @@ export const normalizeProjectsForCache = (projects: ProjectRecord[]) =>
   });
 
 export const normalizeProjectsFromPersistence = (projects: ProjectRecord[]) =>
-  mapProjects(projects, (session) => {
-    const sessionKind = inferSessionKind(session);
-    const provider = sessionKind === 'group' ? undefined : normalizeSessionProvider(session.provider);
-    return {
-      ...session,
-      sessionKind,
-      hidden: sessionKind === 'group_member' ? true : Boolean(session.hidden),
-      provider,
-      messages:
-        sessionKind === 'group'
-          ? recoverStaleGroupRoomMessages(session.messages)
-          : recoverStaleSessionMessagesForProvider(session.messages, provider),
-    };
-  });
+  rehydrateGroupRoomMessagesFromBackingSessions(
+    mapProjects(projects, (session) => {
+      const sessionKind = inferSessionKind(session);
+      const provider = sessionKind === 'group' ? undefined : normalizeSessionProvider(session.provider);
+      return {
+        ...session,
+        sessionKind,
+        hidden: sessionKind === 'group_member' ? true : Boolean(session.hidden),
+        provider,
+        messages:
+          sessionKind === 'group'
+            ? recoverStaleGroupRoomMessages(session.messages)
+            : recoverStaleSessionMessagesForProvider(session.messages, provider),
+      };
+    }),
+  );

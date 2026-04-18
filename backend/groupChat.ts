@@ -271,7 +271,7 @@ const mirrorTraceMessage = async (
   });
 };
 
-const mirrorAssistantEvent = async (
+export const mirrorAssistantEvent = async (
   ctx: ClaudeInteractionContext,
   spec: GroupMirrorSpec,
   event: Extract<ClaudeStreamEvent, { type: 'status' | 'delta' | 'complete' | 'error' }>,
@@ -289,26 +289,9 @@ const mirrorAssistantEvent = async (
     return;
   }
 
-  let resolvedRoomMessageId = spec.roomAssistantMessageId;
-  const matchesBackingId =
-    Boolean(spec.backingAssistantMessageId) && event.messageId === spec.backingAssistantMessageId;
-
-  if (!matchesBackingId) {
-    const fallbackTarget = [...(roomSession?.messages ?? [])]
-      .reverse()
-      .find(
-        (message) =>
-          message.role === 'assistant' &&
-          message.speakerId === spec.participant.id &&
-          message.sourceSessionId === spec.backingSessionId &&
-          (message.status === 'queued' || message.status === 'streaming' || message.status === 'running'),
-      );
-
-    if (!fallbackTarget) {
-      return;
-    }
-
-    resolvedRoomMessageId = fallbackTarget.id;
+  const resolvedRoomMessageId = resolveMirroredAssistantRoomMessageId(spec, roomSession, event.messageId);
+  if (!resolvedRoomMessageId) {
+    return;
   }
 
   if (event.type === 'delta') {
@@ -442,6 +425,31 @@ const mirrorAssistantEvent = async (
     messageId: spec.roomAssistantMessageId,
     error: event.error,
   });
+};
+
+export const resolveMirroredAssistantRoomMessageId = (
+  spec: GroupMirrorSpec,
+  roomSession: SessionRecord,
+  backingMessageId: string,
+) => {
+  const matchesBackingId =
+    Boolean(spec.backingAssistantMessageId) && backingMessageId === spec.backingAssistantMessageId;
+
+  if (spec.backingAssistantMessageId) {
+    return matchesBackingId ? spec.roomAssistantMessageId : null;
+  }
+
+  const fallbackTarget = [...(roomSession.messages ?? [])]
+    .reverse()
+    .find(
+      (message) =>
+        message.role === 'assistant' &&
+        message.speakerId === spec.participant.id &&
+        message.sourceSessionId === spec.backingSessionId &&
+        (message.status === 'queued' || message.status === 'streaming' || message.status === 'running'),
+    );
+
+  return fallbackTarget?.id ?? null;
 };
 
 const createMirroredContext = (
