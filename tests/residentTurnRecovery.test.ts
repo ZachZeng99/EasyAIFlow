@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   getAssistantMessageSnapshot,
   getResidentIdleTurnOutcome,
+  isClaudeAssistantEndTurnEvent,
 } from '../backend/claudeInteraction.ts';
 import type { ClaudeRunState } from '../backend/claudeInteractionState.ts';
 import { createClaudeRunState } from '../electron/claudeRunState.ts';
@@ -101,4 +102,25 @@ run('getResidentIdleTurnOutcome leaves background-backed turns alone', () => {
   );
 
   assert.equal(outcome, null);
+});
+
+run('isClaudeAssistantEndTurnEvent detects assistant end_turn payloads', () => {
+  assert.equal(
+    isClaudeAssistantEndTurnEvent({
+      type: 'assistant',
+      message: {
+        stop_reason: 'end_turn',
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    isClaudeAssistantEndTurnEvent({
+      type: 'assistant',
+      message: {
+        stop_reason: 'tool_use',
+      },
+    }),
+    false,
+  );
 });

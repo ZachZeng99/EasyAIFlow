@@ -122,11 +122,28 @@ export const clearSessionBackgroundTasks = (
   backgroundTasks: undefined,
 });
 
+const pruneActiveBackgroundTasks = (
+  tasks: BackgroundTaskRecord[] | undefined,
+): BackgroundTaskRecord[] | undefined => {
+  if (!tasks) {
+    return undefined;
+  }
+
+  const next = tasks.filter(
+    (task) => task.status !== 'pending' && task.status !== 'running',
+  );
+  return next.length > 0 ? next : undefined;
+};
+
 export const setSessionRuntimeState = (
   state: SessionInteractionState,
   runtime: SessionRuntimeState,
 ): SessionInteractionState => ({
   ...state,
+  backgroundTasks:
+    runtime.phase === 'background'
+      ? state.backgroundTasks
+      : pruneActiveBackgroundTasks(state.backgroundTasks),
   runtime: {
     ...(state.runtime ?? {}),
     ...runtime,

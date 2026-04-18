@@ -1265,6 +1265,23 @@ export const getResidentIdleTurnOutcome = (runState: ClaudeRunState) => {
   };
 };
 
+export const isClaudeAssistantEndTurnEvent = (payload: unknown) => {
+  if (!payload || typeof payload !== 'object') {
+    return false;
+  }
+
+  const record = payload as {
+    type?: unknown;
+    stop_reason?: unknown;
+    message?: { stop_reason?: unknown };
+  };
+
+  return (
+    record.type === 'assistant' &&
+    (record.stop_reason === 'end_turn' || record.message?.stop_reason === 'end_turn')
+  );
+};
+
 export const shouldForkResidentClaudeSession = (input: {
   session: Pick<SessionSummary, 'claudeSessionId' | 'sessionKind'>;
   persistedModel?: string;
@@ -2351,11 +2368,12 @@ const ensureResidentClaudeSession = async (
         }
       }
 
-      if (
-        parsed.type === 'system' &&
-        (parsed.subtype === 'task_notification' ||
-          (parsed.subtype === 'session_state_changed' && parsed.state === 'idle'))
-      ) {
+      const shouldFinalizeResidentTurn =
+        (parsed.type === 'system' &&
+          (parsed.subtype === 'task_notification' ||
+            (parsed.subtype === 'session_state_changed' && parsed.state === 'idle'))) ||
+        isClaudeAssistantEndTurnEvent(parsed);
+      if (shouldFinalizeResidentTurn) {
         const matchedTurn =
           currentResident.currentTurn?.assistantMessageId === assistantMessageId &&
           currentResident.currentTurn.runState === runState
@@ -2365,7 +2383,7 @@ const ensureResidentClaudeSession = async (
               ? currentResident.activeOutputTurn
               : undefined;
         const idleTurnOutcome =
-          parsed.subtype === 'session_state_changed' && parsed.state === 'idle' && matchedTurn
+          matchedTurn
             ? getResidentIdleTurnOutcome(matchedTurn.runState)
             : null;
         if (matchedTurn && idleTurnOutcome) {
