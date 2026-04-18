@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import type { ClaudeInteractionContext } from './claudeInteractionContext.js';
+import { getRuntimePaths } from './runtimePaths.js';
 import type {
   ActiveClaudeRun,
   ActiveClaudeTurn,
@@ -87,6 +89,7 @@ import {
   resolveClaudeModelArg,
   shouldSwitchClaudeSessionModel,
 } from '../electron/claudeModel.js';
+import { getClaudeProjectDirNameCandidates } from '../electron/workspacePaths.js';
 import {
   addActiveClaudeRun,
   listActiveClaudeRunsForSession,
@@ -504,6 +507,153 @@ const hasActiveBackgroundTasks = (runState: ClaudeRunState) =>
     (task) => task.status === 'pending' || task.status === 'running',
   );
 
+type NativeClaudeBackgroundTaskCacheEntry = {
+  mtimeMs: number;
+  tasks: Map<string, BackgroundTaskRecord>;
+};
+
+const nativeClaudeBackgroundTaskCache = new Map<string, NativeClaudeBackgroundTaskCacheEntry>();
+const terminalBackgroundTaskStatuses = new Set(['completed', 'failed', 'stopped']);
+
+const listResidentRunStates = (resident: ResidentClaudeSession) => {
+  const states: ClaudeRunState[] = [];
+  const add = (runState?: ClaudeRunState) => {
+    if (!runState || states.includes(runState)) {
+      return;
+    }
+    states.push(runState);
+  };
+
+  add(resident.currentTurn?.runState);
+  add(resident.activeOutputTurn?.runState);
+  resident.backgroundTaskOwners.forEach((owner) => add(owner.runState));
+  return states;
+};
+
+const getResidentClaudeSessionIds = (resident: ResidentClaudeSession) =>
+  [
+    ...new Set(
+      listResidentRunStates(resident)
+        .flatMap((runState) => [runState.persistedClaudeSessionId, runState.claudeSessionId])
+        .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+        .map((value) => value.trim()),
+    ),
+  ];
+
+const nativeClaudeProjectsRoot = () =>
+  path.join(process.env.USERPROFILE ?? getRuntimePaths().homePath, '.claude', 'projects');
+
+const resolveNativeClaudeSessionLogPath = (
+  projectRoot: string | undefined,
+  claudeSessionId: string,
+) => {
+  if (!projectRoot?.trim() || !claudeSessionId.trim()) {
+    return null;
+  }
+
+  const candidates = getClaudeProjectDirNameCandidates(projectRoot);
+  for (const dirName of candidates) {
+    const candidate = path.join(nativeClaudeProjectsRoot(), dirName, `${claudeSessionId}.jsonl`);
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+};
+
+const readNativeClaudeTerminalBackgroundTasks = (
+  projectRoot: string | undefined,
+  claudeSessionId: string,
+) => {
+  const filePath = resolveNativeClaudeSessionLogPath(projectRoot, claudeSessionId);
+  if (!filePath) {
+    return new Map<string, BackgroundTaskRecord>();
+  }
+
+  try {
+    const { mtimeMs } = statSync(filePath);
+    const cached = nativeClaudeBackgroundTaskCache.get(filePath);
+    if (cached?.mtimeMs === mtimeMs) {
+      return cached.tasks;
+    }
+
+    const tasks = new Map<string, BackgroundTaskRecord>();
+    const content = readFileSync(filePath, 'utf8');
+    content.split(/\r?\n/).forEach((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        return;
+      }
+
+      try {
+        const parsed = JSON.parse(trimmed) as unknown;
+        const task = parseClaudeBackgroundTaskEvent(parsed);
+        if (!task || !terminalBackgroundTaskStatuses.has(task.status)) {
+          return;
+        }
+
+        tasks.set(task.taskId, {
+          ...(tasks.get(task.taskId) ?? {}),
+          ...task,
+        });
+      } catch {
+        // Ignore malformed native log lines while reconciling resident state.
+      }
+    });
+
+    nativeClaudeBackgroundTaskCache.set(filePath, { mtimeMs, tasks });
+    return tasks;
+  } catch {
+    return new Map<string, BackgroundTaskRecord>();
+  }
+};
+
+const reconcileResidentBackgroundTasksFromNativeHistory = (resident: ResidentClaudeSession) => {
+  const projectRoot = resident.projectRoot?.trim();
+  if (!projectRoot) {
+    return;
+  }
+
+  const runStates = listResidentRunStates(resident);
+  if (runStates.length === 0) {
+    return;
+  }
+
+  const terminalTasks = new Map<string, BackgroundTaskRecord>();
+  getResidentClaudeSessionIds(resident).forEach((claudeSessionId) => {
+    readNativeClaudeTerminalBackgroundTasks(projectRoot, claudeSessionId).forEach((task, taskId) => {
+      terminalTasks.set(taskId, {
+        ...(terminalTasks.get(taskId) ?? {}),
+        ...task,
+      });
+    });
+  });
+
+  if (terminalTasks.size === 0) {
+    return;
+  }
+
+  runStates.forEach((runState) => {
+    runState.backgroundTasks.forEach((task, taskId) => {
+      if (task.status !== 'pending' && task.status !== 'running') {
+        return;
+      }
+
+      const terminalTask = terminalTasks.get(taskId);
+      if (!terminalTask) {
+        return;
+      }
+
+      runState.backgroundTasks.set(taskId, {
+        ...task,
+        ...terminalTask,
+        updatedAt: Math.max(task.updatedAt ?? 0, terminalTask.updatedAt ?? 0) || undefined,
+      });
+    });
+  });
+};
+
 const emitRuntimeState = (
   ctx: ClaudeInteractionContext,
   sessionId: string,
@@ -627,6 +777,7 @@ const finalizeBackgroundOwnersIfSettled = async (
   sessionId: string,
   resident: ResidentClaudeSession,
 ) => {
+  reconcileResidentBackgroundTasksFromNativeHistory(resident);
   const seen = new Set<string>();
   for (const [taskId, owner] of resident.backgroundTaskOwners) {
     if (seen.has(owner.assistantMessageId)) {
@@ -668,6 +819,7 @@ const residentHasForegroundTurn = (resident: ResidentClaudeSession | undefined) 
   Boolean(resident?.currentTurn && !hasActiveBackgroundTasks(resident.currentTurn.runState));
 
 const collectResidentBackgroundTasks = (resident: ResidentClaudeSession): BackgroundTaskRecord[] => {
+  reconcileResidentBackgroundTasksFromNativeHistory(resident);
   const tasks = new Map<string, BackgroundTaskRecord>();
 
   const collect = (runState?: ClaudeRunState) => {
@@ -696,6 +848,7 @@ const deriveResidentRuntimePhase = (
   sessionId: string,
   resident: ResidentClaudeSession,
 ): import('../src/data/types.js').SessionRuntimePhase => {
+  reconcileResidentBackgroundTasksFromNativeHistory(resident);
   const hasBlockingInteraction =
     [...state.pendingPermissionRequests.values()].some((pending) => pending.sessionId === sessionId) ||
     [...state.pendingAskUserQuestions.values()].some((pending) => pending.sessionId === sessionId) ||
