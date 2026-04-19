@@ -2682,6 +2682,31 @@ const recoverExistingSessionsFromNativeHistory = async (
   }
 };
 
+export const recoverSessionFromNativeHistory = async (sessionId: string) => {
+  const state = await getMutableState();
+  const sessions = state.projects.flatMap((project) =>
+    project.dreams.flatMap((dream) => dream.sessions as SessionRecord[]),
+  );
+  const target = sessions.find((session) => session.id === sessionId);
+  if (!target?.claudeSessionId) {
+    return null;
+  }
+
+  const filePath = nativeClaudeSessionFilePath(target.workspace, target.claudeSessionId);
+  if (!filePath) {
+    return null;
+  }
+
+  const parsed = await parseCachedNativeClaudeSessionFile(filePath);
+  if (!parsed || !shouldRecoverSessionFromNative(target, parsed)) {
+    return null;
+  }
+
+  Object.assign(target, mergeNativeSessionIntoExisting(target, parsed));
+  await saveState(state);
+  return target;
+};
+
 const deleteNativeClaudeSessions = async (
   nativeSessions: Array<{ workspace: string; sessionId: string }>,
 ): Promise<NativeCleanupResult> => {

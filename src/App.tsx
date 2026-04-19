@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import 'katex/dist/katex.min.css';
 import { BtwPanel, type BtwMessage } from './components/BtwPanel';
 import { ChatComposer, type ComposerAttachment } from './components/ChatComposer';
 import { ChatHistory } from './components/ChatHistory';
@@ -14,7 +15,6 @@ import {
   type AskUserQuestionDraft,
 } from './data/askUserQuestion';
 import {
-  clearSessionBackgroundTasks,
   mergeSessionRuntimeStates,
   setSessionRuntimeState,
   upsertSessionBackgroundTask,
@@ -151,6 +151,11 @@ const mergeProjectSnapshots = (currentProjects: ProjectRecord[], nextProjects: P
 const applyClaudeEvent = (projects: ProjectRecord[], event: ClaudeStreamEvent) =>
   event.type === 'interaction-sync'
     ? projects
+    : event.type === 'session-sync'
+      ? updateSessionInProjects(projects, event.sessionId, () => ({
+          ...event.session,
+          messagesLoaded: true,
+        }))
     :
   updateSessionInProjects(projects, event.sessionId, (session) => {
     const updatedAt = Date.now();
@@ -978,6 +983,9 @@ export default function App() {
         setSessionInteractions(new Map());
         return;
       }
+      if (event.type === 'session-sync') {
+        return;
+      }
       if (event.type === 'permission-request') {
         updateSessionInteraction(event.sessionId, (state) => ({
           ...state,
@@ -1389,7 +1397,6 @@ export default function App() {
     setIsSending(true);
     setUiError(null);
     setUnreadSessionIds((current) => current.filter((sessionId) => sessionId !== selectedSession.id));
-    updateSessionInteraction(selectedSession.id, (state) => clearSessionBackgroundTasks(state));
 
     const outgoingPrompt = prompt || 'Please inspect the attached files and describe anything relevant.';
     const pendingAttachments: PendingAttachment[] = attachments.map((attachment) => ({

@@ -105,6 +105,34 @@ run('getResidentIdleTurnOutcome leaves background-backed turns alone', () => {
   assert.equal(outcome, null);
 });
 
+run('getResidentIdleTurnOutcome keeps prior assistant text instead of replacing it with raw task output', () => {
+  const outcome = getResidentIdleTurnOutcome(
+    makeRunState({
+      receivedResult: true,
+      content: 'I started the comparison and will post the summary once it settles.',
+      lastToolResultContent: 'total 8\r\n-rw-r--r-- foo.txt\r\n-rw-r--r-- bar.txt',
+    }),
+  );
+
+  assert.deepEqual(outcome, {
+    kind: 'complete',
+    content: 'I started the comparison and will post the summary once it settles.',
+  });
+});
+
+run('getResidentIdleTurnOutcome treats tool-only background completion as a silent settle', () => {
+  const outcome = getResidentIdleTurnOutcome(
+    makeRunState({
+      receivedResult: true,
+      lastToolResultContent: 'total 8\r\n-rw-r--r-- foo.txt\r\n-rw-r--r-- bar.txt',
+    }),
+  );
+
+  assert.deepEqual(outcome, {
+    kind: 'silent',
+  });
+});
+
 run('isClaudeAssistantEndTurnEvent detects assistant end_turn payloads', () => {
   assert.equal(
     isClaudeAssistantEndTurnEvent({

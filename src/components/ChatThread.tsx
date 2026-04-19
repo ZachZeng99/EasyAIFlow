@@ -3,7 +3,6 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
-import 'katex/dist/katex.min.css';
 import { DiffContent } from './DiffContent';
 import { InlinePermissionCard } from './InlinePermissionCard';
 import { InlineAskUserQuestionCard } from './InlineAskUserQuestionCard';
@@ -91,6 +90,14 @@ function ChatThreadComponent({
   const providerName = session.sessionKind === 'group' ? 'Group Room' : getProviderDisplayName(session.provider);
   const displayItems = useMemo(() => buildDisplayItems(messages), [messages]);
   const activePermissionRequest = getActiveSessionPermissionRequest(interaction);
+  const activeBackgroundTasks = useMemo(
+    () =>
+      (interaction?.backgroundTasks ?? []).filter(
+        (task) => task.status === 'pending' || task.status === 'running',
+      ),
+    [interaction?.backgroundTasks],
+  );
+  const activeMonitorCount = activeBackgroundTasks.filter((task) => task.taskType === 'agent').length;
   const showDisconnectAction = isCliOnline && Boolean(onDisconnect);
   const [openTraceIds, setOpenTraceIds] = useState<Record<string, boolean>>({});
   const [openTraceGroupIds, setOpenTraceGroupIds] = useState<Record<string, boolean>>({});
@@ -224,6 +231,13 @@ function ChatThreadComponent({
             <span className="session-tag process-tag">
               {traceSummary.tools} tools · {traceSummary.progress} progress · {traceSummary.thinking} thinking
             </span>
+            {activeBackgroundTasks.length > 0 ? (
+              <span className="session-tag monitor-tag">
+                {activeMonitorCount > 0
+                  ? `${activeMonitorCount} monitor${activeMonitorCount === 1 ? '' : 's'}`
+                  : `${activeBackgroundTasks.length} task${activeBackgroundTasks.length === 1 ? '' : 's'}`}
+              </span>
+            ) : null}
             <span
               className={`session-tag provider-pill ${
                 session.sessionKind === 'group'
@@ -251,6 +265,37 @@ function ChatThreadComponent({
       </header>
 
       <div ref={streamRef} className="message-stream">
+        {activeBackgroundTasks.length > 0 ? (
+          <section className="monitor-strip">
+            <div className="monitor-strip-head">
+              <strong>
+                {activeBackgroundTasks.length} task{activeBackgroundTasks.length === 1 ? '' : 's'}
+              </strong>
+              <span>
+                {activeBackgroundTasks.filter((task) => task.status === 'pending').length} pending,{' '}
+                {activeBackgroundTasks.filter((task) => task.status === 'running').length} running
+              </span>
+            </div>
+            <div className="monitor-strip-list">
+              {activeBackgroundTasks.map((task) => (
+                <article key={task.taskId} className={`monitor-strip-card status-${task.status}`}>
+                  <div className="monitor-strip-title">
+                    <span className={`monitor-strip-dot status-${task.status}`} aria-hidden="true" />
+                    <strong>{task.description}</strong>
+                    <span className="monitor-strip-status">{task.status}</span>
+                  </div>
+                  {task.summary ? <p>{task.summary}</p> : null}
+                  <div className="monitor-strip-meta">
+                    <span>{task.taskType ?? 'task'}</span>
+                    {task.lastToolName ? <span>{task.lastToolName}</span> : null}
+                    {task.outputFile ? <span>{task.outputFile}</span> : null}
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
         {displayItems.length === 0 && !activePermissionRequest && !interaction?.askUserQuestion && !interaction?.planModeRequest ? (
           <div className="thread-placeholder">
             {isLoadingHistory ? 'Loading session history...' : 'No saved messages in this session.'}

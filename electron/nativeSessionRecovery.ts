@@ -31,6 +31,22 @@ const getLastAssistantContent = (messages: ConversationMessage[] | undefined) =>
     )
     ?.content.trim();
 
+const getConversationRecoverySignature = (messages: ConversationMessage[] | undefined) =>
+  (messages ?? [])
+    .filter((message) => {
+      if (message.role === 'user') {
+        return Boolean(message.content.trim());
+      }
+
+      return (
+        message.role === 'assistant' &&
+        Boolean(message.content.trim()) &&
+        !isIgnorableBackgroundTaskFollowupText(message.content)
+      );
+    })
+    .map((message) => `${message.role}:${message.content.trim()}`)
+    .join('\n---\n');
+
 export const shouldRecoverSessionFromNative = (
   existing: SessionRecord,
   parsed: ParsedNativeSession,
@@ -53,6 +69,12 @@ export const shouldRecoverSessionFromNative = (
   }
 
   if (parsed.messages.length > existingMessages.length) {
+    return true;
+  }
+
+  const parsedSignature = getConversationRecoverySignature(parsed.messages);
+  const existingSignature = getConversationRecoverySignature(existingMessages);
+  if (parsedSignature && parsedSignature !== existingSignature) {
     return true;
   }
 

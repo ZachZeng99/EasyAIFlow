@@ -169,3 +169,51 @@ run('ChatThread shows separate Claude and Codex CLI badges for group rooms', () 
   assert.match(html, /Codex offline/);
   assert.match(html, /cli-status offline/);
 });
+
+run('ChatThread surfaces active monitors in the main session view', () => {
+  const html = renderToStaticMarkup(
+    createElement(ChatThread, {
+      session,
+      messages: [
+        {
+          id: 'assistant-3',
+          role: 'assistant',
+          timestamp: '4/19 11:30',
+          title: 'Claude response',
+          content: '我先挂着后台监控，完成后再继续汇总。',
+          status: 'background',
+        },
+      ],
+      interaction: {
+        runtime: {
+          processActive: true,
+          phase: 'background',
+          updatedAt: Date.now(),
+        },
+        backgroundTasks: [
+          {
+            taskId: 'agent-1',
+            status: 'running',
+            description: 'Wait for install completion and send Lark with [SGamePC] prefix',
+            taskType: 'agent',
+            summary: 'Install package monitor still running',
+            outputFile: 'C:\\temp\\agent-1.log',
+            updatedAt: Date.now(),
+          },
+          {
+            taskId: 'task-2',
+            status: 'pending',
+            description: 'Install package to PS5 DevKit 192.168.103.101',
+            taskType: 'command',
+            updatedAt: Date.now() - 1000,
+          },
+        ],
+      },
+    }),
+  );
+
+  assert.match(html, /1 monitor/);
+  assert.match(html, /2 tasks/);
+  assert.match(html, /Wait for install completion and send Lark with \[SGamePC\] prefix/);
+  assert.match(html, /Install package to PS5 DevKit 192\.168\.103\.101/);
+});

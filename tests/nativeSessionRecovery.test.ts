@@ -127,3 +127,67 @@ run('shouldRecoverSessionFromNative ignores cleanup-only assistant follow-ups wh
 
   assert.equal(shouldRecoverSessionFromNative(existing, parsed), true);
 });
+
+run('shouldRecoverSessionFromNative detects missing intermediate assistant replies', () => {
+  const existing = makeSession({
+    messages: [
+      makeMessage({
+        id: 'user-1',
+        role: 'user',
+        title: 'Prompt',
+        content: 'Analyze the two captures.',
+      }),
+      makeMessage({
+        id: 'assistant-1',
+        content: 'I opened the captures and started comparing counters.',
+        title: 'I opened the captures and started comparin',
+      }),
+      makeMessage({
+        id: 'user-2',
+        role: 'user',
+        title: '1',
+        content: '1',
+      }),
+      makeMessage({
+        id: 'assistant-2',
+        content: 'Final answer after the follow-up.',
+        title: 'Final answer after the follow-up.',
+      }),
+    ],
+  });
+
+  const parsed: ParsedNativeSession = {
+    ...parsedNative,
+    messages: [
+      makeMessage({
+        id: 'user-1',
+        role: 'user',
+        title: 'Prompt',
+        content: 'Analyze the two captures.',
+      }),
+      makeMessage({
+        id: 'assistant-1',
+        content: 'I opened the captures and started comparing counters.',
+        title: 'I opened the captures and started comparin',
+      }),
+      makeMessage({
+        id: 'assistant-mid',
+        content: 'The first comparison is done; now I am checking the invocation diffs.',
+        title: 'The first comparison is done; now I am che',
+      }),
+      makeMessage({
+        id: 'user-2',
+        role: 'user',
+        title: '1',
+        content: '1',
+      }),
+      makeMessage({
+        id: 'assistant-2',
+        content: 'Final answer after the follow-up.',
+        title: 'Final answer after the follow-up.',
+      }),
+    ],
+  };
+
+  assert.equal(shouldRecoverSessionFromNative(existing, parsed), true);
+});

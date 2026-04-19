@@ -151,7 +151,7 @@ function ContextPanelComponent({
         ) : (
           <div className="changed-file-card empty">
             <strong>没有后台任务</strong>
-            <p>这里只显示当前轮的后台任务；发送下一条消息后会清空上一轮。</p>
+            <p>后台 monitor 和 task 会在这里保留到它们真正结束。</p>
           </div>
         )}
       </div>

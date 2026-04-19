@@ -40,6 +40,7 @@ import {
   ensureSessionRecord,
   findSession,
   getProjects,
+  recoverSessionFromNativeHistory,
   setSessionRuntime,
   updateAssistantMessage,
   updateSessionContextReferences,
@@ -772,6 +773,21 @@ const handoffResidentTurnToBackground = (
   currentTurn.resolveCompletion();
 };
 
+const resolveResidentIdleVisibleContent = (
+  runState: ClaudeRunState,
+  preferredFallback = '',
+) => {
+  const result = runState.lastResultContent?.trim() ? runState.lastResultContent : undefined;
+  const streamed = runState.content?.trim() ? runState.content : undefined;
+  const fallback = preferredFallback.trim() ? preferredFallback : undefined;
+
+  if (result && streamed) {
+    return streamed.length >= result.length ? streamed : result;
+  }
+
+  return streamed ?? result ?? fallback ?? '';
+};
+
 const finalizeBackgroundOwnersIfSettled = async (
   ctx: ClaudeInteractionContext,
   sessionId: string,
@@ -791,13 +807,22 @@ const finalizeBackgroundOwnersIfSettled = async (
       continue;
     }
 
-    await completeAssistantRun(
-      ctx,
-      sessionId,
-      owner.assistantMessageId,
-      owner.runState,
-      owner.runState.lastResultContent ?? owner.runState.content,
-    );
+    const idleTurnOutcome = getResidentIdleTurnOutcome(owner.runState);
+    if (!idleTurnOutcome) {
+      continue;
+    }
+
+    if (idleTurnOutcome.kind === 'complete') {
+      await completeAssistantRun(
+        ctx,
+        sessionId,
+        owner.assistantMessageId,
+        owner.runState,
+        idleTurnOutcome.content,
+      );
+    } else if (idleTurnOutcome.kind === 'silent') {
+      await finalizeToolTraces(ctx, sessionId, owner.runState);
+    }
     for (const [ownedTaskId, candidate] of resident.backgroundTaskOwners) {
       if (candidate.assistantMessageId === owner.assistantMessageId) {
         resident.backgroundTaskOwners.delete(ownedTaskId);
@@ -893,6 +918,22 @@ export const syncResidentRuntimeState = (
   );
 };
 
+const syncRecoveredResidentSession = async (
+  ctx: ClaudeInteractionContext,
+  sessionId: string,
+) => {
+  const recovered = await recoverSessionFromNativeHistory(sessionId);
+  if (!recovered) {
+    return;
+  }
+
+  ctx.broadcastEvent({
+    type: 'session-sync',
+    sessionId,
+    session: recovered,
+  });
+};
+
 export const getSessionInteractionSnapshots = (
   state: ClaudeInteractionState,
 ): Record<string, SessionInteractionState> => {
@@ -972,55 +1013,6 @@ export const getSessionInteractionSnapshots = (
   });
 
   return snapshots;
-};
-
-const createAutonomousAssistantTurn = async (
-  ctx: ClaudeInteractionContext,
-  sessionId: string,
-): Promise<ActiveClaudeTurn | undefined> => {
-  const session = await findSession(sessionId);
-  if (!session) {
-    return undefined;
-  }
-
-  const assistantMessage: ConversationMessage = {
-    id: randomUUID(),
-    role: 'assistant',
-    timestamp: nowLabel(),
-    title: 'Claude background response',
-    content: '',
-    status: 'background',
-  };
-
-  await upsertSessionMessage(sessionId, assistantMessage);
-  ctx.broadcastEvent({
-    type: 'trace',
-    sessionId,
-    message: assistantMessage,
-  });
-
-  return {
-    userMessageId: `background-user-${assistantMessage.id}`,
-    assistantMessageId: assistantMessage.id,
-    stopVersion: readSessionStopVersion(new Map(), sessionId),
-    session,
-    runState: {
-      ...createClaudeRunState(),
-      claudeSessionId: session.claudeSessionId,
-      model: session.model,
-      persistedClaudeSessionId: session.claudeSessionId,
-      persistedModel: session.model,
-      tokenUsage: session.tokenUsage,
-      lastResultContent: undefined,
-      backgroundTasks: new Map(),
-      toolTraces: new Map<string, ConversationMessage>(),
-      toolUseBlockIds: new Map<number, string>(),
-      toolUseJsonBuffers: new Map<string, string>(),
-    },
-    releaseQueuedTurn: () => undefined,
-    resolveCompletion: () => undefined,
-    rejectCompletion: () => undefined,
-  };
 };
 
 const createOwnerBackedOutputTurn = (
@@ -1251,11 +1243,17 @@ export const getResidentIdleTurnOutcome = (runState: ClaudeRunState) => {
     return null;
   }
 
-  const content = resolveAssistantVisibleContent(runState);
-  if (runState.receivedResult || content.trim()) {
+  const content = resolveResidentIdleVisibleContent(runState);
+  if (content.trim()) {
     return {
       kind: 'complete' as const,
       content,
+    };
+  }
+
+  if (runState.receivedResult) {
+    return {
+      kind: 'silent' as const,
     };
   }
 
@@ -2294,17 +2292,6 @@ const ensureResidentClaudeSession = async (
         turn = createOwnerBackedOutputTurn(session, owner.assistantMessageId, owner.runState);
         currentResident.activeOutputTurn = turn;
       }
-      if (
-        !turn &&
-        !owner &&
-        parsed.type === 'system' &&
-        parsed.subtype === 'task_notification'
-      ) {
-        turn = await createAutonomousAssistantTurn(ctx, session.id);
-        if (turn) {
-          currentResident.activeOutputTurn = turn;
-        }
-      }
       const assistantMessageId = owner?.assistantMessageId ?? turn?.assistantMessageId;
       const runState = owner?.runState ?? turn?.runState;
       const releaseTurn = turn?.releaseQueuedTurn ?? (() => undefined);
@@ -2377,8 +2364,8 @@ const ensureResidentClaudeSession = async (
 
       const shouldFinalizeResidentTurn =
         (parsed.type === 'system' &&
-          (parsed.subtype === 'task_notification' ||
-            (parsed.subtype === 'session_state_changed' && parsed.state === 'idle'))) ||
+          parsed.subtype === 'session_state_changed' &&
+          parsed.state === 'idle') ||
         shouldFinalizeResidentAssistantEndTurn(parsed, runState);
       if (shouldFinalizeResidentTurn) {
         const matchedTurn =
@@ -2402,26 +2389,8 @@ const ensureResidentClaudeSession = async (
               matchedTurn.runState,
               idleTurnOutcome.content,
             );
-          } else {
+          } else if (idleTurnOutcome.kind === 'silent') {
             await finalizeToolTraces(ctx, session.id, matchedTurn.runState);
-            await updateAssistantMessage(session.id, matchedTurn.assistantMessageId, (message) => {
-              message.content = idleTurnOutcome.content;
-              message.status = 'error';
-              message.title = 'Claude error';
-            });
-            await setSessionRuntime(session.id, {
-              claudeSessionId: matchedTurn.runState.claudeSessionId,
-              model: matchedTurn.runState.model,
-              preview: idleTurnOutcome.content,
-              timeLabel: 'Just now',
-              tokenUsage: matchedTurn.runState.tokenUsage,
-            });
-            ctx.broadcastEvent({
-              type: 'error',
-              sessionId: session.id,
-              messageId: matchedTurn.assistantMessageId,
-              error: idleTurnOutcome.content,
-            });
           }
 
           if (currentResident.currentTurn === matchedTurn) {
@@ -2443,6 +2412,15 @@ const ensureResidentClaudeSession = async (
         ) {
           await finalizeBackgroundOwnersIfSettled(ctx, session.id, currentResident);
         }
+        syncResidentRuntimeState(ctx, state, session.id, currentResident);
+        if (
+          parsed.type === 'system' &&
+          parsed.subtype === 'session_state_changed' &&
+          parsed.state === 'idle'
+        ) {
+          await syncRecoveredResidentSession(ctx, session.id);
+        }
+      } else if (parsed.type === 'system' && parsed.subtype === 'task_notification') {
         syncResidentRuntimeState(ctx, state, session.id, currentResident);
       }
     }),

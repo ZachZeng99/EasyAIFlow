@@ -277,6 +277,11 @@ export type ClaudeStreamEvent =
       type: 'interaction-sync';
     }
   | {
+      type: 'session-sync';
+      sessionId: string;
+      session: SessionRecord;
+    }
+  | {
       type: 'status';
       sessionId: string;
       sourceSessionId?: string;

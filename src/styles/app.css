@@ -1259,6 +1259,12 @@ p {
   font-size: 0.76rem;
 }
 
+.monitor-tag {
+  border-color: rgba(34, 197, 94, 0.22);
+  background: rgba(34, 197, 94, 0.12);
+  color: #86efac;
+}
+
 .cli-status {
   border-color: rgba(34, 197, 94, 0.24);
   background: rgba(34, 197, 94, 0.12);
@@ -1359,6 +1365,110 @@ p {
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
   touch-action: pan-y;
+}
+
+.monitor-strip {
+  width: min(980px, 100%);
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(34, 197, 94, 0.18);
+  background:
+    linear-gradient(180deg, rgba(34, 197, 94, 0.08), rgba(255, 255, 255, 0.02)),
+    rgba(11, 17, 13, 0.72);
+}
+
+.monitor-strip-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+  margin-bottom: 10px;
+}
+
+.monitor-strip-head strong {
+  font-size: 0.92rem;
+  color: #dcfce7;
+}
+
+.monitor-strip-head span {
+  font-size: 0.75rem;
+  color: rgba(220, 252, 231, 0.72);
+}
+
+.monitor-strip-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.monitor-strip-card {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.monitor-strip-card.status-running {
+  border-color: rgba(96, 165, 250, 0.2);
+}
+
+.monitor-strip-card.status-pending {
+  border-color: rgba(250, 204, 21, 0.2);
+}
+
+.monitor-strip-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.monitor-strip-title strong {
+  min-width: 0;
+  flex: 1;
+  font-size: 0.86rem;
+  color: rgba(245, 239, 230, 0.92);
+}
+
+.monitor-strip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.monitor-strip-dot.status-running {
+  background: #60a5fa;
+  box-shadow: 0 0 12px rgba(96, 165, 250, 0.65);
+}
+
+.monitor-strip-dot.status-pending {
+  background: #facc15;
+  box-shadow: 0 0 12px rgba(250, 204, 21, 0.55);
+}
+
+.monitor-strip-status {
+  flex-shrink: 0;
+  font-family: 'Cascadia Code', 'Consolas', monospace;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  color: rgba(245, 239, 230, 0.64);
+}
+
+.monitor-strip-card p {
+  margin: 8px 0 0;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: rgba(245, 239, 230, 0.82);
+}
+
+.monitor-strip-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-top: 8px;
+  font-size: 0.73rem;
+  color: rgba(245, 239, 230, 0.56);
 }
 
 .message-card {
