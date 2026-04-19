@@ -189,3 +189,18 @@ export const mergeSessionRuntimeStates = (
     updatedAt: Math.max(...present.map((state) => state.updatedAt ?? 0)),
   };
 };
+
+export const mergeGroupRoomRuntimeState = (
+  roomState: SessionRuntimeState | undefined,
+  participantStates: Array<SessionRuntimeState | undefined>,
+): SessionRuntimeState | undefined => {
+  const presentParticipants = participantStates.filter(
+    (state): state is SessionRuntimeState => Boolean(state),
+  );
+
+  if (presentParticipants.length > 0) {
+    return mergeSessionRuntimeStates(presentParticipants);
+  }
+
+  return roomState;
+};

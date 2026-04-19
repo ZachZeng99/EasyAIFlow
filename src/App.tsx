@@ -15,7 +15,7 @@ import {
   type AskUserQuestionDraft,
 } from './data/askUserQuestion';
 import {
-  mergeSessionRuntimeStates,
+  mergeGroupRoomRuntimeState,
   setSessionRuntimeState,
   upsertSessionBackgroundTask,
   type SessionInteractionState,
@@ -548,12 +548,10 @@ export default function App() {
         return directRuntime;
       }
 
-      const inputs: Array<SessionRuntimeState | undefined> = [
-        directRuntime,
-        ...session.group.participants.map(
-          (participant) => sessionInteractions.get(participant.backingSessionId)?.runtime,
-        ),
-      ];
+      const participantRuntimes = session.group.participants.map(
+        (participant) => sessionInteractions.get(participant.backingSessionId)?.runtime,
+      );
+      const inputs: Array<SessionRuntimeState | undefined> = [directRuntime, ...participantRuntimes];
 
       const cache = mergedGroupRuntimeCacheRef.current;
       const cached = cache.get(session.id);
@@ -565,7 +563,7 @@ export default function App() {
         return cached.result;
       }
 
-      const result = mergeSessionRuntimeStates(inputs);
+      const result = mergeGroupRoomRuntimeState(directRuntime, participantRuntimes);
       cache.set(session.id, { inputs, result });
       return result;
     },

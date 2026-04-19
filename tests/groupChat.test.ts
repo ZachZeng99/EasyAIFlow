@@ -85,7 +85,7 @@ const makeRoomSession = (messages: ConversationMessage[] = []): SessionRecord =>
   messages,
 });
 
-run('buildRoomSyncPrompt keeps only the minimal room prompt structure', () => {
+run('buildRoomSyncPrompt tells Claude to either answer directly or do the requested work', () => {
   const prompt = buildRoomSyncPrompt(
     makeRoomSession(),
     makeParticipant(),
@@ -95,8 +95,8 @@ run('buildRoomSyncPrompt keeps only the minimal room prompt structure', () => {
         role: 'user',
         seq: 1,
         timestamp: '4/7 09:42',
-        title: '@codex hi',
-        content: '@codex hi',
+        title: '@codex 看一下这个问题',
+        content: '@codex 看一下这个问题',
         speakerId: 'user',
         speakerLabel: 'You',
         status: 'complete',
@@ -106,14 +106,17 @@ run('buildRoomSyncPrompt keeps only the minimal room prompt structure', () => {
     1,
   );
 
-  assert.match(prompt, /You are Codex in a shared chat room\./);
-  assert.match(prompt, /Write Codex's next reply to TARGET_MESSAGE\./);
+  assert.match(prompt, /<task>/);
+  assert.match(prompt, /You are Codex in a shared chat room about the current workspace\./);
+  assert.match(prompt, /Decide whether TARGET_MESSAGE is asking for:/);
+  assert.match(prompt, /If it is \(2\), do the work before replying\./);
+  assert.match(prompt, /Do not stop at a plan or promise\./);
   assert.match(prompt, /TARGET_MESSAGE:/);
-  assert.match(prompt, /#1 \[You\] \[message status=complete\] title="@codex hi"/);
+  assert.match(prompt, /#1 \[You\] \[message status=complete\] title="@codex 看一下这个问题"/);
   assert.match(prompt, /ROOM_CONTEXT through message #1:/);
-  assert.match(prompt, /Reply as Codex:/);
-  assert.doesNotMatch(prompt, /Requirements:/);
-  assert.doesNotMatch(prompt, /Do not /);
+  assert.match(prompt, /<compact_output_contract>/);
+  assert.match(prompt, /Do not say you will do work later if you have not done it in this turn\./);
+  assert.match(prompt, /<verification_loop>/);
 });
 
 run('buildCodexRoomChatPrompt uses greeting format for simple greetings', () => {
@@ -236,7 +239,7 @@ run('buildCodexRoomChatPrompt treats missing follow-through complaints as active
   assert.match(prompt, /You: @codex 刚才你也这么说的，但是没有后续了，你查一下怎么回事/);
 });
 
-run('buildRoomSyncPrompt does not add special-case guidance for Claude evaluation turns', () => {
+run('buildRoomSyncPrompt keeps Claude evaluation turns grounded in existing room context', () => {
   const prompt = buildRoomSyncPrompt(
     makeRoomSession(),
     makeParticipant(),
@@ -271,8 +274,8 @@ run('buildRoomSyncPrompt does not add special-case guidance for Claude evaluatio
 
   assert.match(prompt, /Participants: Claude, Codex\./);
   assert.match(prompt, /#1 \[Claude\] \[message status=complete\] title="Claude response"/);
-  assert.doesNotMatch(prompt, /summarize or judge what Claude just said/i);
-  assert.doesNotMatch(prompt, /Use Claude's latest message from the transcript directly\./);
+  assert.match(prompt, /Do not ask the user to repeat content that is already shown in ROOM_CONTEXT\./);
+  assert.match(prompt, /If it is only \(1\), answer directly\./);
 });
 
 run('resolveGroupTargets defaults to the last successful responder when the user omits mentions', () => {

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+  mergeGroupRoomRuntimeState,
   mergeSessionRuntimeStates,
   setSessionRuntimeState,
 } from '../src/data/sessionInteraction.ts';
@@ -58,6 +59,32 @@ run('mergeSessionRuntimeStates falls back to the latest offline state when nothi
     processActive: false,
     phase: 'inactive',
     updatedAt: 25,
+  });
+});
+
+run('mergeGroupRoomRuntimeState prefers backing runtimes over stale room runtime', () => {
+  const merged = mergeGroupRoomRuntimeState(
+    makeRuntime({ processActive: true, phase: 'running', updatedAt: 50 }),
+    [makeRuntime({ processActive: true, phase: 'idle', updatedAt: 10 })],
+  );
+
+  assert.deepEqual(merged, {
+    processActive: true,
+    phase: 'idle',
+    updatedAt: 10,
+  });
+});
+
+run('mergeGroupRoomRuntimeState falls back to the room runtime when no backing runtime exists', () => {
+  const merged = mergeGroupRoomRuntimeState(
+    makeRuntime({ processActive: true, phase: 'running', updatedAt: 50 }),
+    [undefined, undefined],
+  );
+
+  assert.deepEqual(merged, {
+    processActive: true,
+    phase: 'running',
+    updatedAt: 50,
   });
 });
 

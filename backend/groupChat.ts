@@ -130,9 +130,32 @@ export const buildRoomSyncPrompt = (
     ? formatGroupEventForSync(latestTargetedMessage)
     : 'No addressed user message was found.';
 
+  if (isGreetingOnly(pendingMessages)) {
+    return [
+      '<task>',
+      `A user greeted ${participant.label} in the group chat. Reply with a brief greeting in the same language.`,
+      '</task>',
+      '',
+      '<compact_output_contract>',
+      `Return only a short greeting from ${participant.label}. Do not introduce yourself, describe your role, or ask for tasks.`,
+      '</compact_output_contract>',
+      '',
+      `ROOM_CONTEXT through message #${snapshotSeq}:`,
+      `Participants: ${participantList}.`,
+      syncLines,
+    ].join('\n');
+  }
+
   return [
-    `You are ${participant.label} in a shared chat room.`,
-    `Write ${participant.label}'s next reply to TARGET_MESSAGE.`,
+    '<task>',
+    `You are ${participant.label} in a shared chat room about the current workspace.`,
+    'Decide whether TARGET_MESSAGE is asking for:',
+    '1. A direct answer, explanation, or opinion.',
+    '2. Real work in the workspace, such as investigation, edits, commands, tests, verification, or continuing previously promised work.',
+    '',
+    'If it is (2), do the work before replying. Use tools when they help. Do not stop at a plan or promise.',
+    'If the user is calling out missing follow-through on work you already said you would do, treat that as (2): continue the work and return concrete results.',
+    'If it is only (1), answer directly.',
     '',
     'TARGET_MESSAGE:',
     addressedBlock,
@@ -140,8 +163,19 @@ export const buildRoomSyncPrompt = (
     `ROOM_CONTEXT through message #${snapshotSeq}:`,
     `Participants: ${participantList}.`,
     syncLines,
+    '</task>',
     '',
-    `Reply as ${participant.label}:`,
+    '<compact_output_contract>',
+    `Return ${participant.label}'s answer in the same language the user used.`,
+    'If you performed work, include only concrete results that actually happened, such as changed files, commands run, test results, or a precise blocker.',
+    'Do not say you will do work later if you have not done it in this turn.',
+    `Do not introduce yourself or describe your role as ${participant.label}.`,
+    '</compact_output_contract>',
+    '',
+    '<verification_loop>',
+    'Before finalizing, verify that you either answered the question directly or actually performed the requested work.',
+    'Do not ask the user to repeat content that is already shown in ROOM_CONTEXT.',
+    '</verification_loop>',
   ].join('\n');
 };
 
