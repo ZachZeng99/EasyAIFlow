@@ -3,6 +3,7 @@ import {
   getAssistantMessageSnapshot,
   getResidentIdleTurnOutcome,
   isClaudeAssistantEndTurnEvent,
+  shouldFinalizeResidentAssistantEndTurn,
 } from '../backend/claudeInteraction.ts';
 import type { ClaudeRunState } from '../backend/claudeInteractionState.ts';
 import { createClaudeRunState } from '../electron/claudeRunState.ts';
@@ -122,5 +123,37 @@ run('isClaudeAssistantEndTurnEvent detects assistant end_turn payloads', () => {
       },
     }),
     false,
+  );
+});
+
+run('shouldFinalizeResidentAssistantEndTurn ignores thinking-only end_turn packets', () => {
+  assert.equal(
+    shouldFinalizeResidentAssistantEndTurn(
+      {
+        type: 'assistant',
+        message: {
+          stop_reason: 'end_turn',
+        },
+      },
+      makeRunState({
+        lastToolResultContent: '| Export | `texture` |',
+      }),
+    ),
+    false,
+  );
+
+  assert.equal(
+    shouldFinalizeResidentAssistantEndTurn(
+      {
+        type: 'assistant',
+        message: {
+          stop_reason: 'end_turn',
+        },
+      },
+      makeRunState({
+        content: 'This is the real assistant reply.',
+      }),
+    ),
+    true,
   );
 });

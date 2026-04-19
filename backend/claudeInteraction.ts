@@ -1282,6 +1282,13 @@ export const isClaudeAssistantEndTurnEvent = (payload: unknown) => {
   );
 };
 
+export const shouldFinalizeResidentAssistantEndTurn = (
+  payload: unknown,
+  runState: ClaudeRunState,
+) =>
+  isClaudeAssistantEndTurnEvent(payload) &&
+  Boolean(runState.content.trim() || runState.completedContent?.trim() || runState.lastResultContent?.trim());
+
 export const shouldForkResidentClaudeSession = (input: {
   session: Pick<SessionSummary, 'claudeSessionId' | 'sessionKind'>;
   persistedModel?: string;
@@ -2372,7 +2379,7 @@ const ensureResidentClaudeSession = async (
         (parsed.type === 'system' &&
           (parsed.subtype === 'task_notification' ||
             (parsed.subtype === 'session_state_changed' && parsed.state === 'idle'))) ||
-        isClaudeAssistantEndTurnEvent(parsed);
+        shouldFinalizeResidentAssistantEndTurn(parsed, runState);
       if (shouldFinalizeResidentTurn) {
         const matchedTurn =
           currentResident.currentTurn?.assistantMessageId === assistantMessageId &&
