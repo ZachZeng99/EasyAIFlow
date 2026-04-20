@@ -486,13 +486,16 @@ export const resolveMirroredAssistantRoomMessageId = (
   return fallbackTarget?.id ?? null;
 };
 
-const createMirroredContext = (
+export const createMirroredContext = (
   ctx: ClaudeInteractionContext,
   spec: GroupMirrorSpec,
-): ClaudeInteractionContext => {
+  options?: {
+    forwardOriginalEvents?: boolean;
+  },
+) => {
   let mirrorQueue = Promise.resolve();
 
-  return {
+  const mirroredCtx: ClaudeInteractionContext = {
     ...ctx,
     broadcastEvent: (event) => {
       if (!('sessionId' in event)) {
@@ -500,6 +503,10 @@ const createMirroredContext = (
       }
       if (event.sessionId !== spec.backingSessionId) {
         return;
+      }
+
+      if (options?.forwardOriginalEvents) {
+        ctx.broadcastEvent(event);
       }
 
       // Serialize mirrored event processing to maintain delta ordering and
@@ -547,6 +554,11 @@ const createMirroredContext = (
           );
         });
     },
+  };
+
+  return {
+    ctx: mirroredCtx,
+    flush: () => mirrorQueue,
   };
 };
 
@@ -670,7 +682,9 @@ const runGroupParticipantTurn = async (
     participant,
     roomAssistantMessageId: roomAssistantMessage.id,
   };
-  const mirroredCtx = createMirroredContext(ctx, mirrorSpec);
+  const { ctx: mirroredCtx, flush: flushMirroredEvents } = createMirroredContext(ctx, mirrorSpec, {
+    forwardOriginalEvents: participant.provider === 'codex',
+  });
 
   // For Claude participants, register a persistent broadcast interceptor on the
   // backing session so that events produced by the resident stdout processor
@@ -718,8 +732,8 @@ const runGroupParticipantTurn = async (
   }
 
   try {
-    // Codex: pass mirroredCtx directly — runCodexAppServerTurn is synchronous
-    // and uses the passed ctx throughout, so mirroring works correctly.
+    // Codex: pass mirroredCtx directly and keep forwarding the original backing
+    // events as well so hidden participant runtime stays in sync with the room.
     // Claude: pass the original ctx — the interceptor registered above handles
     // mirroring.  Passing mirroredCtx here would cause double-mirroring since
     // the resident proxy also dispatches through the interceptor.
@@ -773,12 +787,14 @@ const runGroupParticipantTurn = async (
     if (backgroundSettled) {
       await backgroundSettled;
     }
+    await flushMirroredEvents();
   } finally {
     // Safety net: always clean up the interceptor even if the turn throws.
     if (interceptor) {
       removeSessionBroadcastInterceptor(state, backingSession.id, interceptor);
       interceptorSettled?.();
     }
+    await flushMirroredEvents();
   }
 };
 

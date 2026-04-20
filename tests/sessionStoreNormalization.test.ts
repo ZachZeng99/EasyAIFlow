@@ -269,6 +269,89 @@ run('normalizeProjectsFromPersistence rehydrates stale group room placeholders f
   assert.equal(message?.content, 'Final backing answer.');
 });
 
+run('normalizeProjectsFromPersistence does not reuse an older backing reply when the latest backing turn never answered', () => {
+  const projects = makeProject(
+    makeMessage({
+      id: 'room-assistant-1',
+      status: 'streaming',
+      title: 'Codex response',
+      content: '',
+      provider: 'codex',
+      speakerId: 'codex',
+      speakerLabel: 'Codex',
+      sourceSessionId: 'member-codex',
+    }),
+  );
+  const room = projects[0]?.dreams[0]?.sessions[0] as SessionRecord;
+  room.provider = undefined;
+  room.model = '';
+  room.sessionKind = 'group';
+  room.group = {
+    kind: 'room',
+    nextMessageSeq: 3,
+    participants: [
+      {
+        id: 'codex',
+        label: 'Codex',
+        provider: 'codex',
+        backingSessionId: 'member-codex',
+        enabled: true,
+        lastAppliedRoomSeq: 2,
+      },
+    ],
+  };
+
+  const backing: SessionRecord = {
+    ...room,
+    id: 'member-codex',
+    title: '[Group] Test room',
+    provider: 'codex',
+    model: 'gpt-5.4',
+    sessionKind: 'group_member',
+    hidden: true,
+    group: {
+      kind: 'member',
+      roomSessionId: room.id,
+      participantId: 'codex',
+    },
+    messages: [
+      makeMessage({
+        id: 'backing-user-1',
+        role: 'user',
+        status: 'complete',
+        title: 'Prompt',
+        content: '<task>\nPrompt one\n</task>',
+      }),
+      makeMessage({
+        id: 'backing-assistant-1',
+        role: 'assistant',
+        status: 'complete',
+        title: 'Earlier answer',
+        content: 'Earlier answer.',
+        provider: 'codex',
+        speakerId: 'codex',
+        speakerLabel: 'Codex',
+      }),
+      makeMessage({
+        id: 'backing-user-2',
+        role: 'user',
+        status: 'complete',
+        title: 'Prompt',
+        content: '<task>\nLatest prompt\n</task>',
+      }),
+    ],
+  };
+  projects[0]?.dreams[0]?.sessions.push(backing);
+
+  const normalized = normalizeProjectsFromPersistence(projects);
+  const normalizedRoom = normalized[0]?.dreams[0]?.sessions.find((session) => session.id === room.id) as SessionRecord | undefined;
+  const message = normalizedRoom?.messages?.[0];
+
+  assert.equal(message?.status, 'error');
+  assert.equal(message?.title, 'Codex error');
+  assert.equal(message?.content, 'Previous Codex run did not finish.');
+});
+
 run('normalizeProjectsForCache keeps group sessions provider-less', () => {
   const projects = makeProject(
     makeMessage({

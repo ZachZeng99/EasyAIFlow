@@ -2941,8 +2941,18 @@ export const getProjects = async () => {
 };
 
 export const getProjectsForBootstrap = async () => {
-  const state = await loadState();
-  return summarizeProjectsForBootstrap(state.projects);
+  if (cachedState) {
+    return summarizeProjectsForBootstrap(cachedState.projects);
+  }
+
+  try {
+    const raw = await readFile(storePath(), 'utf8');
+    const parsed = ensureStateShape(JSON.parse(raw));
+    const normalizedProjects = normalizeProjectsFromPersistence(normalizeProjects(parsed.projects));
+    return summarizeProjectsForBootstrap(normalizedProjects);
+  } catch {
+    return summarizeProjectsForBootstrap(buildInitialProjects());
+  }
 };
 
 const forEachSession = (projects: ProjectRecord[], visitor: (session: SessionRecord, dreamName: string, projectName: string) => void) => {

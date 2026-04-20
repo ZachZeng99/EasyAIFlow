@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   buildRoomSyncPrompt,
   buildCodexRoomChatPrompt,
+  createMirroredContext,
   ignoreMissingSessionError,
   resolveMirroredAssistantRoomMessageId,
 } from '../backend/groupChat.ts';
@@ -435,6 +436,45 @@ run('resolveMirroredAssistantRoomMessageId falls back to the latest pending plac
   );
 
   assert.equal(resolved, 'assistant-new');
+});
+
+await runAsync('createMirroredContext forwards backing events for Codex rooms and flush waits for mirrored delivery', async () => {
+  const recordedEvents: Array<Record<string, unknown>> = [];
+  const mirror = createMirroredContext(
+    {
+      broadcastEvent: (event: Record<string, unknown>) => {
+        recordedEvents.push(event);
+      },
+    } as never,
+    {
+      roomSessionId: 'room-1',
+      backingSessionId: 'member-codex',
+      participant: makeParticipant(),
+      roomAssistantMessageId: 'room-assistant-1',
+    },
+    {
+      forwardOriginalEvents: true,
+    },
+  );
+
+  mirror.ctx.broadcastEvent({
+    type: 'runtime-state',
+    sessionId: 'member-codex',
+    runtime: {
+      processActive: true,
+      phase: 'idle',
+      updatedAt: 1,
+    },
+  } as never);
+
+  assert.equal(recordedEvents.length, 1);
+  assert.equal(recordedEvents[0]?.sessionId, 'member-codex');
+
+  await mirror.flush();
+
+  assert.equal(recordedEvents.length, 2);
+  assert.equal(recordedEvents[1]?.sessionId, 'room-1');
+  assert.equal(recordedEvents[1]?.sourceSessionId, 'member-codex');
 });
 
 await runAsync('ignoreMissingSessionError swallows missing session failures', async () => {

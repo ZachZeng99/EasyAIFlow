@@ -41,6 +41,43 @@ const canBeRehydratedFromBackingSession = (message: SessionRecord['messages'][nu
     )
   );
 
+const getLatestTerminalBackingAssistant = (backingSession: SessionRecord | undefined) => {
+  const messages = backingSession?.messages ?? [];
+  let latestUserIndex = -1;
+  let latestAssistant:
+    | (SessionRecord['messages'][number] & {
+        __index: number;
+      })
+    | null = null;
+
+  for (let index = 0; index < messages.length; index += 1) {
+    const candidate = messages[index];
+    if (!candidate) {
+      continue;
+    }
+
+    if (candidate.role === 'user') {
+      latestUserIndex = index;
+      continue;
+    }
+
+    if (candidate.role !== 'assistant' || isPendingAssistantStatus(candidate.status)) {
+      continue;
+    }
+
+    latestAssistant = {
+      ...candidate,
+      __index: index,
+    };
+  }
+
+  if (!latestAssistant) {
+    return null;
+  }
+
+  return latestAssistant.__index > latestUserIndex ? latestAssistant : null;
+};
+
 const rehydrateGroupRoomMessagesFromBackingSessions = (projects: ProjectRecord[]) => {
   const sessionsById = new Map<string, SessionRecord>();
   projects.forEach((project) => {
@@ -73,12 +110,7 @@ const rehydrateGroupRoomMessagesFromBackingSessions = (projects: ProjectRecord[]
             }
 
             const backingSession = sessionsById.get(message.sourceSessionId);
-            const backingAssistant = [...(backingSession?.messages ?? [])]
-              .reverse()
-              .find(
-                (candidate) =>
-                  candidate.role === 'assistant' && !isPendingAssistantStatus(candidate.status),
-              );
+            const backingAssistant = getLatestTerminalBackingAssistant(backingSession);
 
             if (!backingAssistant) {
               return message;
