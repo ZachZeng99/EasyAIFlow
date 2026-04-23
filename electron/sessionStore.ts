@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { getRuntimePaths } from '../backend/runtimePaths.js';
 import { allSessions, projectTree } from '../src/data/mockSessions.js';
@@ -42,6 +42,7 @@ import {
   toClaudeProjectDirName,
 } from './workspacePaths.js';
 import { filterVisibleProjects } from './projectVisibility.js';
+import { mergeSessionStoreStates } from './sessionStoreMerge.js';
 import { normalizeProjectsForCache, normalizeProjectsFromPersistence } from './sessionStoreNormalization.js';
 import type {
   BranchSnapshot,
@@ -87,6 +88,7 @@ type NativeImportCache = {
 };
 
 let cachedState: AppState | null = null;
+let cachedStateMtimeMs: number | null = null;
 const storePath = () => path.join(getRuntimePaths().userDataPath, 'easyaiflow-sessions.json');
 const nativeClaudeProjectsRoot = () =>
   path.join(process.env.USERPROFILE ?? getRuntimePaths().homePath, '.claude', 'projects');
@@ -823,6 +825,48 @@ const reconstructRecoveredRoomMessages = (
     .map(([, message]) => message);
 };
 
+const getRecoveredParticipantLastAppliedRoomSeqs = (
+  roomSession: SessionRecord,
+  participantBackings: Map<GroupParticipantId, SessionRecord>,
+) => {
+  if (roomSession.group?.kind !== 'room') {
+    return {} as Partial<Record<GroupParticipantId, number>>;
+  }
+
+  const recovered: Partial<Record<GroupParticipantId, number>> = {};
+
+  for (const participant of roomSession.group.participants) {
+    const backing = participantBackings.get(participant.id);
+    if (!backing) {
+      continue;
+    }
+
+    let maxSnapshotSeq = 0;
+    for (const message of backing.messages ?? []) {
+      if (message.role !== 'user') {
+        continue;
+      }
+
+      const parsedPrompt = parseRecoveredClaudeGroupPrompt(message.content, message.timestamp);
+      if (parsedPrompt) {
+        maxSnapshotSeq = Math.max(maxSnapshotSeq, parsedPrompt.snapshotSeq);
+        continue;
+      }
+
+      const parsedCodexPrompt = parseRecoveredCodexTranscriptPrompt(message.content, message.timestamp);
+      if (parsedCodexPrompt) {
+        maxSnapshotSeq = Math.max(maxSnapshotSeq, parsedCodexPrompt.length);
+      }
+    }
+
+    if (maxSnapshotSeq > 0) {
+      recovered[participant.id] = maxSnapshotSeq;
+    }
+  }
+
+  return recovered;
+};
+
 const getRecoveredRoomMessageMaxSeq = (messages: ConversationMessage[] | undefined) =>
   Math.max(
     0,
@@ -873,12 +917,12 @@ const shouldApplyRecoveredRoomMessages = (
 const applyRecoveredRoomMessages = (
   roomSession: SessionRecord,
   reconstructedMessages: ConversationMessage[],
+  participantLastAppliedRoomSeqs: Partial<Record<GroupParticipantId, number>>,
 ) => {
   if (roomSession.group?.kind !== 'room' || reconstructedMessages.length === 0) {
     return;
   }
 
-  const hadExistingMessages = (roomSession.messages ?? []).length > 0;
   const maxSeq = getRecoveredRoomMessageMaxSeq(reconstructedMessages);
   roomSession.messages = reconstructedMessages;
   roomSession.group = {
@@ -886,9 +930,8 @@ const applyRecoveredRoomMessages = (
     nextMessageSeq: maxSeq + 1,
     participants: roomSession.group.participants.map((participant) => ({
       ...participant,
-      lastAppliedRoomSeq: hadExistingMessages
-        ? Math.min(participant.lastAppliedRoomSeq, maxSeq)
-        : maxSeq,
+      lastAppliedRoomSeq:
+        participantLastAppliedRoomSeqs[participant.id] ?? participant.lastAppliedRoomSeq,
     })),
   };
   const latest = reconstructedMessages[reconstructedMessages.length - 1];
@@ -1035,8 +1078,16 @@ function recoverProjectGroupSessions(project: ProjectRecord): ProjectRecord {
     };
 
     const reconstructedMessages = reconstructRecoveredRoomMessages(roomSession, participantBackings);
+    const participantLastAppliedRoomSeqs = getRecoveredParticipantLastAppliedRoomSeqs(
+      roomSession,
+      participantBackings,
+    );
     if (shouldApplyRecoveredRoomMessages(roomSession.messages, reconstructedMessages)) {
-      applyRecoveredRoomMessages(roomSession, reconstructedMessages);
+      applyRecoveredRoomMessages(
+        roomSession,
+        reconstructedMessages,
+        participantLastAppliedRoomSeqs,
+      );
     }
 
     sortedBucket.forEach((session) => {
@@ -1072,8 +1123,16 @@ function recoverProjectGroupSessions(project: ProjectRecord): ProjectRecord {
     }
 
     const reconstructedMessages = reconstructRecoveredRoomMessages(roomSession, participantBackings);
+    const participantLastAppliedRoomSeqs = getRecoveredParticipantLastAppliedRoomSeqs(
+      roomSession,
+      participantBackings,
+    );
     if (shouldApplyRecoveredRoomMessages(roomSession.messages, reconstructedMessages)) {
-      applyRecoveredRoomMessages(roomSession, reconstructedMessages);
+      applyRecoveredRoomMessages(
+        roomSession,
+        reconstructedMessages,
+        participantLastAppliedRoomSeqs,
+      );
     }
   }
 
@@ -2830,6 +2889,12 @@ const buildInitialProjects = () => {
 };
 
 const cloneProjects = (projects: ProjectRecord[]) => JSON.parse(JSON.stringify(projects)) as ProjectRecord[];
+const cacheState = (state: AppState) => {
+  cachedState = {
+    projects: normalizeProjectsForCache(normalizeProjects(cloneProjects(state.projects))),
+    deletedImports: normalizeDeletedImports(state.deletedImports),
+  };
+};
 const cloneVisibleProjects = (projects: ProjectRecord[]) => cloneProjects(filterVisibleProjects(projects));
 const summarizeProjectsForBootstrap = (projects: ProjectRecord[]) =>
   filterVisibleProjects(projects).map((project) => ({
@@ -2859,6 +2924,25 @@ const ensureStateShape = (value: unknown): AppState => {
   };
 };
 
+const readStateFromDisk = async () => {
+  try {
+    const filePath = storePath();
+    const [raw, fileStat] = await Promise.all([
+      readFile(filePath, 'utf8'),
+      stat(filePath),
+    ]);
+    return {
+      state: ensureStateShape(JSON.parse(raw)),
+      mtimeMs: fileStat.mtimeMs,
+    };
+  } catch {
+    return {
+      state: null,
+      mtimeMs: null,
+    };
+  }
+};
+
 const hydrateLoadedState = async (state: AppState) => {
   const importCache: NativeImportCache = {};
   for (const project of state.projects) {
@@ -2886,10 +2970,17 @@ export const loadState = async () => {
   }
 
   try {
-    const raw = await readFile(storePath(), 'utf8');
-    cachedState = ensureStateShape(JSON.parse(raw));
+    const loaded = await readStateFromDisk();
+    if (loaded.state) {
+      cachedState = loaded.state;
+      cachedStateMtimeMs = loaded.mtimeMs;
+    } else {
+      cachedState = { projects: buildInitialProjects(), deletedImports: createEmptyDeletedImports() };
+      cachedStateMtimeMs = null;
+    }
   } catch {
     cachedState = { projects: buildInitialProjects(), deletedImports: createEmptyDeletedImports() };
+    cachedStateMtimeMs = null;
   }
 
   await hydrateLoadedState(cachedState);
@@ -2908,14 +2999,26 @@ const writeToDisk = async () => {
     return;
   }
   await mkdir(path.dirname(storePath()), { recursive: true });
+  const onDisk = await readStateFromDisk();
+  if (
+    onDisk.state &&
+    (
+      cachedStateMtimeMs === null ||
+      (onDisk.mtimeMs !== null && onDisk.mtimeMs !== cachedStateMtimeMs)
+    )
+  ) {
+    cacheState(mergeSessionStoreStates(onDisk.state, cachedState));
+  }
   await writeFile(storePath(), JSON.stringify(cachedState, null, 2), 'utf8');
+  try {
+    cachedStateMtimeMs = (await stat(storePath())).mtimeMs;
+  } catch {
+    cachedStateMtimeMs = null;
+  }
 };
 
 export const saveState = async (state: AppState) => {
-  cachedState = {
-    projects: normalizeProjectsForCache(normalizeProjects(cloneProjects(state.projects))),
-    deletedImports: normalizeDeletedImports(state.deletedImports),
-  };
+  cacheState(state);
 
   if (pendingSaveTimer) {
     clearTimeout(pendingSaveTimer);

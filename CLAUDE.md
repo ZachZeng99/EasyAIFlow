@@ -93,4 +93,5 @@ Each has a pending request registry in the backend, a parser in `claudeControlMe
 - No ESLint or Prettier configured; TypeScript strict mode is the primary code quality gate
 - Vite dev server runs on port 4173; API proxy forwards `/api` to port 8787
 - Session persistence path: platform-specific via `electron/sessionStore.ts` (typically `~/.EasyAIFlow/`)
+- Claude Code source reference is available at `D:\AIAgent\claude-code-sourcemap`; all Claude-related changes must be reviewed against that project before implementation
 - The project requires a locally installed and working `claude` CLI command

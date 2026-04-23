@@ -24,6 +24,7 @@ function ContextPanelComponent({
   onRequestDiff,
 }: ContextPanelProps) {
   const [selectedFilePath, setSelectedFilePath] = useState<string>('');
+  const [requestedFilePath, setRequestedFilePath] = useState<string>('');
   const [diffPayload, setDiffPayload] = useState<DiffPayload | null>(null);
   const [isLoadingDiff, setIsLoadingDiff] = useState(false);
   const backgroundTasks = interaction?.backgroundTasks ?? [];
@@ -61,11 +62,12 @@ function ContextPanelComponent({
       ? sessionChangedFiles[0]?.filePath
       : gitSnapshot.changedFiles[0]?.path;
     setSelectedFilePath(firstPath ?? '');
+    setRequestedFilePath('');
     setDiffPayload(null);
   }, [sessionChangedFiles, gitSnapshot.changedFiles, hasSessionChanges, session.id]);
 
   useEffect(() => {
-    if (!selectedFilePath) {
+    if (!selectedFilePath || selectedFilePath !== requestedFilePath) {
       setDiffPayload(null);
       return;
     }
@@ -87,7 +89,7 @@ function ContextPanelComponent({
     };
 
     void loadDiff();
-  }, [onRequestDiff, selectedFilePath]);
+  }, [onRequestDiff, requestedFilePath, selectedFilePath]);
 
   const formatTaskDuration = (durationMs: number) => {
     if (durationMs < 1000) {
@@ -191,7 +193,10 @@ function ContextPanelComponent({
                 key={file.filePath}
                 type="button"
                 className={`changed-file-card diff-trigger${selectedFilePath === file.filePath ? ' selected' : ''}`}
-                onClick={() => setSelectedFilePath(file.filePath)}
+                onClick={() => {
+                  setSelectedFilePath(file.filePath);
+                  setRequestedFilePath(file.filePath);
+                }}
               >
                 <div className="changed-file-head">
                   <strong>{file.filePath}</strong>
@@ -206,7 +211,10 @@ function ContextPanelComponent({
                 key={file.path}
                 type="button"
                 className={`changed-file-card diff-trigger${selectedFilePath === file.path ? ' selected' : ''}`}
-                onClick={() => setSelectedFilePath(file.path)}
+                onClick={() => {
+                  setSelectedFilePath(file.path);
+                  setRequestedFilePath(file.path);
+                }}
               >
                 <div className="changed-file-head">
                   <strong>{file.path}</strong>
@@ -233,6 +241,8 @@ function ContextPanelComponent({
             </div>
             {isLoadingDiff ? (
               <pre>Loading diff...</pre>
+            ) : !diffPayload ? (
+              <pre>Click the file again to load its diff.</pre>
             ) : (
               <DiffContent payload={diffPayload} />
             )}

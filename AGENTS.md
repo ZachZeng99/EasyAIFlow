@@ -99,4 +99,5 @@ Each interaction type has a pending-request registry in the backend, a parser in
 - No ESLint or Prettier is configured; TypeScript strict mode is the primary quality gate.
 - The Vite dev server defaults to port `4273`; the web server defaults to port `8887`.
 - Session persistence path is platform-specific via `electron/sessionStore.ts` (typically `~/.EasyAIFlow/`).
+- Claude Code source reference is available at `D:\AIAgent\claude-code-sourcemap`; all Claude-related changes must be reviewed against that project before implementation.
 - The project expects a working local `claude` CLI for Claude sessions and a working local `codex` CLI for Codex sessions. Group rooms use both when both participants are enabled.

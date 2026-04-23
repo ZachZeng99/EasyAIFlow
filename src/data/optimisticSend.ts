@@ -1,5 +1,12 @@
 import { getProviderDisplayName } from './sessionProvider.js';
-import type { ContextReference, MessageAttachment, PendingAttachment, ProjectRecord, SessionRecord } from './types.js';
+import type {
+  ContextReference,
+  ConversationMessage,
+  MessageAttachment,
+  PendingAttachment,
+  ProjectRecord,
+  SessionRecord,
+} from './types.js';
 
 const cloneReferences = (references: ContextReference[]) => references.map((reference) => ({ ...reference }));
 
@@ -88,3 +95,88 @@ export const buildOptimisticSendState = ({
     assistantMessageId,
   };
 };
+
+export const reconcileOptimisticSendMessages = ({
+  projects,
+  sessionId,
+  optimisticUserMessageId,
+  optimisticAssistantMessageId,
+  queuedUserMessageId,
+  queuedAssistantMessageId,
+}: {
+  projects: ProjectRecord[];
+  sessionId: string;
+  optimisticUserMessageId: string;
+  optimisticAssistantMessageId: string;
+  queuedUserMessageId: string;
+  queuedAssistantMessageId: string;
+}) =>
+  updateSessionInProjects(projects, sessionId, (session) => {
+    const messages = [...(session.messages ?? [])];
+    const byId = new Map(messages.map((message) => [message.id, message] as const));
+
+    const remapMessage = (
+      optimisticMessageId: string,
+      queuedMessageId: string,
+    ) => {
+      if (!queuedMessageId) {
+        return;
+      }
+
+      const optimisticMessage = byId.get(optimisticMessageId);
+      if (!optimisticMessage) {
+        return;
+      }
+
+      if (!byId.has(queuedMessageId)) {
+        byId.set(queuedMessageId, {
+          ...optimisticMessage,
+          id: queuedMessageId,
+        });
+      }
+
+      byId.delete(optimisticMessageId);
+    };
+
+    remapMessage(optimisticUserMessageId, queuedUserMessageId);
+    remapMessage(optimisticAssistantMessageId, queuedAssistantMessageId);
+
+    const nextMessages: ConversationMessage[] = [];
+    const seen = new Set<string>();
+
+    const pushIfPresent = (messageId: string) => {
+      if (!messageId || seen.has(messageId)) {
+        return;
+      }
+
+      const message = byId.get(messageId);
+      if (!message) {
+        return;
+      }
+
+      seen.add(messageId);
+      nextMessages.push(message);
+    };
+
+    messages.forEach((message) => {
+      if (message.id === optimisticUserMessageId) {
+        pushIfPresent(queuedUserMessageId);
+        return;
+      }
+
+      if (message.id === optimisticAssistantMessageId) {
+        pushIfPresent(queuedAssistantMessageId);
+        return;
+      }
+
+      pushIfPresent(message.id);
+    });
+
+    pushIfPresent(queuedUserMessageId);
+    pushIfPresent(queuedAssistantMessageId);
+
+    return {
+      ...session,
+      messages: nextMessages,
+    };
+  });

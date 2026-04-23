@@ -7,7 +7,8 @@ import { bridge } from './bridge';
 import { ManageDialog } from './components/ManageDialog';
 import { ChatThread } from './components/ChatThread';
 import { ContextPanel } from './components/ContextPanel';
-import { buildOptimisticSendState } from './data/optimisticSend';
+import { buildOptimisticSendState, reconcileOptimisticSendMessages } from './data/optimisticSend';
+import { mergeProjectSnapshots } from './data/projectSnapshots';
 import { getLastGroupResponder } from './data/groupChat';
 import {
   buildAskUserQuestionFollowUpPrompt,
@@ -122,31 +123,6 @@ const updateSessionInProjects = (
       ),
     })),
   }));
-
-const mergeProjectSnapshots = (currentProjects: ProjectRecord[], nextProjects: ProjectRecord[]) => {
-  const currentSessions = new Map(flattenSessions(currentProjects).map((session) => [session.id, session]));
-
-  return nextProjects.map((project) => ({
-    ...project,
-    dreams: project.dreams.map((dream) => ({
-      ...dream,
-      sessions: dream.sessions.map((session) => {
-        const incomingSession = session as SessionRecord;
-        const existingSession = currentSessions.get(incomingSession.id);
-
-        if (!existingSession || incomingSession.messagesLoaded !== false) {
-          return incomingSession;
-        }
-
-        return {
-          ...incomingSession,
-          messages: existingSession.messages ?? [],
-          messagesLoaded: existingSession.messagesLoaded,
-        };
-      }),
-    })),
-  }));
-};
 
 const applyClaudeEvent = (projects: ProjectRecord[], event: ClaudeStreamEvent) =>
   event.type === 'interaction-sync'
@@ -1437,7 +1413,18 @@ export default function App() {
         effort,
       });
 
-      if (result?.projects) {
+      if (optimisticSend) {
+        setProjects((current) =>
+          reconcileOptimisticSendMessages({
+            projects: current,
+            sessionId: selectedSession.id,
+            optimisticUserMessageId: optimisticSend.userMessageId,
+            optimisticAssistantMessageId: optimisticSend.assistantMessageId,
+            queuedUserMessageId: result.queued.userMessageId,
+            queuedAssistantMessageId: result.queued.assistantMessageId,
+          }),
+        );
+      } else if (requestsGroupMode && result?.projects) {
         replaceProjects(result.projects);
       }
     } catch (error) {
@@ -1720,7 +1707,7 @@ export default function App() {
         }
 
         const followUpPrompt = buildAskUserQuestionFollowUpPrompt(askQuestion.questions, response);
-        const result = await bridge.sendMessage({
+        await bridge.sendMessage({
           sessionId: targetSession.id,
           prompt: followUpPrompt,
           session: targetSession,
@@ -1728,10 +1715,6 @@ export default function App() {
           model: resolveRequestedModelArg(model, modelSelectionSource),
           effort,
         });
-
-        if (result?.projects) {
-          replaceProjects(result.projects);
-        }
       }
 
       updateSessionInteraction(sessionId, (s) => ({
@@ -1770,7 +1753,7 @@ export default function App() {
         }
 
         const followUpPrompt = buildPlanModeFollowUpPrompt(planRequest.request, payload);
-        const result = await bridge.sendMessage({
+        await bridge.sendMessage({
           sessionId: targetSession.id,
           prompt: followUpPrompt,
           session: targetSession,
@@ -1778,10 +1761,6 @@ export default function App() {
           model: resolveRequestedModelArg(model, modelSelectionSource),
           effort,
         });
-
-        if (result?.projects) {
-          replaceProjects(result.projects);
-        }
       }
 
       updateSessionInteraction(sessionId, (s) => ({

@@ -1976,6 +1976,41 @@ export const markPreparedClaudeRunStarted = async (ctx: ClaudeInteractionContext
   });
 };
 
+const isPendingAssistantStatus = (status: ConversationMessage['status']) =>
+  status === 'queued' || status === 'streaming' || status === 'running' || status === 'background';
+
+export const markPreparedClaudeRunErrored = async (
+  ctx: ClaudeInteractionContext,
+  prepared: PreparedClaudeRun,
+  error: unknown,
+) => {
+  const errorMessage =
+    error instanceof Error && error.message.trim()
+      ? error.message
+      : 'Claude failed to start this message.';
+  const session = await findSession(prepared.sessionId);
+  const target = session?.messages?.find((message) => message.id === prepared.assistantMessageId);
+  if (!target || target.role !== 'assistant' || !isPendingAssistantStatus(target.status)) {
+    return;
+  }
+
+  await updateAssistantMessage(prepared.sessionId, prepared.assistantMessageId, (message) => {
+    message.content = errorMessage;
+    message.status = 'error';
+    message.title = 'Claude error';
+  });
+  await setSessionRuntime(prepared.sessionId, {
+    preview: errorMessage,
+    timeLabel: 'Just now',
+  });
+  ctx.broadcastEvent({
+    type: 'error',
+    sessionId: prepared.sessionId,
+    messageId: prepared.assistantMessageId,
+    error: errorMessage,
+  });
+};
+
 const createActiveTurn = (
   prepared: PreparedClaudeRun,
   releaseQueuedTurn: () => void,
@@ -2610,8 +2645,9 @@ export const runClaudePrint = async (
     queued ? 'queued' : 'streaming',
   );
   void (async () => {
+    let prepared: PreparedClaudeRun | undefined;
     try {
-      const prepared = await preparedRun;
+      prepared = await preparedRun;
       await scheduledRun.whenReady;
       if (readSessionStopVersion(state.sessionStopVersions, sessionId) !== prepared.stopVersion) {
         const stopped = await stopAssistantMessage(prepared.sessionId, prepared.assistantMessageId);
@@ -2630,8 +2666,20 @@ export const runClaudePrint = async (
       }
       await markPreparedClaudeRunStarted(ctx, prepared);
       await executePreparedClaudeRun(ctx, state, prepared, scheduledRun.release);
-    } catch {
+    } catch (error) {
       scheduledRun.release();
+      if (prepared) {
+        console.error('[CLAUDE] Failed to start prepared run', prepared.sessionId, error);
+        try {
+          await markPreparedClaudeRunErrored(ctx, prepared, error);
+        } catch (reportError) {
+          console.error(
+            '[CLAUDE] Failed to report prepared run start error',
+            prepared.sessionId,
+            reportError,
+          );
+        }
+      }
     }
   })();
   void scheduledRun.completion.catch(() => undefined);
@@ -2663,8 +2711,9 @@ export const runClaudePrintAndWait = async (
 ) => {
   const queued = residentHasForegroundTurn(getResidentSession(state, sessionId));
   const scheduledRun = enqueueSessionRun(state.sessionRunQueue, sessionId);
+  let prepared: PreparedClaudeRun | undefined;
   try {
-    const prepared = await prepareClaudeRun(
+    prepared = await prepareClaudeRun(
       ctx,
       state,
       sessionId,
@@ -2703,6 +2752,18 @@ export const runClaudePrintAndWait = async (
     };
   } catch (error) {
     scheduledRun.release();
+    if (prepared) {
+      console.error('[CLAUDE] Failed to start prepared run', prepared.sessionId, error);
+      try {
+        await markPreparedClaudeRunErrored(ctx, prepared, error);
+      } catch (reportError) {
+        console.error(
+          '[CLAUDE] Failed to report prepared run start error',
+          prepared.sessionId,
+          reportError,
+        );
+      }
+    }
     throw error;
   }
 };

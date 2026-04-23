@@ -207,10 +207,10 @@ const rpcHandlers = {
     defaultModel: await getConfiguredClaudeModel(ctx),
   }),
   getProjects: async () => {
-    const bootstrap = await handleBootstrapSessions(state, { bootstrapProjects: true });
+    const bootstrap = await handleBootstrapSessions(state);
     return {
       ...bootstrap,
-      projects: bootstrap.projects,
+      projects: summarizeProjectsForWebBootstrap(bootstrap.projects),
     };
   },
   getSessionRecord: async (payload: { sessionId: string }) => {

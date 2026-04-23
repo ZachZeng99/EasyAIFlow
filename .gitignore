@@ -7,6 +7,7 @@ release
 run.log
 .codex-dev.stdout.log
 .codex-dev.stderr.log
+.codex-logs/
 .tmp-tests/
 .tmp-devweb-*.log
 .vscode/
