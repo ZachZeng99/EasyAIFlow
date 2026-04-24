@@ -72,7 +72,7 @@ run('pruneTemporaryImportedDuplicates keeps cross-provider sessions with the sam
     provider: 'codex' as const,
     codexThreadId: 'codex-room',
     claudeSessionId: undefined,
-    model: 'gpt-5.4-mini',
+    model: 'gpt-5.5-mini',
   };
 
   const result = pruneTemporaryImportedDuplicates([claude, codex]);

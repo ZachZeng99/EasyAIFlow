@@ -26,7 +26,7 @@ const makeSession = (overrides: Partial<SessionSummary> = {}): SessionSummary =>
   timeLabel: overrides.timeLabel ?? 'Just now',
   updatedAt: overrides.updatedAt ?? 1,
   provider: overrides.provider ?? 'codex',
-  model: overrides.model ?? 'gpt-5.4',
+  model: overrides.model ?? 'gpt-5.5',
   workspace: overrides.workspace ?? 'D:\\AIAgent\\EasyAIFlow-eaf_codex',
   projectId: overrides.projectId ?? 'project-1',
   projectName: overrides.projectName ?? 'EasyAIFlow',
@@ -73,7 +73,7 @@ run('buildCodexArgs builds a new exec invocation with prompt as a single positio
     session,
     'Host behavior note: some UI mode transitions may be handled automatically.',
     attachments,
-    'gpt-5.4',
+    'gpt-5.5',
   );
 
   assert.deepEqual(args, [
@@ -81,7 +81,7 @@ run('buildCodexArgs builds a new exec invocation with prompt as a single positio
     '--json',
     '--full-auto',
     '-m',
-    'gpt-5.4',
+    'gpt-5.5',
     '-i',
     'D:\\tmp\\screenshot.png',
     'Host behavior note: some UI mode transitions may be handled automatically.',
@@ -90,13 +90,13 @@ run('buildCodexArgs builds a new exec invocation with prompt as a single positio
 
 run('buildCodexArgs can omit full-auto for chat-style codex turns', () => {
   const session = makeSession();
-  const args = buildCodexArgs(session, 'hi', [], 'gpt-5.4', false);
+  const args = buildCodexArgs(session, 'hi', [], 'gpt-5.5', false);
 
   assert.deepEqual(args, [
     'exec',
     '--json',
     '-m',
-    'gpt-5.4',
+    'gpt-5.5',
     'hi',
   ]);
 });
@@ -107,7 +107,7 @@ run('buildCodexArgs can prepend disabled features before exec', () => {
     session,
     'hi',
     [],
-    'gpt-5.4',
+    'gpt-5.5',
     false,
     false,
     ['shell_tool', 'plugins'],
@@ -121,7 +121,7 @@ run('buildCodexArgs can prepend disabled features before exec', () => {
     'exec',
     '--json',
     '-m',
-    'gpt-5.4',
+    'gpt-5.5',
     'hi',
   ]);
 });
@@ -132,7 +132,7 @@ run('buildCodexArgs can include an output schema for structured chat replies', (
     session,
     'hi',
     [],
-    'gpt-5.4',
+    'gpt-5.5',
     false,
     true,
     ['shell_tool'],
@@ -145,7 +145,7 @@ run('buildCodexArgs can include an output schema for structured chat replies', (
     'exec',
     '--json',
     '-m',
-    'gpt-5.4',
+    'gpt-5.5',
     '--output-schema',
     'D:\\tmp\\codex-reply.schema.json',
     'hi',
@@ -154,7 +154,7 @@ run('buildCodexArgs can include an output schema for structured chat replies', (
 
 run('buildCodexArgs builds a resume invocation when a stored thread id exists', () => {
   const session = makeSession({ codexThreadId: 'thread-123' });
-  const args = buildCodexArgs(session, 'continue', [], 'gpt-5.4-mini');
+  const args = buildCodexArgs(session, 'continue', [], 'gpt-5.5-mini');
 
   assert.deepEqual(args, [
     'exec',
@@ -162,7 +162,7 @@ run('buildCodexArgs builds a resume invocation when a stored thread id exists', 
     '--json',
     '--full-auto',
     '-m',
-    'gpt-5.4-mini',
+    'gpt-5.5-mini',
     'thread-123',
     'continue',
   ]);
@@ -170,13 +170,13 @@ run('buildCodexArgs builds a resume invocation when a stored thread id exists', 
 
 run('buildCodexArgs can ignore a stored thread id for stateless chat turns', () => {
   const session = makeSession({ codexThreadId: 'thread-123' });
-  const args = buildCodexArgs(session, 'hi', [], 'gpt-5.4', false, false);
+  const args = buildCodexArgs(session, 'hi', [], 'gpt-5.5', false, false);
 
   assert.deepEqual(args, [
     'exec',
     '--json',
     '-m',
-    'gpt-5.4',
+    'gpt-5.5',
     'hi',
   ]);
 });

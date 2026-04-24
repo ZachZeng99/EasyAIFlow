@@ -125,7 +125,7 @@ run('normalizeProjectsFromPersistence preserves provider and applies provider-sp
   );
   const session = projects[0]?.dreams[0]?.sessions[0] as SessionRecord;
   session.provider = 'codex';
-  session.model = 'gpt-5.4';
+  session.model = 'gpt-5.5';
 
   const normalized = normalizeProjectsFromPersistence(projects);
   const recoveredSession = normalized[0]?.dreams[0]?.sessions[0] as SessionRecord | undefined;
@@ -230,7 +230,7 @@ run('normalizeProjectsFromPersistence rehydrates stale group room placeholders f
     id: 'member-codex',
     title: '[Group] Test room',
     provider: 'codex',
-    model: 'gpt-5.4',
+    model: 'gpt-5.5',
     sessionKind: 'group_member',
     hidden: true,
     group: {
@@ -306,7 +306,7 @@ run('normalizeProjectsFromPersistence does not reuse an older backing reply when
     id: 'member-codex',
     title: '[Group] Test room',
     provider: 'codex',
-    model: 'gpt-5.4',
+    model: 'gpt-5.5',
     sessionKind: 'group_member',
     hidden: true,
     group: {

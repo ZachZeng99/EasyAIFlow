@@ -748,6 +748,7 @@ const runGroupParticipantTurn = async (
             {
               references: roomSession.contextReferences ?? [],
               model: participant.model || backingSession.model || payload.model,
+              effort: payload.effort,
             },
           )
         : await runClaudePrint(

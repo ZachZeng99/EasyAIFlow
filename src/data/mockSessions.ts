@@ -155,7 +155,7 @@ export const projectTree: ProjectRecord[] = [
             title: 'Initial greeting',
             preview: '整理目录、找 HTML、处理共享路径。',
             timeLabel: 'Yesterday 12:29',
-            model: 'gpt-5.4',
+            model: 'gpt-5.5',
             workspace: 'X:\\GPUCapture',
             projectId: 'gpu-capture',
             projectName: 'GPUCapture',

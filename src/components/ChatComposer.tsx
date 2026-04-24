@@ -77,8 +77,8 @@ const MODEL_OPTIONS = {
     { value: 'sonnet', label: 'sonnet4.6' },
   ],
   codex: [
-    { value: 'gpt-5.4', label: 'gpt-5.4' },
-    { value: 'gpt-5.4-mini', label: 'gpt-5.4-mini' },
+    { value: 'gpt-5.5', label: 'gpt-5.5' },
+    { value: 'gpt-5.5-mini', label: 'gpt-5.5-mini' },
   ],
 } as const;
 

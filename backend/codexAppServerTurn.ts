@@ -25,13 +25,26 @@ import type {
   ConversationMessage,
   ContextReference,
   PendingAttachment,
+  SessionEffort,
   SessionRuntimePhase,
   SessionSummary,
   TokenUsage,
 } from '../src/data/types.js';
 
+type CodexReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+
+const DEFAULT_CODEX_REASONING_EFFORT: CodexReasoningEffort = 'xhigh';
+
+const resolveCodexReasoningEffort = (effort?: SessionEffort | null): CodexReasoningEffort => {
+  if (effort === 'low' || effort === 'medium' || effort === 'high' || effort === 'xhigh') {
+    return effort;
+  }
+  return DEFAULT_CODEX_REASONING_EFFORT;
+};
+
 export type CodexAppServerTurnOptions = {
   model?: string;
+  effort?: SessionEffort;
   references?: ContextReference[];
   outputSchema?: object;
   parseFinalMessage?: (raw: string) => string;
@@ -694,6 +707,7 @@ export const runCodexAppServerTurn = async (
     references: options?.references,
   });
   const requestedModel = options?.model?.trim() || prepared.session.model;
+  const requestedEffort = resolveCodexReasoningEffort(options?.effort);
 
   const activeTurn: ActiveAppServerTurn = {
     sessionId,
@@ -839,6 +853,7 @@ export const runCodexAppServerTurn = async (
         threadId,
         prompt: prepared.resolvedPrompt,
         model: requestedModel ?? null,
+        effort: requestedEffort,
         outputSchema: options?.outputSchema ?? null,
       });
 

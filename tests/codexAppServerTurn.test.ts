@@ -654,6 +654,7 @@ await run('runCodexAppServerTurn names the native thread after the current sessi
     const sessionId = created.session.id;
     const sessionTitle = created.session.title;
     const namedThreads: Array<{ threadId: string; name: string }> = [];
+    const turnStarts: Array<{ effort?: string | null }> = [];
     let createCount = 0;
     let managerAcquireCount = 0;
     let closeCount = 0;
@@ -663,7 +664,10 @@ await run('runCodexAppServerTurn names the native thread after the current sessi
       threadSetName: async (threadId: string, name: string) => {
         namedThreads.push({ threadId, name });
       },
-      turnStart: async () => ({ turn: { id: 'turn-1', status: 'completed' } }),
+      turnStart: async (params: { effort?: string | null }) => {
+        turnStarts.push(params);
+        return { turn: { id: 'turn-1', status: 'completed' } };
+      },
       addNotificationHandler: (_handler: (n: { method: string; params: Record<string, unknown> }) => void) => undefined,
       removeNotificationHandler: (_handler: (n: { method: string; params: Record<string, unknown> }) => void) => undefined,
       addExitHandler: (_handler: (error: Error) => void) => undefined,
@@ -690,6 +694,9 @@ await run('runCodexAppServerTurn names the native thread after the current sessi
         { broadcastEvent: (_event: Record<string, unknown>) => undefined } as never,
         sessionId,
         'Check title sync.',
+        [],
+        undefined,
+        { effort: 'max' },
       );
 
       const updatedSession = await sessionStore.findSession(sessionId);
@@ -704,6 +711,7 @@ await run('runCodexAppServerTurn names the native thread after the current sessi
       assert.equal(createCount, 1);
       assert.equal(managerAcquireCount, 0);
       assert.equal(closeCount, 1);
+      assert.equal(turnStarts[0]?.effort, 'xhigh');
       assert.equal(updatedIndex.id, 'thread-new');
       assert.equal(updatedIndex.thread_name, sessionTitle);
     } finally {
@@ -868,12 +876,16 @@ await run('runResidentCodexAppServerTurn keeps the Codex app-server session onli
     const created = await sessionStore.createSession(project.session.id, false, 'codex');
     const sessionId = created.session.id;
     const runtimeEvents: Array<Record<string, unknown>> = [];
+    const turnStarts: Array<{ effort?: string | null }> = [];
     let releaseCount = 0;
     const fakeClient = {
       threadStart: async () => ({ thread: { id: 'thread-resident' } }),
       threadResume: async () => ({ thread: { id: 'thread-resident' } }),
       threadSetName: async (_threadId: string, _name: string) => undefined,
-      turnStart: async () => ({ turn: { id: 'turn-1', status: 'completed' } }),
+      turnStart: async (params: { effort?: string | null }) => {
+        turnStarts.push(params);
+        return { turn: { id: 'turn-1', status: 'completed' } };
+      },
       addNotificationHandler: (_handler: (n: { method: string; params: Record<string, unknown> }) => void) => undefined,
       removeNotificationHandler: (_handler: (n: { method: string; params: Record<string, unknown> }) => void) => undefined,
       addExitHandler: (_handler: (error: Error) => void) => undefined,
@@ -906,6 +918,7 @@ await run('runResidentCodexAppServerTurn keeps the Codex app-server session onli
       assert.equal(runtime?.processActive, true);
       assert.equal(runtime?.phase, 'idle');
       assert.equal(releaseCount, 0);
+      assert.equal(turnStarts[0]?.effort, 'xhigh');
       assert.equal(
         runtimeEvents.some(
           (event) =>

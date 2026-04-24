@@ -135,7 +135,7 @@ run('cleanupProjectSessions keeps same-title Claude and Codex sessions as separa
             provider: 'codex',
             codexThreadId: 'codex-group-thread',
             claudeSessionId: undefined,
-            model: 'gpt-5.4-mini',
+            model: 'gpt-5.5-mini',
             dreamId: 'tmp',
             dreamName: 'Temporary',
           },

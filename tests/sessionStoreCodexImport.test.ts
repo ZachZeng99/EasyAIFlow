@@ -87,7 +87,7 @@ await run('createProject imports Codex CLI sessions under the opened project tre
         type: 'turn_context',
         payload: {
           cwd: childWorkspace,
-          model: 'gpt-5.4',
+          model: 'gpt-5.5',
         },
       }),
       JSON.stringify({
@@ -317,7 +317,7 @@ await run('native Codex import does not surface visible duplicates when persiste
     await sessionStore.renameEntity('session', codexSession.session.id, 'Recovered room');
     await sessionStore.setSessionRuntime(codexSession.session.id, {
       codexThreadId: 'group-thread',
-      model: 'gpt-5.4',
+      model: 'gpt-5.5',
     });
 
     const room = await sessionStore.ensureGroupRoomSession(codexSession.session.id);
@@ -454,7 +454,7 @@ await run('loading persisted orphaned group backings recreates a visible room se
                     timeLabel: '4/12 12:00',
                     updatedAt: 1775966400000,
                     provider: 'codex',
-                    model: 'gpt-5.4',
+                    model: 'gpt-5.5',
                     workspace: projectRoot,
                     projectId: 'project-1',
                     projectName: 'Recovered',
@@ -649,7 +649,7 @@ await run('loading a partially recovered group room backfills richer Claude hist
                           provider: 'codex',
                           backingSessionId: 'member-codex',
                           enabled: true,
-                          model: 'gpt-5.4',
+                          model: 'gpt-5.5',
                           lastAppliedRoomSeq: 0,
                         },
                       ],
@@ -756,7 +756,7 @@ await run('loading a partially recovered group room backfills richer Claude hist
                     timeLabel: '4/12 12:01',
                     updatedAt: 1775966400000,
                     provider: 'codex',
-                    model: 'gpt-5.4',
+                    model: 'gpt-5.5',
                     workspace: projectRoot,
                     projectId: 'project-1',
                     projectName: 'Recovered',

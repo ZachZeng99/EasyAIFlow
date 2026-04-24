@@ -41,7 +41,7 @@ const makeSession = (
   timeLabel: 'Just now',
   updatedAt,
   provider,
-  model: provider === 'claude' ? 'opus[1m]' : 'gpt-5.4',
+  model: provider === 'claude' ? 'opus[1m]' : 'gpt-5.5',
   workspace: 'D:\\PBZ',
   projectId,
   projectName,

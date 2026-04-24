@@ -66,7 +66,7 @@ const normalizeProviderModelSelectionValue = (
 const getKnownProviderModelValues = (provider: SessionProvider | string | undefined) =>
   normalizeSessionProvider(provider) === 'claude'
     ? ['opus[1m]', 'sonnet', 'haiku[1m]']
-    : ['gpt-5.4', 'gpt-5.4-mini'];
+    : ['gpt-5.5', 'gpt-5.5-mini'];
 
 export const syncModelSelectionForSession = (
   currentModel: string,

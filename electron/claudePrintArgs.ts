@@ -7,9 +7,11 @@ type ClaudePrintArgOptions = {
   noSessionPersistence?: boolean;
 };
 
+export const DEFAULT_CLAUDE_EFFORT: NonNullable<ClaudePrintArgOptions['effort']> = 'max';
+
 export const buildClaudePrintArgs = ({
   model,
-  effort,
+  effort = DEFAULT_CLAUDE_EFFORT,
   sessionArgs = [],
   tools,
   permissionMode = 'default',

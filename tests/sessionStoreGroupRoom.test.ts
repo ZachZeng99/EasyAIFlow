@@ -52,7 +52,7 @@ await run('ensureGroupRoomSession creates a fresh primary member session without
 
     await sessionStore.setSessionRuntime(created.session.id, {
       codexThreadId: 'thread-123',
-      model: 'gpt-5.4-mini',
+      model: 'gpt-5.5-mini',
     });
     await sessionStore.updateSessionRecord(created.session.id, (session: {
       instructionPrompt?: string;
@@ -84,7 +84,7 @@ await run('ensureGroupRoomSession creates a fresh primary member session without
     assert.equal(primaryMember?.title, `[Group] ${room.title}`);
     assert.equal(primaryMember?.instructionPrompt, undefined);
     assert.equal(primaryMember?.codexThreadId, 'thread-123');
-    assert.equal(primaryMember?.model, 'gpt-5.4-mini');
+    assert.equal(primaryMember?.model, 'gpt-5.5-mini');
     assert.equal(primaryMember?.messages.length, 0);
 
     const updatedIndex = JSON.parse((await readFile(codexIndexPath, 'utf8')).trim()) as {
@@ -258,7 +258,7 @@ await run('renameEntity keeps group backing session titles aligned with the grou
 
     await sessionStore.setSessionRuntime(codexParticipant.backingSessionId, {
       codexThreadId: 'codex-room-thread',
-      model: 'gpt-5.4-mini',
+      model: 'gpt-5.5-mini',
     });
     await sessionStore.setSessionRuntime(claudeParticipant.backingSessionId, {
       claudeSessionId,

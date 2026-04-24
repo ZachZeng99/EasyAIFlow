@@ -10,7 +10,7 @@ export const getProviderBadgeLabel = (value: SessionProvider | string | undefine
   normalizeSessionProvider(value).toUpperCase();
 
 export const getDefaultModelForProvider = (value: SessionProvider | string | undefined) =>
-  normalizeSessionProvider(value) === 'codex' ? 'gpt-5.4' : 'opus[1m]';
+  normalizeSessionProvider(value) === 'codex' ? 'gpt-5.5' : 'opus[1m]';
 
 export const getDefaultPreviewForProvider = (value: SessionProvider | string | undefined) =>
   normalizeSessionProvider(value) === 'codex'

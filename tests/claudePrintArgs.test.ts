@@ -39,7 +39,7 @@ run('buildClaudePrintArgs uses stream-json input and permission prompt tool', ()
   ]);
 });
 
-run('buildClaudePrintArgs omits model and effort when they are not supplied', () => {
+run('buildClaudePrintArgs defaults Claude effort to max when it is not supplied', () => {
   const args = buildClaudePrintArgs({
     sessionArgs: ['-n', 'BTW'],
   });
@@ -56,6 +56,8 @@ run('buildClaudePrintArgs omits model and effort when they are not supplied', ()
     '--permission-prompt-tool',
     'stdio',
     '--verbose',
+    '--effort',
+    'max',
     '-n',
     'BTW',
   ]);

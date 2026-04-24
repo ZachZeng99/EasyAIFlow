@@ -62,16 +62,16 @@ run('shouldSwitchSessionModel requires a persisted Claude session and a real mod
 
 run('syncModelSelectionForSession resets explicit model choices that belong to another provider', () => {
   assert.deepEqual(
-    syncModelSelectionForSession('sonnet', 'explicit', 'gpt-5.4', 'codex'),
+    syncModelSelectionForSession('sonnet', 'explicit', 'gpt-5.5', 'codex'),
     {
-      model: 'gpt-5.4',
+      model: 'gpt-5.5',
       source: 'implicit',
     },
   );
   assert.deepEqual(
-    syncModelSelectionForSession('gpt-5.4-mini', 'explicit', 'gpt-5.4', 'codex'),
+    syncModelSelectionForSession('gpt-5.5-mini', 'explicit', 'gpt-5.5', 'codex'),
     {
-      model: 'gpt-5.4-mini',
+      model: 'gpt-5.5-mini',
       source: 'explicit',
     },
   );

@@ -27,7 +27,7 @@ const makeFallbackSession = (provider: 'claude' | 'codex'): SessionSummary => ({
   timeLabel: 'Just now',
   updatedAt: 1,
   provider,
-  model: provider === 'codex' ? 'gpt-5.4' : 'opus[1m]',
+  model: provider === 'codex' ? 'gpt-5.5' : 'opus[1m]',
   workspace: 'D:\\AIAgent\\EasyAIFlow-eaf_codex',
   projectId: 'project-1',
   projectName: 'EasyAIFlow',

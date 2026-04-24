@@ -35,7 +35,7 @@ const makeParticipant = (overrides: Partial<GroupParticipant> = {}): GroupPartic
   provider: overrides.provider ?? 'codex',
   backingSessionId: overrides.backingSessionId ?? 'member-1',
   enabled: overrides.enabled ?? true,
-  model: overrides.model ?? 'gpt-5.4',
+  model: overrides.model ?? 'gpt-5.5',
   lastAppliedRoomSeq: overrides.lastAppliedRoomSeq ?? 0,
 });
 

@@ -71,7 +71,7 @@ import {
   parseClaudePlanModeControlRequest,
   parseClaudePermissionControlRequest,
 } from '../electron/claudeControlMessages.js';
-import { buildClaudePrintArgs } from '../electron/claudePrintArgs.js';
+import { buildClaudePrintArgs, DEFAULT_CLAUDE_EFFORT } from '../electron/claudePrintArgs.js';
 import { buildClaudeSessionArgs } from '../electron/claudeSessionArgs.js';
 import { buildPermissionRulesForPath } from '../electron/permissionRules.js';
 import { readLatestNativeClaudeApiError } from '../electron/nativeClaudeError.js';
@@ -1887,9 +1887,13 @@ export const prepareClaudeRun = async (
   if (!session) {
     throw new Error('Session not found');
   }
+  const resolvedOptions: ClaudePrintOptions = {
+    ...options,
+    effort: options?.effort ?? DEFAULT_CLAUDE_EFFORT,
+  };
 
-  if (options?.references) {
-    await updateSessionContextReferences(sessionId, options.references);
+  if (resolvedOptions.references) {
+    await updateSessionContextReferences(sessionId, resolvedOptions.references);
     session = await findSession(sessionId);
     if (!session) {
       throw new Error('Session not found');
@@ -1897,7 +1901,7 @@ export const prepareClaudeRun = async (
   }
 
   const attachments = await saveAttachments(ctx, sessionId, pendingAttachments);
-  const referenceContext = await buildContextReferencePrompt(sessionId, options?.references);
+  const referenceContext = await buildContextReferencePrompt(sessionId, resolvedOptions.references);
   const resolvedPrompt = buildPromptWithAttachments(
     prompt,
     attachments,
@@ -1912,7 +1916,7 @@ export const prepareClaudeRun = async (
     title: buildMessageTitle(prompt, 'User prompt'),
     content: prompt,
     status: 'complete',
-    contextReferences: cloneMessageContextReferences(options?.references),
+    contextReferences: cloneMessageContextReferences(resolvedOptions.references),
     attachments,
   };
 
@@ -1948,7 +1952,7 @@ export const prepareClaudeRun = async (
     assistantMessageId: assistantMessage.id,
     session,
     resolvedPrompt,
-    options,
+    options: resolvedOptions,
     projects,
     assistantWasQueued: assistantStatus === 'queued',
     stopVersion: readSessionStopVersion(state.sessionStopVersions, sessionId),

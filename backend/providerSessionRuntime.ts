@@ -169,6 +169,7 @@ export const providerSessionRuntimes: Record<SessionProvider, ProviderSessionRun
         {
         references: payload.references,
         model: payload.model,
+        effort: payload.effort,
         },
       ),
     switchModel: (_ctx, _state, payload) => switchCodexSessionModel(payload),

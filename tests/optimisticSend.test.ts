@@ -149,7 +149,7 @@ run('buildOptimisticSendState uses provider-specific placeholder copy', () => {
   const projects = makeProjects();
   const session = projects[0]?.dreams[0]?.sessions[0] as SessionRecord;
   session.provider = 'codex';
-  session.model = 'gpt-5.4';
+  session.model = 'gpt-5.5';
 
   const result = buildOptimisticSendState({
     projects,
