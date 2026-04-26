@@ -398,7 +398,7 @@ type MobilePanel = 'history' | 'session' | 'context';
 export default function App() {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState('');
-  const [draft, setDraft] = useState('');
+  const [draftsBySessionId, setDraftsBySessionId] = useState<Record<string, string>>({});
   const [appVersion, setAppVersion] = useState('desktop');
   const [isSending, setIsSending] = useState(false);
   const [model, setModel] = useState('opus[1m]');
@@ -475,6 +475,27 @@ export default function App() {
     () => allSessions.find((session) => session.id === selectedSessionId) ?? visibleSessions[0] ?? allSessions[0],
     [allSessions, selectedSessionId, visibleSessions],
   );
+  const draft = selectedSession ? draftsBySessionId[selectedSession.id] ?? '' : '';
+  const setSessionDraft = useCallback((sessionId: string, value: string) => {
+    setDraftsBySessionId((current) => {
+      if (value.length === 0) {
+        if (!(sessionId in current)) {
+          return current;
+        }
+        const { [sessionId]: _removed, ...rest } = current;
+        return rest;
+      }
+
+      if (current[sessionId] === value) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [sessionId]: value,
+      };
+    });
+  }, []);
   const ensureSessionRecordLoaded = useCallback((sessionId: string) => {
     const existing = allSessions.find((session) => session.id === sessionId);
     if (!existing || existing.messagesLoaded !== false || loadingSessionRecordIds.current.has(sessionId)) {
@@ -1083,6 +1104,24 @@ export default function App() {
 
   useEffect(() => {
     const validSessionIds = new Set(allSessions.map((session) => session.id));
+    setDraftsBySessionId((current) => {
+      let changed = false;
+      const next: Record<string, string> = {};
+
+      Object.entries(current).forEach(([sessionId, value]) => {
+        if (validSessionIds.has(sessionId)) {
+          next[sessionId] = value;
+          return;
+        }
+        changed = true;
+      });
+
+      return changed ? next : current;
+    });
+  }, [allSessions]);
+
+  useEffect(() => {
+    const validSessionIds = new Set(allSessions.map((session) => session.id));
     setSessionInteractions((current) => {
       let changed = false;
       const next = new Map<string, SessionInteractionState>();
@@ -1267,7 +1306,7 @@ export default function App() {
       );
     }
 
-    setDraft(cleanedDraft);
+    setSessionDraft(selectedSession.id, cleanedDraft);
   };
 
   const handleAttachFiles = async (files: FileList | null) => {
@@ -1350,7 +1389,7 @@ export default function App() {
       prompt.startsWith('/btw')
     ) {
       const btwPrompt = prompt.replace(/^\/btw\b/, '').trim();
-      setDraft('');
+      setSessionDraft(selectedSession.id, '');
       clearAttachments();
       setBtwState((current) => ({
         ...current,
@@ -1467,7 +1506,7 @@ export default function App() {
         });
       }
 
-      setDraft('');
+      setSessionDraft(selectedSession.id, '');
       clearAttachments();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to send message.';
@@ -2109,7 +2148,6 @@ export default function App() {
             ensureSessionRecordLoaded(session.id);
             setSelectedSessionId(session.id);
             setUnreadSessionIds((current) => current.filter((sessionId) => sessionId !== session.id));
-            setDraft('');
             clearAttachments();
             if (isMobileLayout) {
               setMobilePanel('session');
