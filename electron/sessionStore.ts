@@ -3455,7 +3455,7 @@ export const createSession = async (
     await saveState(state);
 
     return {
-      projects: cloneVisibleProjects(state.projects),
+      projects: summarizeProjectsForBootstrap(state.projects),
       session: JSON.parse(JSON.stringify(session)) as SessionRecord,
     };
   }
@@ -3512,7 +3512,7 @@ export const createSession = async (
   await saveState(state);
 
   return {
-    projects: cloneVisibleProjects(state.projects),
+    projects: summarizeProjectsForBootstrap(state.projects),
     session: JSON.parse(JSON.stringify(nextSession)) as SessionRecord,
   };
 };
@@ -4000,7 +4000,7 @@ export const createSessionInStreamwork = async (
   await saveState(state);
 
   return {
-    projects: cloneVisibleProjects(state.projects),
+    projects: summarizeProjectsForBootstrap(state.projects),
     session: JSON.parse(JSON.stringify(session)) as SessionRecord,
   };
 };

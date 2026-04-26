@@ -174,7 +174,10 @@ const summarizeProjectsForWebBootstrap = (projects: ProjectRecord[]) => {
       sessions: dream.sessions.map((session) => {
         const current = session as SessionRecord;
         const isVisible = !current.hidden;
-        const shouldIncludeMessages = isVisible && !includedInitialVisibleSession;
+        const shouldIncludeMessages =
+          isVisible &&
+          current.messagesLoaded !== false &&
+          !includedInitialVisibleSession;
 
         if (shouldIncludeMessages) {
           includedInitialVisibleSession = true;
