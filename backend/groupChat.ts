@@ -903,8 +903,22 @@ export const sendGroupMessage = async (
     });
   });
 
-  // When all participant turns settle, broadcast inactive for the room.
-  void Promise.allSettled(turnPromises).then(() => {
+  // When all participant turns settle, broadcast a full room snapshot so the
+  // UI can recover if any fast participant events arrived before local state
+  // had the group placeholder message.
+  void Promise.allSettled(turnPromises).then(async () => {
+    try {
+      const latestRoom = await findSession(roomSession.id);
+      if (latestRoom) {
+        ctx.broadcastEvent({
+          type: 'session-sync',
+          sessionId: roomSession.id,
+          session: latestRoom,
+        });
+      }
+    } catch (error) {
+      console.warn('[GROUP] Failed to broadcast final room snapshot', roomSession.id, error);
+    }
     ctx.broadcastEvent({
       type: 'runtime-state',
       sessionId: roomSession.id,

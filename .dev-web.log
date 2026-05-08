@@ -1,0 +1,77 @@
+
+> easyaiflow@0.1.0 dev:web
+> concurrently -k "npm:dev:web:client" "npm:dev:server"
+
+[dev:web:client] 
+[dev:web:client] > easyaiflow@0.1.0 dev:web:client
+[dev:web:client] > vite
+[dev:web:client] 
+[dev:server] 
+[dev:server] > easyaiflow@0.1.0 dev:server
+[dev:server] > tsx server/server.ts
+[dev:server] 
+[dev:server] EasyAIFlow web server listening on http://0.0.0.0:8887
+[dev:web:client] 
+[dev:web:client]   [32m[1mVITE[22m v7.3.1[39m  [2mready in [0m[1m419[22m[2m[0m ms[22m
+[dev:web:client] 
+[dev:web:client]   [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m4273[22m/[39m
+[dev:web:client]   [32m➜[39m  [1mNetwork[22m: [36mhttp://100.125.36.70:[1m4273[22m/[39m
+[dev:web:client]   [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.50.160:[1m4273[22m/[39m
+[dev:web:client]   [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.193.175:[1m4273[22m/[39m
+[dev:server] 
+[dev:server] <--- Last few GCs --->
+[dev:server] 
+[dev:server] [65932:000001F92E74B000] 83347086 ms: Scavenge 4092.5 (4113.6) -> 4092.5 (4117.6) MB, pooled: 0 MB, 2.12 / 0.00 ms  (average mu = 0.392, current mu = 0.077) allocation failure; 
+[dev:server] [65932:000001F92E74B000] 83347125 ms: Mark-Compact (reduce) 4096.4 (4121.5) -> 4096.4 (4114.5) MB, pooled: 0 MB, 35.52 / 0.00 ms  (+ 0.2 ms in 0 steps since start of marking, biggest step 0.0 ms, walltime since start of marking 39 ms) (average mu = 0.337,
+[dev:server] 
+[dev:server] <--- JS stacktrace --->
+[dev:server] 
+[dev:server] FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory
+[dev:server] ----- Native stack trace -----
+[dev:server] 
+[dev:server]  1: 00007FF607F670F7 node::SetCppgcReference+18039
+[dev:server]  2: 00007FF607ECAA18 v8::base::CPU::num_virtual_address_bits+102920
+[dev:server]  3: 00007FF608ACF151 v8::Isolate::ReportExternalAllocationLimitReached+65
+[dev:server]  4: 00007FF608ABBCD6 v8::Function::Experimental_IsNopFunction+3302
+[dev:server]  5: 00007FF608918420 v8::internal::StrongRootAllocatorBase::StrongRootAllocatorBase+33904
+[dev:server]  6: 00007FF608914AAA v8::internal::StrongRootAllocatorBase::StrongRootAllocatorBase+19194
+[dev:server]  7: 00007FF60892B08C v8::Isolate::GetHeapProfiler+8012
+[dev:server]  8: 00007FF60892B90A v8::Isolate::GetHeapProfiler+10186
+[dev:server]  9: 00007FF6089369F1 v8::Isolate::GetHeapProfiler+55473
+[dev:server] 10: 00007FF608946562 v8::Isolate::GetHeapProfiler+119842
+[dev:server] 11: 00007FF60894B458 v8::Isolate::GetHeapProfiler+140056
+[dev:server] 12: 00007FF6086CF48F v8::MemorySpan<std::basic_string_view<char,std::char_traits<char> > const >::end+37279
+[dev:server] 13: 00007FF608AD7A52 v8::String::Utf8Length+114
+[dev:server] 14: 00007FF607EFEA64 node::Buffer::New+3876
+[dev:server] 15: 00007FF608AECD0B v8::PropertyDescriptor::writable+80859
+[dev:server] 16: 00007FF588F3B0CF 
+[dev:web:client] [2m15:48:18[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/rpc[39m
+[dev:web:client] Error: read ECONNRESET
+[dev:web:client]     at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+[dev:web:client] [2m15:48:18[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/rpc[39m
+[dev:web:client] Error: read ECONNRESET
+[dev:web:client]     at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+[dev:web:client] [2m15:48:18[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/rpc[39m
+[dev:web:client] Error: read ECONNRESET
+[dev:web:client]     at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+[dev:web:client] [2m15:48:18[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/events[39m
+[dev:web:client] Error: read ECONNRESET
+[dev:web:client]     at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+[dev:web:client] [2m15:48:18[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/rpc[39m
+[dev:web:client] Error: read ECONNRESET
+[dev:web:client]     at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+[dev:web:client] [2m15:48:18[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/rpc[39m
+[dev:web:client] Error: read ECONNRESET
+[dev:web:client]     at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+[dev:web:client] [2m15:48:18[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/rpc[39m
+[dev:web:client] Error: connect ECONNREFUSED 127.0.0.1:8887
+[dev:web:client]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+[dev:web:client] [2m15:48:18[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/rpc[39m
+[dev:web:client] Error: connect ECONNREFUSED 127.0.0.1:8887
+[dev:web:client]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+[dev:web:client] [2m15:48:18[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/rpc[39m
+[dev:web:client] Error: connect ECONNREFUSED 127.0.0.1:8887
+[dev:web:client]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+[dev:server] npm run dev:server exited with code 134
+--> Sending SIGTERM to other processes..
+[dev:web:client] npm run dev:web:client exited with code 1

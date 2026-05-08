@@ -180,3 +180,73 @@ export const reconcileOptimisticSendMessages = ({
       messages: nextMessages,
     };
   });
+
+const isLocalOptimisticMessage = (message: ConversationMessage, role: ConversationMessage['role']) =>
+  message.role === role && message.id.startsWith(`local-${role}-`);
+
+const hasMatchingAttachments = (
+  left: ConversationMessage['attachments'],
+  right: ConversationMessage['attachments'],
+) => {
+  const leftIds = (left ?? []).map((attachment) => attachment.id);
+  const rightIds = (right ?? []).map((attachment) => attachment.id);
+
+  if (leftIds.length !== rightIds.length) {
+    return false;
+  }
+
+  return leftIds.every((id, index) => id === rightIds[index]);
+};
+
+const findOptimisticReplacementIndex = (
+  messages: ConversationMessage[],
+  incomingMessage: ConversationMessage,
+) => {
+  if (incomingMessage.role === 'user') {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (
+        isLocalOptimisticMessage(message, 'user') &&
+        message.content.trim() === incomingMessage.content.trim() &&
+        hasMatchingAttachments(message.attachments, incomingMessage.attachments)
+      ) {
+        return index;
+      }
+    }
+  }
+
+  if (incomingMessage.role === 'assistant') {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (
+        isLocalOptimisticMessage(message, 'assistant') &&
+        (message.status === 'queued' || message.status === 'streaming' || message.status === 'running')
+      ) {
+        return index;
+      }
+    }
+  }
+
+  return -1;
+};
+
+export const reconcileLiveTraceMessage = (
+  messages: ConversationMessage[],
+  incomingMessage: ConversationMessage,
+) => {
+  const nextMessages = [...messages];
+  const existingIndex = nextMessages.findIndex((message) => message.id === incomingMessage.id);
+  if (existingIndex >= 0) {
+    nextMessages[existingIndex] = incomingMessage;
+    return nextMessages;
+  }
+
+  const optimisticIndex = findOptimisticReplacementIndex(nextMessages, incomingMessage);
+  if (optimisticIndex >= 0) {
+    nextMessages[optimisticIndex] = incomingMessage;
+    return nextMessages;
+  }
+
+  nextMessages.push(incomingMessage);
+  return nextMessages;
+};

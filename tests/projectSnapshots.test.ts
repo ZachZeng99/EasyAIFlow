@@ -54,7 +54,7 @@ const makeSession = (
   preview: overrides.preview ?? '',
   timeLabel: overrides.timeLabel ?? 'Just now',
   updatedAt: overrides.updatedAt ?? 1,
-  provider: overrides.provider ?? 'claude',
+  provider: Object.prototype.hasOwnProperty.call(overrides, 'provider') ? overrides.provider : 'claude',
   model: overrides.model ?? 'opus[1m]',
   workspace: overrides.workspace ?? 'D:\\AIAgent\\EasyAIFlow',
   projectId: overrides.projectId ?? 'project-1',
@@ -186,4 +186,147 @@ run('mergeProjectSnapshots preserves loaded history when bootstrap only returns 
   assert.equal(session.preview, 'summary only');
   assert.equal(session.messagesLoaded, true);
   assert.equal(session.messages[0]?.content, 'existing history');
+});
+
+run('mergeProjectSnapshots applies stale group conversion metadata and sequenced messages', () => {
+  const currentProjects = makeProjects(
+    makeSession('room', {
+      updatedAt: 500,
+      provider: 'claude',
+      sessionKind: 'standard',
+      messages: [
+        makeMessage('user-existing', 'before group mode'),
+        makeMessage('user-new', '@codex 看一下'),
+      ],
+    }),
+  );
+
+  const incomingProjects = makeProjects(
+    makeSession('room', {
+      updatedAt: 490,
+      provider: undefined,
+      model: '',
+      sessionKind: 'group',
+      group: {
+        kind: 'room',
+        nextMessageSeq: 4,
+        participants: [
+          {
+            id: 'claude',
+            label: 'Claude',
+            provider: 'claude',
+            backingSessionId: 'member-claude',
+            enabled: true,
+            lastAppliedRoomSeq: 1,
+          },
+          {
+            id: 'codex',
+            label: 'Codex',
+            provider: 'codex',
+            backingSessionId: 'member-codex',
+            enabled: true,
+            lastAppliedRoomSeq: 0,
+          },
+        ],
+      },
+      messages: [
+        {
+          ...makeMessage('user-existing', 'before group mode'),
+          seq: 1,
+          speakerId: 'user',
+          speakerLabel: 'You',
+        },
+        {
+          ...makeMessage('user-new', '@codex 看一下'),
+          seq: 2,
+          speakerId: 'user',
+          speakerLabel: 'You',
+          targetParticipantIds: ['codex'],
+        },
+        {
+          ...makeMessage('assistant-codex', ''),
+          seq: 3,
+          speakerId: 'codex',
+          speakerLabel: 'Codex',
+          provider: 'codex',
+          sourceSessionId: 'member-codex',
+          status: 'streaming',
+        },
+      ],
+    }),
+  );
+
+  const merged = mergeProjectSnapshots(currentProjects, incomingProjects);
+  const session = merged[0]?.dreams[0]?.sessions[0] as SessionRecord;
+
+  assert.equal(session.sessionKind, 'group');
+  assert.equal(session.provider, undefined);
+  assert.equal(session.group?.kind, 'room');
+  assert.equal(session.messages.length, 3);
+  assert.equal(session.messages[1]?.seq, 2);
+  assert.equal(session.messages[1]?.targetParticipantIds?.[0], 'codex');
+  assert.equal(session.messages[2]?.id, 'assistant-codex');
+  assert.equal(session.messages[2]?.speakerLabel, 'Codex');
+});
+
+run('mergeProjectSnapshots keeps live group completion over stale queued snapshot', () => {
+  const group = {
+    kind: 'room' as const,
+    nextMessageSeq: 3,
+    participants: [
+      {
+        id: 'codex' as const,
+        label: 'Codex',
+        provider: 'codex' as const,
+        backingSessionId: 'member-codex',
+        enabled: true,
+        lastAppliedRoomSeq: 0,
+      },
+    ],
+  };
+  const currentProjects = makeProjects(
+    makeSession('room', {
+      updatedAt: 500,
+      provider: undefined,
+      model: '',
+      sessionKind: 'group',
+      group,
+      messages: [
+        {
+          ...makeMessage('assistant-codex', '已经修好了'),
+          seq: 2,
+          speakerId: 'codex',
+          speakerLabel: 'Codex',
+          provider: 'codex',
+          status: 'complete',
+        },
+      ],
+    }),
+  );
+
+  const incomingProjects = makeProjects(
+    makeSession('room', {
+      updatedAt: 490,
+      provider: undefined,
+      model: '',
+      sessionKind: 'group',
+      group,
+      messages: [
+        {
+          ...makeMessage('assistant-codex', ''),
+          seq: 2,
+          speakerId: 'codex',
+          speakerLabel: 'Codex',
+          provider: 'codex',
+          status: 'streaming',
+        },
+      ],
+    }),
+  );
+
+  const merged = mergeProjectSnapshots(currentProjects, incomingProjects);
+  const session = merged[0]?.dreams[0]?.sessions[0] as SessionRecord;
+
+  assert.equal(session.messages[0]?.content, '已经修好了');
+  assert.equal(session.messages[0]?.status, 'complete');
 });

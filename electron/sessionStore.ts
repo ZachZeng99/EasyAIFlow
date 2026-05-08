@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { getRuntimePaths } from '../backend/runtimePaths.js';
 import { allSessions, projectTree } from '../src/data/mockSessions.js';
@@ -89,6 +89,7 @@ type NativeImportCache = {
 
 let cachedState: AppState | null = null;
 let cachedStateMtimeMs: number | null = null;
+let loadingStatePromise: Promise<AppState> | null = null;
 const storePath = () => path.join(getRuntimePaths().userDataPath, 'easyaiflow-sessions.json');
 const nativeClaudeProjectsRoot = () =>
   path.join(process.env.USERPROFILE ?? getRuntimePaths().homePath, '.claude', 'projects');
@@ -868,9 +869,9 @@ const getRecoveredParticipantLastAppliedRoomSeqs = (
 };
 
 const getRecoveredRoomMessageMaxSeq = (messages: ConversationMessage[] | undefined) =>
-  Math.max(
+  (messages ?? []).reduce(
+    (maxSeq, message) => Math.max(maxSeq, typeof message.seq === 'number' ? message.seq : 0),
     0,
-    ...(messages ?? []).map((message) => (typeof message.seq === 'number' ? message.seq : 0)),
   );
 
 const getRecoveredRoomMessageContentSize = (messages: ConversationMessage[] | undefined) =>
@@ -2889,7 +2890,25 @@ const buildInitialProjects = () => {
 };
 
 const cloneProjects = (projects: ProjectRecord[]) => JSON.parse(JSON.stringify(projects)) as ProjectRecord[];
+const cloneSessionRecord = (session: SessionRecord) => JSON.parse(JSON.stringify(session)) as SessionRecord;
+const cloneProjectsWithoutMessages = (projects: ProjectRecord[]) =>
+  projects.map((project) => ({
+    ...project,
+    dreams: project.dreams.map((dream) => ({
+      ...dream,
+      sessions: dream.sessions.map((session) => ({
+        ...(session as SessionRecord),
+        messages: [],
+      })),
+    })),
+  })) as ProjectRecord[];
+
 const cacheState = (state: AppState) => {
+  if (state === cachedState) {
+    cachedState.deletedImports = normalizeDeletedImports(cachedState.deletedImports);
+    return;
+  }
+
   cachedState = {
     projects: normalizeProjectsForCache(normalizeProjects(cloneProjects(state.projects))),
     deletedImports: normalizeDeletedImports(state.deletedImports),
@@ -2909,6 +2928,28 @@ const summarizeProjectsForBootstrap = (projects: ProjectRecord[]) =>
     })),
   })) as ProjectRecord[];
 
+const summarizeStateForBootstrap = (state: AppState) => {
+  const lightweightProjects = cloneProjectsWithoutMessages(state.projects);
+  try {
+    return summarizeProjectsForBootstrap(normalizeProjectsForCache(normalizeProjects(lightweightProjects)));
+  } catch {
+    return summarizeProjectsForBootstrap(lightweightProjects);
+  }
+};
+
+const findSessionInProjects = (projects: ProjectRecord[], sessionId: string): SessionRecord | null => {
+  for (const project of projects) {
+    for (const dream of project.dreams) {
+      const session = dream.sessions.find((candidate) => candidate.id === sessionId);
+      if (session) {
+        return session as SessionRecord;
+      }
+    }
+  }
+
+  return null;
+};
+
 const ensureStateShape = (value: unknown): AppState => {
   if (!value || typeof value !== 'object' || !Array.isArray((value as { projects?: unknown }).projects)) {
     return { projects: buildInitialProjects(), deletedImports: createEmptyDeletedImports() };
@@ -2919,23 +2960,69 @@ const ensureStateShape = (value: unknown): AppState => {
   projects.forEach((project) => ensureTemporaryStreamwork(project));
 
   return {
-    projects: normalizeProjectsForCache(normalizeProjects(projects)),
+    projects,
     deletedImports: normalizeDeletedImports(typed.deletedImports),
   };
 };
 
+const readStateFile = async (filePath: string) => {
+  const [raw, fileStat] = await Promise.all([
+    readFile(filePath, 'utf8'),
+    stat(filePath),
+  ]);
+  return {
+    state: ensureStateShape(JSON.parse(raw)),
+    mtimeMs: fileStat.mtimeMs,
+  };
+};
+
+const listStateRecoveryFiles = async () => {
+  try {
+    const dir = path.dirname(storePath());
+    const activeName = path.basename(storePath());
+    const entries = await readdir(dir, { withFileTypes: true });
+    const candidates = await Promise.all(
+      entries
+        .filter((entry) =>
+          entry.isFile() &&
+          entry.name !== activeName &&
+          entry.name.startsWith('easyaiflow-sessions.') &&
+          entry.name.endsWith('.json'),
+        )
+        .map(async (entry) => {
+          const filePath = path.join(dir, entry.name);
+          try {
+            return {
+              filePath,
+              mtimeMs: (await stat(filePath)).mtimeMs,
+            };
+          } catch {
+            return null;
+          }
+        }),
+    );
+
+    return candidates
+      .filter((candidate): candidate is { filePath: string; mtimeMs: number } => Boolean(candidate))
+      .sort((left, right) => right.mtimeMs - left.mtimeMs)
+      .map((candidate) => candidate.filePath);
+  } catch {
+    return [];
+  }
+};
+
 const readStateFromDisk = async () => {
   try {
-    const filePath = storePath();
-    const [raw, fileStat] = await Promise.all([
-      readFile(filePath, 'utf8'),
-      stat(filePath),
-    ]);
-    return {
-      state: ensureStateShape(JSON.parse(raw)),
-      mtimeMs: fileStat.mtimeMs,
-    };
+    return await readStateFile(storePath());
   } catch {
+    for (const filePath of await listStateRecoveryFiles()) {
+      try {
+        return await readStateFile(filePath);
+      } catch {
+        // Try the next recovery file.
+      }
+    }
+
     return {
       state: null,
       mtimeMs: null,
@@ -2962,13 +3049,7 @@ const hydrateLoadedState = async (state: AppState) => {
   state.projects = normalizeProjectsFromPersistence(normalizeProjects(state.projects));
 };
 
-export const loadState = async () => {
-  if (cachedState) {
-    cachedState.projects = normalizeProjectsForCache(normalizeProjects(cachedState.projects));
-    cachedState.projects.forEach((project) => ensureTemporaryStreamwork(project));
-    return cachedState;
-  }
-
+const loadStateUncached = async () => {
   try {
     const loaded = await readStateFromDisk();
     if (loaded.state) {
@@ -2987,6 +3068,21 @@ export const loadState = async () => {
   await saveState(cachedState);
 
   return cachedState;
+};
+
+export const loadState = async () => {
+  if (cachedState) {
+    cachedState.projects.forEach((project) => ensureTemporaryStreamwork(project));
+    return cachedState;
+  }
+
+  if (!loadingStatePromise) {
+    loadingStatePromise = loadStateUncached().finally(() => {
+      loadingStatePromise = null;
+    });
+  }
+
+  return loadingStatePromise;
 };
 
 const getMutableState = async () => cachedState ?? await loadState();
@@ -3009,9 +3105,31 @@ const writeToDisk = async () => {
   ) {
     cacheState(mergeSessionStoreStates(onDisk.state, cachedState));
   }
-  await writeFile(storePath(), JSON.stringify(cachedState, null, 2), 'utf8');
+
+  const filePath = storePath();
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const backupPath = `${filePath}.last-good.json`;
+  const serialized = JSON.stringify(cachedState, null, 2);
+  await writeFile(tempPath, serialized, 'utf8');
+  if (onDisk.state) {
+    try {
+      await copyFile(filePath, backupPath);
+    } catch {
+      // Best-effort backup; the temp file still gives us atomic replacement.
+    }
+  }
   try {
-    cachedStateMtimeMs = (await stat(storePath())).mtimeMs;
+    await rename(tempPath, filePath);
+  } catch (error) {
+    const code = error && typeof error === 'object' ? (error as { code?: string }).code : undefined;
+    if (code !== 'EEXIST' && code !== 'EPERM') {
+      throw error;
+    }
+    await rm(filePath, { force: true });
+    await rename(tempPath, filePath);
+  }
+  try {
+    cachedStateMtimeMs = (await stat(filePath)).mtimeMs;
   } catch {
     cachedStateMtimeMs = null;
   }
@@ -3048,14 +3166,23 @@ export const getProjectsForBootstrap = async () => {
     return summarizeProjectsForBootstrap(cachedState.projects);
   }
 
-  try {
-    const raw = await readFile(storePath(), 'utf8');
-    const parsed = ensureStateShape(JSON.parse(raw));
-    const normalizedProjects = normalizeProjectsFromPersistence(normalizeProjects(parsed.projects));
-    return summarizeProjectsForBootstrap(normalizedProjects);
-  } catch {
-    return summarizeProjectsForBootstrap(buildInitialProjects());
+  const loaded = await readStateFromDisk();
+  return loaded.state
+    ? summarizeStateForBootstrap(loaded.state)
+    : summarizeProjectsForBootstrap(buildInitialProjects());
+};
+
+export const getSessionRecordForBootstrap = async (sessionId: string) => {
+  if (cachedState) {
+    const session = findSessionInProjects(cachedState.projects, sessionId);
+    return session ? cloneSessionRecord(session) : null;
   }
+
+  const loaded = await readStateFromDisk();
+  const session = loaded.state
+    ? findSessionInProjects(loaded.state.projects, sessionId)
+    : findSessionInProjects(buildInitialProjects(), sessionId);
+  return session ? cloneSessionRecord(session) : null;
 };
 
 const forEachSession = (projects: ProjectRecord[], visitor: (session: SessionRecord, dreamName: string, projectName: string) => void) => {
@@ -3070,15 +3197,7 @@ const forEachSession = (projects: ProjectRecord[], visitor: (session: SessionRec
 
 export const findSession = async (sessionId: string): Promise<SessionRecord | null> => {
   const state = await loadState();
-  let found: SessionRecord | null = null;
-
-  forEachSession(state.projects, (session) => {
-    if (session.id === sessionId) {
-      found = session;
-    }
-  });
-
-  return found;
+  return findSessionInProjects(state.projects, sessionId);
 };
 
 const assignGroupMessageSeq = (

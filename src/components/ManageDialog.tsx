@@ -44,6 +44,12 @@ export function ManageDialog({
     return null;
   }
 
+  const submit = () => {
+    if (!busy) {
+      onSubmit();
+    }
+  };
+
   return (
     <div className="dialog-backdrop" role="presentation" onClick={onCancel}>
       <section
@@ -82,7 +88,7 @@ export function ManageDialog({
                   onKeyDown={(event) => {
                     if (event.key === 'Enter') {
                       event.preventDefault();
-                      onSubmit();
+                      submit();
                     }
                   }}
                 />
@@ -108,7 +114,7 @@ export function ManageDialog({
           <button type="button" className="dialog-button secondary" onClick={onCancel}>
             Cancel
           </button>
-          <button type="button" className="dialog-button primary" onClick={onSubmit} disabled={busy}>
+          <button type="button" className="dialog-button primary" onClick={submit} disabled={busy}>
             {busy ? 'Saving...' : confirmLabel}
           </button>
         </div>

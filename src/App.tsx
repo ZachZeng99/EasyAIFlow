@@ -7,7 +7,11 @@ import { bridge } from './bridge';
 import { ManageDialog } from './components/ManageDialog';
 import { ChatThread } from './components/ChatThread';
 import { ContextPanel } from './components/ContextPanel';
-import { buildOptimisticSendState, reconcileOptimisticSendMessages } from './data/optimisticSend';
+import {
+  buildOptimisticSendState,
+  reconcileLiveTraceMessage,
+  reconcileOptimisticSendMessages,
+} from './data/optimisticSend';
 import { mergeProjectSnapshots } from './data/projectSnapshots';
 import { getLastGroupResponder } from './data/groupChat';
 import {
@@ -66,6 +70,27 @@ const flattenVisibleSessions = (projects: ProjectRecord[]) =>
 const isTerminalBackgroundTaskStatus = (
   status: 'pending' | 'running' | 'completed' | 'failed' | 'stopped',
 ) => status === 'completed' || status === 'failed' || status === 'stopped';
+
+const CREATE_SESSION_TIMEOUT_MS = 15_000;
+
+const withTimeout = async <T,>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> => {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+};
 
 const parsePlanModeTracePayload = (message: SessionRecord['messages'][number]): PlanModeRequest | null => {
   if (
@@ -148,13 +173,7 @@ const applyClaudeEvent = (projects: ProjectRecord[], event: ClaudeStreamEvent) =
     }
 
     if (event.type === 'trace') {
-      const messages = [...(session.messages ?? [])];
-      const existingIndex = messages.findIndex((message) => message.id === event.message.id);
-      if (existingIndex >= 0) {
-        messages[existingIndex] = event.message;
-      } else {
-        messages.push(event.message);
-      }
+      const messages = reconcileLiveTraceMessage(session.messages ?? [], event.message);
 
       return {
         ...session,
@@ -1941,7 +1960,7 @@ export default function App() {
   };
 
   const handleSubmitDialog = async () => {
-    if (!dialogState) {
+    if (!dialogState || isDialogBusy) {
       return;
     }
 
@@ -1979,13 +1998,17 @@ export default function App() {
       } else if (dialogState.kind === 'create-streamwork') {
         await handleCreateStreamwork(dialogState.targetId, name);
       } else if (dialogState.kind === 'create-session') {
-        const result = await bridge.createSessionInStreamwork({
-          streamworkId: dialogState.targetId,
-          name,
-          includeStreamworkSummary: Boolean(dialogState.toggles.includeStreamworkSummary),
-          provider,
-          sessionKind,
-        });
+        const result = await withTimeout(
+          bridge.createSessionInStreamwork({
+            streamworkId: dialogState.targetId,
+            name,
+            includeStreamworkSummary: Boolean(dialogState.toggles.includeStreamworkSummary),
+            provider,
+            sessionKind,
+          }),
+          CREATE_SESSION_TIMEOUT_MS,
+          'Creating the session timed out. Refresh the project list before retrying; the server may still finish the original request.',
+        );
         replaceProjects(result.projects);
         setSelectedSessionId(result.session.id);
       } else if (dialogState.kind === 'close-project') {
@@ -1997,6 +2020,8 @@ export default function App() {
       }
 
       setDialogState(null);
+    } catch (error) {
+      setUiError(error instanceof Error ? error.message : 'Failed to save changes.');
     } finally {
       setIsDialogBusy(false);
     }

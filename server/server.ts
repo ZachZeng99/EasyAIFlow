@@ -42,7 +42,7 @@ import {
   createSession,
   createSessionInStreamwork,
   createStreamwork,
-  findSession,
+  getSessionRecordForBootstrap,
   renameEntity,
   reorderStreamworks,
   updateSessionContextReferences,
@@ -210,14 +210,14 @@ const rpcHandlers = {
     defaultModel: await getConfiguredClaudeModel(ctx),
   }),
   getProjects: async () => {
-    const bootstrap = await handleBootstrapSessions(state);
+    const bootstrap = await handleBootstrapSessions(state, { bootstrapProjects: true });
     return {
       ...bootstrap,
       projects: summarizeProjectsForWebBootstrap(bootstrap.projects),
     };
   },
   getSessionRecord: async (payload: { sessionId: string }) => {
-    const session = await findSession(payload.sessionId);
+    const session = await getSessionRecordForBootstrap(payload.sessionId);
     if (!session) {
       throw new Error('Session not found.');
     }

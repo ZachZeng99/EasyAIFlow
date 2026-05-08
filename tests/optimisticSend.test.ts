@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
-import { buildOptimisticSendState, reconcileOptimisticSendMessages } from '../src/data/optimisticSend.js';
+import {
+  buildOptimisticSendState,
+  reconcileLiveTraceMessage,
+  reconcileOptimisticSendMessages,
+} from '../src/data/optimisticSend.js';
 import type { ContextReference, PendingAttachment, ProjectRecord, SessionRecord } from '../src/data/types.js';
 
 const run = (name: string, fn: () => void) => {
@@ -227,5 +231,66 @@ run('reconcileOptimisticSendMessages rewrites local ids without clobbering real 
   assert.equal(
     session.messages.find((message) => message.id === 'server-assistant-1')?.content,
     'Final streamed answer',
+  );
+});
+
+run('reconcileLiveTraceMessage replaces optimistic placeholders when server messages arrive', () => {
+  const optimistic = buildOptimisticSendState({
+    projects: makeProjects(),
+    sessionId: 'session-1',
+    prompt: 'Check the failing build',
+    attachments: [
+      {
+        id: 'attachment-1',
+        name: 'image.png',
+        mimeType: 'image/png',
+        size: 256,
+        path: 'X:\\AITool\\EasyAIFlow\\image.png',
+      },
+    ],
+    references: [],
+    queued: false,
+    provider: 'codex',
+    now: new Date('2026-03-25T08:09:10.000Z'),
+  });
+
+  const session = optimistic.projects[0]?.dreams[0]?.sessions[0] as SessionRecord;
+  const withServerUser = reconcileLiveTraceMessage(session.messages, {
+    id: 'server-user-1',
+    role: 'user',
+    timestamp: '2026/3/25 08:09:11',
+    title: 'User prompt',
+    content: 'Check the failing build',
+    status: 'complete',
+    attachments: [
+      {
+        id: 'attachment-1',
+        name: 'image.png',
+        mimeType: 'image/png',
+        size: 256,
+        path: 'X:\\AITool\\EasyAIFlow\\.easyaiflow\\attachments\\session-1\\image.png',
+      },
+    ],
+  });
+  const withServerAssistant = reconcileLiveTraceMessage(withServerUser, {
+    id: 'server-assistant-1',
+    role: 'assistant',
+    timestamp: '2026/3/25 08:09:11',
+    title: 'Codex response',
+    content: '',
+    status: 'streaming',
+  });
+
+  assert.deepEqual(
+    withServerAssistant.map((message) => message.id),
+    ['assistant-0', 'server-user-1', 'server-assistant-1'],
+  );
+  assert.equal(
+    withServerAssistant.some((message) => message.id === optimistic.userMessageId),
+    false,
+  );
+  assert.equal(
+    withServerAssistant.some((message) => message.id === optimistic.assistantMessageId),
+    false,
   );
 });
