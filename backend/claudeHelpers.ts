@@ -248,9 +248,22 @@ export const parseGitStatusCode = (rawCode: string) => {
   return 'M';
 };
 
-export const isWritableStdin = (child: { killed: boolean; stdin: { destroyed: boolean; writableEnded: boolean } | null }) => {
+export const isWritableStdin = (child: {
+  killed: boolean;
+  exitCode?: number | null;
+  signalCode?: string | null;
+  stdin: { destroyed: boolean; writableEnded: boolean; writable?: boolean } | null;
+}) => {
   const stdin = child.stdin;
-  return Boolean(stdin && !child.killed && !stdin.destroyed && !stdin.writableEnded);
+  return Boolean(
+    stdin &&
+      !child.killed &&
+      child.exitCode == null &&
+      child.signalCode == null &&
+      stdin.writable !== false &&
+      !stdin.destroyed &&
+      !stdin.writableEnded,
+  );
 };
 
 export const isAutoApprovableEditRequest = (request: { toolName: string; command?: string }) => {

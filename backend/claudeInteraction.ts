@@ -2181,33 +2181,44 @@ const ensureResidentClaudeSession = async (
   const existing = getResidentSession(state, session.id);
   const effortChanged = existing?.configuredEffort !== options?.effort;
   const modelChanged = existing?.configuredModel !== resolvedModel;
-  if (existing && !existing.child.killed) {
-    if (!modelChanged && !effortChanged) {
-      return existing;
-    }
-
-    if (modelChanged && !effortChanged) {
-      try {
-        await requestResidentModelSwitch(session.id, existing, resolvedModel);
-        existing.configuredModel = resolvedModel;
-        await setSessionRuntime(session.id, {
-          model: resolvedModel,
-        });
-        return existing;
-      } catch (error) {
-        if (!canRestartResidentSession(existing)) {
-          throw error;
-        }
+  if (existing) {
+    if (!isWritableStdin(existing.child)) {
+      if (!canRestartResidentSession(existing)) {
+        throw new Error('Claude stdin is not writable.');
       }
-    } else if (!canRestartResidentSession(existing)) {
-      throw new Error('Claude is busy and cannot apply the requested session settings yet.');
-    }
+      if (!existing.child.killed) {
+        existing.child.kill();
+      }
+      removeResidentSession(state, session.id);
+      removeActiveClaudeRun(state.activeRuns, existing.runId);
+    } else {
+      if (!modelChanged && !effortChanged) {
+        return existing;
+      }
 
-    if (!existing.child.killed) {
-      existing.child.kill();
+      if (modelChanged && !effortChanged) {
+        try {
+          await requestResidentModelSwitch(session.id, existing, resolvedModel);
+          existing.configuredModel = resolvedModel;
+          await setSessionRuntime(session.id, {
+            model: resolvedModel,
+          });
+          return existing;
+        } catch (error) {
+          if (!canRestartResidentSession(existing)) {
+            throw error;
+          }
+        }
+      } else if (!canRestartResidentSession(existing)) {
+        throw new Error('Claude is busy and cannot apply the requested session settings yet.');
+      }
+
+      if (!existing.child.killed) {
+        existing.child.kill();
+      }
+      removeResidentSession(state, session.id);
+      removeActiveClaudeRun(state.activeRuns, existing.runId);
     }
-    removeResidentSession(state, session.id);
-    removeActiveClaudeRun(state.activeRuns, existing.runId);
   }
 
   const forkSession = shouldForkResidentClaudeSession({
