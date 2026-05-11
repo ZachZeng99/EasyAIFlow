@@ -294,6 +294,8 @@ const normalizeDreamSessions = (dream: DreamRecord) => {
 
     return {
       ...current,
+      dreamId: dream.id,
+      dreamName: dream.name,
       provider,
       model,
       sessionKind,
@@ -307,6 +309,16 @@ const normalizeDreamSessions = (dream: DreamRecord) => {
   }) as SessionRecord[];
 
   return dream.isTemporary ? pruneTemporaryImportedDuplicates(sessions) : sessions;
+};
+
+const mapSessionDreams = (project: ProjectRecord) => {
+  const result = new Map<string, DreamRecord>();
+  project.dreams.forEach((dream) => {
+    dream.sessions.forEach((session) => {
+      result.set(session.id, dream);
+    });
+  });
+  return result;
 };
 
 const groupTitlePrefix = '[Group] ';
@@ -2501,6 +2513,7 @@ const importNativeClaudeSessions = async (
 
   const existingSessions = [...temporary.sessions] as SessionRecord[];
   const projectSessions = project.dreams.flatMap((dream) => dream.sessions) as SessionRecord[];
+  const existingDreamBySessionId = mapSessionDreams(project);
   const existingByClaudeSessionId = new Map(
     projectSessions
       .filter((session): session is SessionRecord & { claudeSessionId: string } => Boolean(session.claudeSessionId))
@@ -2549,8 +2562,9 @@ const importNativeClaudeSessions = async (
       findImportedSessionTarget(projectSessions, parsed.nativeSessionId, parsed.title, workspace, 'claudeSessionId', 'claude') ??
       existingByClaudeSessionId.get(parsed.nativeSessionId);
     const display = resolveImportedSessionDisplay(existing, parsed);
-    const targetDreamId = existing?.dreamId ?? temporary.id;
-    const targetDreamName = existing?.dreamName ?? temporary.name;
+    const existingDream = existing ? existingDreamBySessionId.get(existing.id) : undefined;
+    const targetDreamId = existingDream?.id ?? existing?.dreamId ?? temporary.id;
+    const targetDreamName = existingDream?.name ?? existing?.dreamName ?? temporary.name;
     const importedSession: SessionRecord = {
       id: existing?.id ?? randomUUID(),
       title: display.title,
@@ -2635,6 +2649,7 @@ const importNativeCodexSessions = async (
 
   const existingSessions = [...temporary.sessions] as SessionRecord[];
   const projectSessions = project.dreams.flatMap((dream) => dream.sessions) as SessionRecord[];
+  const existingDreamBySessionId = mapSessionDreams(project);
   const existingByCodexThreadId = new Map(
     projectSessions
       .filter((session): session is SessionRecord & { codexThreadId: string } => Boolean(session.codexThreadId))
@@ -2666,6 +2681,9 @@ const importNativeCodexSessions = async (
         'codex',
       ) ?? existingByCodexThreadId.get(parsed.nativeSessionId);
     const display = resolveImportedSessionDisplay(existing, parsed);
+    const existingDream = existing ? existingDreamBySessionId.get(existing.id) : undefined;
+    const targetDreamId = existingDream?.id ?? existing?.dreamId ?? temporary.id;
+    const targetDreamName = existingDream?.name ?? existing?.dreamName ?? temporary.name;
     const importedSession: SessionRecord = {
       id: existing?.id ?? randomUUID(),
       title: display.title,
@@ -2676,8 +2694,8 @@ const importNativeCodexSessions = async (
       workspace,
       projectId: project.id,
       projectName: project.name,
-      dreamId: temporary.id,
-      dreamName: temporary.name,
+      dreamId: targetDreamId,
+      dreamName: targetDreamName,
       claudeSessionId: existing?.claudeSessionId,
       codexThreadId: parsed.nativeSessionId,
       updatedAt: display.updatedAt,
@@ -3422,8 +3440,8 @@ export const updateAssistantMessageInMemory = async (
 export const setSessionRuntime = async (
   sessionId: string,
   values: {
-    claudeSessionId?: string;
-    codexThreadId?: string;
+    claudeSessionId?: string | null;
+    codexThreadId?: string | null;
     model?: string;
     preview?: string;
     timeLabel?: string;
@@ -3437,11 +3455,11 @@ export const setSessionRuntime = async (
       return;
     }
 
-    if (values.claudeSessionId) {
-      session.claudeSessionId = values.claudeSessionId;
+    if (values.claudeSessionId !== undefined) {
+      session.claudeSessionId = values.claudeSessionId || undefined;
     }
-    if (values.codexThreadId) {
-      session.codexThreadId = values.codexThreadId;
+    if (values.codexThreadId !== undefined) {
+      session.codexThreadId = values.codexThreadId || undefined;
     }
     if (values.model) {
       session.model = values.model;

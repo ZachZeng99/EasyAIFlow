@@ -26,6 +26,11 @@ import {
   mapTokenUsage,
   buildAttachmentFileName,
   isWritableStdin,
+  isLiveChildProcess,
+  formatClaudeProcessUnavailableMessage,
+  MissingClaudeConversationError,
+  extractMissingClaudeConversationSessionId,
+  getMissingClaudeConversationSessionId,
   isAutoApprovableEditRequest,
   buildPromptWithAttachments,
   cloneMessageContextReferences,
@@ -685,6 +690,19 @@ const removeResidentSession = (
 ) => {
   state.residentSessions.delete(sessionId);
 };
+
+const getResidentProcessUnavailableMessage = (
+  resident: ResidentClaudeSession,
+  error?: unknown,
+  fallback?: string,
+) =>
+  formatClaudeProcessUnavailableMessage({
+    stderr: resident.stderrBuffer,
+    error,
+    exitCode: resident.child.exitCode,
+    signalCode: resident.child.signalCode,
+    fallback,
+  });
 
 const canRestartResidentSession = (resident: ResidentClaudeSession) =>
   !resident.currentTurn &&
@@ -1423,6 +1441,7 @@ export const handleClaudeLine = async (
     persistentSession?: boolean;
     onBackgroundTaskOwner?: (taskId: string, assistantMessageId: string, runState: ClaudeRunState) => void;
     onBackgroundActivated?: (assistantMessageId: string, runState: ClaudeRunState) => void;
+    onMissingClaudeConversation?: (claudeSessionId: string) => void;
     appliedEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   },
 ) => {
@@ -1434,6 +1453,12 @@ export const handleClaudeLine = async (
   }
 
   const parsed = JSON.parse(line) as Record<string, unknown>;
+  const missingClaudeSessionId = extractMissingClaudeConversationSessionId(parsed);
+  if (missingClaudeSessionId) {
+    options?.onMissingClaudeConversation?.(missingClaudeSessionId);
+    return;
+  }
+
   Object.assign(runState, applyParsedSessionMetadata(runState, parsed));
   await syncRunSessionRuntime(sessionId, runState);
   const backgroundTaskNotification = extractBackgroundTaskNotificationContent(parsed);
@@ -2182,16 +2207,7 @@ const ensureResidentClaudeSession = async (
   const effortChanged = existing?.configuredEffort !== options?.effort;
   const modelChanged = existing?.configuredModel !== resolvedModel;
   if (existing) {
-    if (!isWritableStdin(existing.child)) {
-      if (!canRestartResidentSession(existing)) {
-        throw new Error('Claude stdin is not writable.');
-      }
-      if (!existing.child.killed) {
-        existing.child.kill();
-      }
-      removeResidentSession(state, session.id);
-      removeActiveClaudeRun(state.activeRuns, existing.runId);
-    } else {
+    if (isWritableStdin(existing.child)) {
       if (!modelChanged && !effortChanged) {
         return existing;
       }
@@ -2213,7 +2229,22 @@ const ensureResidentClaudeSession = async (
         throw new Error('Claude is busy and cannot apply the requested session settings yet.');
       }
 
-      if (!existing.child.killed) {
+      if (isLiveChildProcess(existing.child)) {
+        existing.child.kill();
+      }
+      removeResidentSession(state, session.id);
+      removeActiveClaudeRun(state.activeRuns, existing.runId);
+    } else {
+      if (isLiveChildProcess(existing.child) && !canRestartResidentSession(existing)) {
+        throw new Error(
+          getResidentProcessUnavailableMessage(
+            existing,
+            undefined,
+            'Claude is busy and stdin is not writable.',
+          ),
+        );
+      }
+      if (isLiveChildProcess(existing.child)) {
         existing.child.kill();
       }
       removeResidentSession(state, session.id);
@@ -2241,6 +2272,7 @@ const ensureResidentClaudeSession = async (
     child,
     projectRoot: session.workspace,
   });
+  let startupError: Error | undefined;
   let resolveResidentReady: () => void = () => undefined;
   const residentReady = new Promise<void>((resolve) => {
     let settled = false;
@@ -2382,6 +2414,28 @@ const ensureResidentClaudeSession = async (
               backgroundRunState,
             );
           },
+          onMissingClaudeConversation: (missingClaudeSessionId) => {
+            const matchedTurn =
+              currentResident.currentTurn?.runState === runState
+                ? currentResident.currentTurn
+                : currentResident.activeOutputTurn?.runState === runState
+                  ? currentResident.activeOutputTurn
+                  : undefined;
+
+            if (currentResident.currentTurn === matchedTurn) {
+              currentResident.currentTurn = undefined;
+            }
+            if (currentResident.activeOutputTurn === matchedTurn) {
+              currentResident.activeOutputTurn = undefined;
+            }
+
+            removeResidentSession(state, session.id);
+            removeActiveClaudeRun(state.activeRuns, currentResident.runId);
+            if (isLiveChildProcess(currentResident.child)) {
+              currentResident.child.kill();
+            }
+            matchedTurn?.rejectCompletion(new MissingClaudeConversationError(missingClaudeSessionId));
+          },
           appliedEffort: currentResident.configuredEffort,
         },
       );
@@ -2497,11 +2551,21 @@ const ensureResidentClaudeSession = async (
   });
 
   child.on('error', (error) => {
+    startupError = error;
     resolveResidentReady();
     rejectResidentControlRequests(resident, error);
     void finalizeResidentSessionClose(ctx, state, resident, null, error);
   });
   await residentReady;
+  if (!isWritableStdin(child) || getResidentSession(state, session.id)?.runId !== resident.runId) {
+    throw new Error(
+      getResidentProcessUnavailableMessage(
+        resident,
+        startupError,
+        'Claude exited before EasyAIFlow could send the message.',
+      ),
+    );
+  }
   return resident;
 };
 
@@ -2611,32 +2675,105 @@ export const switchClaudeSessionEffort = async (
   };
 };
 
-export const executePreparedClaudeRun = async (
+const buildMissingClaudeConversationRecoveryPrompt = async (
+  prepared: PreparedClaudeRun,
+  missingClaudeSessionId: string,
+) => {
+  const resolvedPrompt = prepared.resolvedPrompt.trim();
+  if (/^\/\S+/.test(resolvedPrompt)) {
+    return prepared.resolvedPrompt;
+  }
+
+  const latestSession = await findSession(prepared.sessionId);
+  const historySession: SessionRecord = {
+    ...(latestSession ?? (prepared.session as SessionRecord)),
+    messages: (latestSession?.messages ?? (prepared.session as SessionRecord).messages ?? []).filter(
+      (message) => message.id !== prepared.userMessageId && message.id !== prepared.assistantMessageId,
+    ),
+  };
+
+  if (getConversationMessages(historySession).length === 0) {
+    return prepared.resolvedPrompt;
+  }
+
+  return [
+    `EasyAIFlow could not resume the previous native Claude conversation (${missingClaudeSessionId}) because Claude no longer has that local transcript.`,
+    'The EasyAIFlow transcript before the current message is provided below as recovery context.',
+    'Use it only as supporting context; do not claim the native Claude conversation was recovered.',
+    '',
+    buildSessionTranscriptContext(historySession),
+    '',
+    'Current user message:',
+    prepared.resolvedPrompt,
+  ].join('\n\n');
+};
+
+const detachMissingClaudeConversation = async (
+  prepared: PreparedClaudeRun,
+  missingClaudeSessionId: string,
+) => {
+  prepared.resolvedPrompt = await buildMissingClaudeConversationRecoveryPrompt(
+    prepared,
+    missingClaudeSessionId,
+  );
+  if (prepared.session.claudeSessionId === missingClaudeSessionId) {
+    prepared.session.claudeSessionId = undefined;
+  }
+  await setSessionRuntime(prepared.sessionId, {
+    claudeSessionId: null,
+  });
+};
+
+const executePreparedClaudeRunAttempt = async (
   ctx: ClaudeInteractionContext,
   state: ClaudeInteractionState,
   prepared: PreparedClaudeRun,
   releaseQueuedTurn: () => void,
 ) =>
   new Promise<void>((resolve, reject) => {
-    const { session, resolvedPrompt } = prepared;
     void (async () => {
-      const resident = await ensureResidentClaudeSession(ctx, state, session, prepared.options);
+      const resident = await ensureResidentClaudeSession(ctx, state, prepared.session, prepared.options);
       const turn = createActiveTurn(prepared, releaseQueuedTurn, resolve, reject);
       resident.currentTurn = turn;
       emitRuntimeState(ctx, prepared.sessionId, 'running', true, resident.configuredEffort);
       if (!isWritableStdin(resident.child) || !resident.child.stdin) {
-        turn.releaseQueuedTurn();
         resident.currentTurn = undefined;
-        throw new Error('Claude stdin is not writable.');
+        throw new Error(getResidentProcessUnavailableMessage(resident));
       }
       resident.child.stdin.write(
-        `${buildClaudeUserMessageLine(resolvedPrompt, { uuid: prepared.userMessageId })}\n`,
+        `${buildClaudeUserMessageLine(prepared.resolvedPrompt, { uuid: prepared.userMessageId })}\n`,
       );
     })().catch((error) => {
-      releaseQueuedTurn();
       reject(error);
     });
   });
+
+export const executePreparedClaudeRun = async (
+  ctx: ClaudeInteractionContext,
+  state: ClaudeInteractionState,
+  prepared: PreparedClaudeRun,
+  releaseQueuedTurn: () => void,
+) => {
+  let recoveredMissingClaudeSessionId: string | undefined;
+
+  for (;;) {
+    try {
+      await executePreparedClaudeRunAttempt(ctx, state, prepared, releaseQueuedTurn);
+      return;
+    } catch (error) {
+      const missingClaudeSessionId = getMissingClaudeConversationSessionId(error);
+      if (
+        !missingClaudeSessionId ||
+        recoveredMissingClaudeSessionId === missingClaudeSessionId
+      ) {
+        throw error;
+      }
+
+      recoveredMissingClaudeSessionId = missingClaudeSessionId;
+      await detachMissingClaudeConversation(prepared, missingClaudeSessionId);
+    }
+  }
+};
 
 export const runClaudePrint = async (
   ctx: ClaudeInteractionContext,

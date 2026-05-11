@@ -248,6 +248,15 @@ export const parseGitStatusCode = (rawCode: string) => {
   return 'M';
 };
 
+export const isLiveChildProcess = (child: {
+  killed: boolean;
+  exitCode?: number | null;
+  signalCode?: string | null;
+}) =>
+  !child.killed &&
+  (child.exitCode ?? null) === null &&
+  (child.signalCode ?? null) === null;
+
 export const isWritableStdin = (child: {
   killed: boolean;
   exitCode?: number | null;
@@ -257,14 +266,91 @@ export const isWritableStdin = (child: {
   const stdin = child.stdin;
   return Boolean(
     stdin &&
-      !child.killed &&
-      child.exitCode == null &&
-      child.signalCode == null &&
-      stdin.writable !== false &&
+      isLiveChildProcess(child) &&
       !stdin.destroyed &&
-      !stdin.writableEnded,
+      !stdin.writableEnded &&
+      stdin.writable !== false,
   );
 };
+
+export const formatClaudeProcessUnavailableMessage = ({
+  stderr,
+  error,
+  exitCode,
+  signalCode,
+  fallback = 'Claude stdin is not writable.',
+}: {
+  stderr?: string;
+  error?: unknown;
+  exitCode?: number | null;
+  signalCode?: string | null;
+  fallback?: string;
+}) => {
+  const errorMessage = error instanceof Error ? error.message.trim() : String(error ?? '').trim();
+  if (errorMessage) {
+    return errorMessage;
+  }
+
+  const stderrMessage = stderr?.trim();
+  if (stderrMessage) {
+    return stderrMessage;
+  }
+
+  if (signalCode) {
+    return `Claude exited before it was ready (signal ${signalCode}).`;
+  }
+
+  if (exitCode !== null && exitCode !== undefined) {
+    return `Claude exited before it was ready (code ${exitCode}).`;
+  }
+
+  return fallback;
+};
+
+export class MissingClaudeConversationError extends Error {
+  claudeSessionId: string;
+
+  constructor(claudeSessionId: string) {
+    super(`No conversation found with session ID: ${claudeSessionId}`);
+    this.name = 'MissingClaudeConversationError';
+    this.claudeSessionId = claudeSessionId;
+  }
+}
+
+export const extractMissingClaudeConversationSessionId = (value: unknown) => {
+  const candidates: string[] = [];
+  const collect = (candidate: unknown) => {
+    if (typeof candidate === 'string' && candidate.trim()) {
+      candidates.push(candidate);
+    }
+  };
+
+  collect(value);
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    collect(record.result);
+    collect(record.error);
+    if (Array.isArray(record.errors)) {
+      record.errors.forEach(collect);
+    }
+  }
+
+  for (const candidate of candidates) {
+    const match = candidate.match(/No conversation found with session ID:\s*([^\s]+)/i);
+    if (match?.[1]) {
+      return match[1].trim();
+    }
+  }
+
+  return undefined;
+};
+
+export const getMissingClaudeConversationSessionId = (error: unknown) =>
+  error instanceof MissingClaudeConversationError
+    ? error.claudeSessionId
+    : extractMissingClaudeConversationSessionId(
+        error instanceof Error ? error.message : error,
+      );
 
 export const isAutoApprovableEditRequest = (request: { toolName: string; command?: string }) => {
   const toolName = request.toolName.trim().toLowerCase();

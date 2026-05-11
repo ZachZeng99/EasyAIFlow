@@ -166,6 +166,162 @@ await run('createProject imports Codex CLI sessions under the opened project tre
   }
 });
 
+await run('loadState keeps an existing Codex session in its non-temporary streamwork', async () => {
+  const tempBase = path.resolve('.tmp-tests');
+  await mkdir(tempBase, { recursive: true });
+  const tempRoot = await mkdtemp(path.join(tempBase, 'session-store-codex-streamwork-'));
+  const userDataPath = path.join(tempRoot, 'userData');
+  const homePath = path.join(tempRoot, 'home');
+  const projectRoot = path.join(tempRoot, 'PBZ');
+  const codexSessionsDir = path.join(homePath, '.codex', 'sessions', '2026', '05', '09');
+  const codexIndexPath = path.join(homePath, '.codex', 'session_index.jsonl');
+  const storeFile = path.join(userDataPath, 'easyaiflow-sessions.json');
+
+  await mkdir(userDataPath, { recursive: true });
+  await mkdir(projectRoot, { recursive: true });
+  await mkdir(codexSessionsDir, { recursive: true });
+  await mkdir(path.dirname(codexIndexPath), { recursive: true });
+
+  await writeFile(
+    codexIndexPath,
+    `${JSON.stringify({
+      id: 'render-thread',
+      thread_name: 'Render Codex',
+      updated_at: '2026-05-09T00:00:02.000Z',
+    })}\n`,
+    'utf8',
+  );
+  await writeFile(
+    path.join(codexSessionsDir, 'rollout-2026-05-09T00-00-00-render-thread.jsonl'),
+    [
+      JSON.stringify({
+        timestamp: '2026-05-09T00:00:00.000Z',
+        type: 'session_meta',
+        payload: {
+          id: 'render-thread',
+          cwd: projectRoot,
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-05-09T00:00:01.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'check render path' }],
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-05-09T00:00:02.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'render path checked' }],
+        },
+      }),
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  await writeFile(
+    storeFile,
+    JSON.stringify(
+      {
+        projects: [
+          {
+            id: 'project-1',
+            name: 'PBZ',
+            rootPath: projectRoot,
+            isClosed: false,
+            dreams: [
+              {
+                id: 'temporary',
+                name: 'Temporary',
+                isTemporary: true,
+                sessions: [],
+              },
+              {
+                id: 'render',
+                name: 'Render',
+                sessions: [
+                  {
+                    id: 'render-session',
+                    title: 'Render Codex',
+                    preview: 'old preview',
+                    timeLabel: 'Old',
+                    updatedAt: 1,
+                    provider: 'codex',
+                    model: 'gpt-5.5',
+                    workspace: projectRoot,
+                    projectId: 'project-1',
+                    projectName: 'PBZ',
+                    dreamId: 'render',
+                    dreamName: 'Render',
+                    codexThreadId: 'render-thread',
+                    sessionKind: 'standard',
+                    hidden: false,
+                    groups: [],
+                    contextReferences: [],
+                    tokenUsage: {
+                      contextWindow: 0,
+                      used: 0,
+                      input: 0,
+                      output: 0,
+                      cached: 0,
+                      windowSource: 'unknown',
+                    },
+                    branchSnapshot: {
+                      branch: 'main',
+                      ahead: 0,
+                      behind: 0,
+                      dirty: false,
+                      changedFiles: [],
+                    },
+                    messages: [],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        deletedImports: {
+          claudeSessionIds: [],
+          codexThreadIds: [],
+        },
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+
+  const previousUserProfile = process.env.USERPROFILE;
+  process.env.USERPROFILE = homePath;
+  configureRuntimePaths({ mode: 'web', userDataPath, homePath });
+
+  try {
+    const sessionStore = await importFreshSessionStore();
+    const projects = await sessionStore.getProjects();
+    const project = projects[0] as { dreams: Array<{ id: string; name: string; sessions: Array<{ codexThreadId?: string; dreamId?: string; dreamName?: string; messages?: Array<{ content?: string }> }> }> };
+    const temporary = project.dreams.find((dream) => dream.id === 'temporary');
+    const render = project.dreams.find((dream) => dream.id === 'render');
+    const renderSession = render?.sessions.find((session) => session.codexThreadId === 'render-thread');
+
+    assert.equal(temporary?.sessions.some((session) => session.codexThreadId === 'render-thread'), false);
+    assert.equal(renderSession?.dreamId, 'render');
+    assert.equal(renderSession?.dreamName, 'Render');
+    assert.equal(renderSession?.messages?.at(-1)?.content, 'render path checked');
+  } finally {
+    if (previousUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = previousUserProfile;
+    }
+  }
+});
+
 await run('createProject imports Codex CLI tool traces from native session logs', async () => {
   const tempBase = path.resolve('.tmp-tests');
   await mkdir(tempBase, { recursive: true });
