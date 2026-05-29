@@ -93,6 +93,7 @@ import { buildRecordedCodeChangeDiff } from '../electron/recordedCodeChangeDiff.
 import {
   normalizeClaudeModelSelection,
   resolveClaudeModelArg,
+  resolveClaudeSessionModelArg,
   shouldSwitchClaudeSessionModel,
 } from '../electron/claudeModel.js';
 import { getClaudeProjectDirNameCandidates } from '../electron/workspacePaths.js';
@@ -151,6 +152,12 @@ const resolveRequestedClaudeModel = async (
   ctx: ClaudeInteractionContext,
   requestedModel: string | undefined,
 ) => resolveClaudeModelArg(requestedModel, await readClaudeSettings(ctx));
+
+const resolveClaudeRunModel = async (
+  ctx: ClaudeInteractionContext,
+  sessionModel: string | undefined,
+  requestedModel: string | undefined,
+) => resolveClaudeSessionModelArg(requestedModel, sessionModel, await readClaudeSettings(ctx));
 
 export const grantPathPermission = async (ctx: ClaudeInteractionContext, projectRoot: string, targetPath: string) => {
   const settingsPath = path.join(projectRoot, '.claude', 'settings.local.json');
@@ -2201,7 +2208,7 @@ const ensureResidentClaudeSession = async (
       callerCtx.broadcastEvent(event);
     },
   };
-  const resolvedModel = await resolveRequestedClaudeModel(ctx, options?.model);
+  const resolvedModel = await resolveClaudeRunModel(ctx, session.model, options?.model);
   const persistedModel = await resolveRequestedClaudeModel(ctx, session.model);
   const existing = getResidentSession(state, session.id);
   const effortChanged = existing?.configuredEffort !== options?.effort;
@@ -3000,8 +3007,13 @@ export const runBtwPrompt = async (
         inheritedContext = Boolean(fallbackContext);
       }
 
+      const sessionModel =
+        !options?.model && options?.sessionId
+          ? (await findSession(options.sessionId))?.model
+          : undefined;
+
       const args = buildClaudePrintArgs({
-        model: await resolveRequestedClaudeModel(ctx, options?.model),
+        model: await resolveClaudeRunModel(ctx, sessionModel, options?.model),
         effort: options?.effort,
         sessionArgs,
         tools: '',

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   normalizeClaudeModelSelection,
   resolveClaudeModelArg,
+  resolveClaudeSessionModelArg,
   shouldSwitchClaudeSessionModel,
 } from '../electron/claudeModel.js';
 
@@ -50,6 +51,18 @@ run('resolveClaudeModelArg treats bare claude as the default opus alias', () => 
 
 run('resolveClaudeModelArg keeps explicit model names unchanged', () => {
   assert.equal(resolveClaudeModelArg('kimi-k2.5', { _env: { ANTHROPIC_MODEL: 'other' } }), 'kimi-k2.5');
+});
+
+run('resolveClaudeSessionModelArg falls back to the session model when no model is requested', () => {
+  assert.equal(resolveClaudeSessionModelArg(undefined, 'opus[1m]'), 'claude-opus-4-8[1m]');
+});
+
+run('resolveClaudeSessionModelArg upgrades legacy native Opus session models through the UI alias', () => {
+  assert.equal(resolveClaudeSessionModelArg(undefined, 'claude-opus-4-7[1m]'), 'claude-opus-4-8[1m]');
+});
+
+run('resolveClaudeSessionModelArg keeps explicit model requests ahead of the session fallback', () => {
+  assert.equal(resolveClaudeSessionModelArg('sonnet', 'claude-opus-4-7[1m]'), 'claude-sonnet-4-6');
 });
 
 run('normalizeClaudeModelSelection maps native sonnet model names back to UI alias', () => {

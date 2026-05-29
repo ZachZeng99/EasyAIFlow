@@ -69,6 +69,22 @@ export const resolveClaudeModelArg = (requestedModel: string | undefined, settin
   return trimmed;
 };
 
+export const resolveClaudeSessionModelArg = (
+  requestedModel: string | undefined,
+  sessionModel: string | undefined,
+  settings?: ClaudeSettings,
+) => {
+  const trimmedRequested = requestedModel?.trim();
+  if (trimmedRequested) {
+    return resolveClaudeModelArg(trimmedRequested, settings);
+  }
+
+  const normalizedSessionModel =
+    normalizeClaudeModelSelection(sessionModel) ??
+    sessionModel?.trim();
+  return resolveClaudeModelArg(normalizedSessionModel, settings);
+};
+
 export const shouldSwitchClaudeSessionModel = (payload: {
   prompt?: string;
   claudeSessionId?: string;
