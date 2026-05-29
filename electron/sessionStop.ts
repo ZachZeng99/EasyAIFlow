@@ -41,7 +41,7 @@ const buildStoppedAssistantMessage = (
 
 export const stopAssistantMessage = async (sessionId: string, messageId: string) => {
   const session = await findSession(sessionId);
-  const providerName = getProviderDisplayName(session?.provider);
+  const providerName = session?.sessionKind === 'group' ? 'Group room' : getProviderDisplayName(session?.provider);
   const existing = session?.messages?.find((message) => message.id === messageId);
   if (!existing || existing.role !== 'assistant' || !isPendingStatus(existing.status)) {
     return null;
@@ -70,7 +70,7 @@ export const stopPendingSessionMessages = async (sessionId: string) => {
     };
   }
 
-  const providerName = getProviderDisplayName(session.provider);
+  const providerName = session.sessionKind === 'group' ? 'Group room' : getProviderDisplayName(session.provider);
   const changedMessages: ConversationMessage[] = [];
   let lastAssistantContent = '';
 

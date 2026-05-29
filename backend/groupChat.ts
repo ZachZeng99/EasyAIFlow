@@ -22,6 +22,7 @@ import {
   updateSessionRecord,
   upsertSessionMessage,
 } from '../electron/sessionStore.js';
+import { stopPendingSessionMessages } from '../electron/sessionStop.js';
 import type {
   ClaudeStreamEvent,
   ConversationMessage,
@@ -970,8 +971,29 @@ export const stopGroupSessionRuns = async (
     ),
   );
 
+  const roomResult = await stopPendingSessionMessages(sessionId);
+  roomResult.changedMessages.forEach((message) => {
+    if (message.role === 'assistant') {
+      ctx.broadcastEvent({
+        type: 'status',
+        sessionId,
+        messageId: message.id,
+        status: message.status,
+        title: message.title,
+        content: message.content,
+      });
+      return;
+    }
+
+    ctx.broadcastEvent({
+      type: 'trace',
+      sessionId,
+      message,
+    });
+  });
+
   return {
-    projects: await getProjects(),
+    projects: roomResult.projects,
   };
 };
 

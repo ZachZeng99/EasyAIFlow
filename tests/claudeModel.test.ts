@@ -41,11 +41,11 @@ run('resolveClaudeModelArg expands sonnet alias to a canonical Claude model when
 });
 
 run('resolveClaudeModelArg expands opus alias to the latest default Claude Opus model when env overrides are absent', () => {
-  assert.equal(resolveClaudeModelArg('opus[1m]'), 'claude-opus-4-7[1m]');
+  assert.equal(resolveClaudeModelArg('opus[1m]'), 'claude-opus-4-8[1m]');
 });
 
 run('resolveClaudeModelArg treats bare claude as the default opus alias', () => {
-  assert.equal(resolveClaudeModelArg('claude'), 'claude-opus-4-7');
+  assert.equal(resolveClaudeModelArg('claude'), 'claude-opus-4-8');
 });
 
 run('resolveClaudeModelArg keeps explicit model names unchanged', () => {
@@ -57,7 +57,7 @@ run('normalizeClaudeModelSelection maps native sonnet model names back to UI ali
 });
 
 run('normalizeClaudeModelSelection maps native opus model names back to UI alias', () => {
-  assert.equal(normalizeClaudeModelSelection('claude-opus-4-7'), 'opus[1m]');
+  assert.equal(normalizeClaudeModelSelection('claude-opus-4-8'), 'opus[1m]');
 });
 
 run('normalizeClaudeModelSelection maps bare claude back to the default UI alias', () => {
@@ -69,7 +69,7 @@ run('shouldSwitchClaudeSessionModel only switches persisted sessions and ignores
     shouldSwitchClaudeSessionModel({
       claudeSessionId: 'session-123',
       currentResolvedModel: 'claude-sonnet-4-6',
-      requestedResolvedModel: 'claude-opus-4-7[1m]',
+      requestedResolvedModel: 'claude-opus-4-8[1m]',
       prompt: 'continue this task',
     }),
     true,
@@ -87,7 +87,7 @@ run('shouldSwitchClaudeSessionModel only switches persisted sessions and ignores
     shouldSwitchClaudeSessionModel({
       claudeSessionId: 'session-123',
       currentResolvedModel: 'claude-sonnet-4-6',
-      requestedResolvedModel: 'claude-opus-4-7[1m]',
+      requestedResolvedModel: 'claude-opus-4-8[1m]',
       prompt: '/clear',
     }),
     false,

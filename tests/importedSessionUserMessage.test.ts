@@ -230,7 +230,7 @@ await run('createProject skips native Claude local-command sessions that contain
         sessionId,
         message: {
           role: 'user',
-          content: '<local-command-stdout>Set model to Opus 4.7</local-command-stdout>',
+          content: '<local-command-stdout>Set model to Opus 4.8</local-command-stdout>',
         },
       },
     ]

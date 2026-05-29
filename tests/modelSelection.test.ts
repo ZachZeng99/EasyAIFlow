@@ -31,13 +31,13 @@ run('syncImplicitModelSelection follows session model when selection is not expl
 });
 
 run('syncImplicitModelSelection preserves user choice when selection is explicit', () => {
-  const result = syncImplicitModelSelection('sonnet', 'explicit', 'claude-opus-4-7');
+  const result = syncImplicitModelSelection('sonnet', 'explicit', 'claude-opus-4-8');
   assert.deepEqual(result, { model: 'sonnet', source: 'explicit' });
 });
 
 run('normalizeModelSelectionValue maps native model names back to 1m aliases for UI controls', () => {
   assert.equal(normalizeModelSelectionValue('claude-sonnet-4-6'), 'sonnet');
-  assert.equal(normalizeModelSelectionValue('claude-opus-4-7'), 'opus[1m]');
+  assert.equal(normalizeModelSelectionValue('claude-opus-4-8'), 'opus[1m]');
   assert.equal(normalizeModelSelectionValue('claude'), 'opus[1m]');
 });
 

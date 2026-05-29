@@ -3,7 +3,7 @@ type ClaudeSettings = {
   _env?: Record<string, unknown>;
 };
 
-const DEFAULT_OPUS_MODEL = 'claude-opus-4-7';
+const DEFAULT_OPUS_MODEL = 'claude-opus-4-8';
 const DEFAULT_SONNET_MODEL = 'claude-sonnet-4-6';
 const DEFAULT_HAIKU_MODEL = 'claude-haiku-4-5';
 
