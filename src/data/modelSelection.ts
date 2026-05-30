@@ -3,6 +3,9 @@ import { getDefaultModelForProvider, normalizeSessionProvider } from './sessionP
 
 export type ModelSelectionSource = 'implicit' | 'explicit';
 
+const isSyntheticClaudeModel = (value: string | undefined) =>
+  value?.trim().toLowerCase() === '<synthetic>';
+
 export const normalizeModelSelectionValue = (value: string | undefined) => {
   const trimmed = value?.trim();
   if (!trimmed) {
@@ -10,6 +13,9 @@ export const normalizeModelSelectionValue = (value: string | undefined) => {
   }
 
   const normalized = trimmed.toLowerCase();
+  if (isSyntheticClaudeModel(normalized)) {
+    return undefined;
+  }
   if (normalized === 'claude') {
     return 'opus[1m]';
   }
@@ -57,6 +63,9 @@ const normalizeProviderModelSelectionValue = (
   }
 
   if (normalizeSessionProvider(provider) === 'claude') {
+    if (isSyntheticClaudeModel(trimmed)) {
+      return undefined;
+    }
     return normalizeModelSelectionValue(trimmed) ?? trimmed;
   }
 

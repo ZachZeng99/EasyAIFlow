@@ -1,3 +1,5 @@
+import { isClaudeSyntheticModel } from './claudeModel.js';
+
 export const extractClaudeSessionId = (parsed: Record<string, unknown>) => {
   const sessionId =
     (typeof parsed.session_id === 'string' && parsed.session_id.trim()) ||
@@ -24,7 +26,11 @@ export const applyParsedSessionMetadata = <
 
   if (parsed.type === 'assistant') {
     const message = parsed.message as { model?: unknown } | undefined;
-    if (typeof message?.model === 'string' && message.model.trim()) {
+    if (
+      typeof message?.model === 'string' &&
+      message.model.trim() &&
+      !isClaudeSyntheticModel(message.model)
+    ) {
       next.model = message.model.trim();
     }
   }
@@ -33,7 +39,8 @@ export const applyParsedSessionMetadata = <
     parsed.type === 'system' &&
     parsed.subtype === 'init' &&
     typeof parsed.model === 'string' &&
-    parsed.model.trim()
+    parsed.model.trim() &&
+    !isClaudeSyntheticModel(parsed.model)
   ) {
     next.model = parsed.model.trim();
   }

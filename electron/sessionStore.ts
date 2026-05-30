@@ -23,7 +23,7 @@ import {
   isIgnorableBackgroundTaskFollowupText,
   stripLeadingBackgroundTaskFollowupText as stripLeadingBackgroundTaskFollowupFromAssistantText,
 } from './claudeRunState.js';
-import { normalizeClaudeModelSelection } from './claudeModel.js';
+import { isClaudeSyntheticModel, normalizeClaudeModelSelection } from './claudeModel.js';
 import { mergeNativeImportedSessions } from './nativeSessionMerge.js';
 import { mergeNativeSessionIntoExisting, shouldRecoverSessionFromNative } from './nativeSessionRecovery.js';
 import { hydrateProjectForOpen } from './projectOpen.js';
@@ -96,8 +96,17 @@ const nativeClaudeProjectsRoot = () =>
 const nativeClaudeHistoryPath = () =>
   path.join(process.env.USERPROFILE ?? getRuntimePaths().homePath, '.claude', 'history.jsonl');
 
-const normalizeSessionModel = (model: string, provider: SessionProvider) =>
-  provider === 'claude' ? normalizeClaudeModelSelection(model) ?? model.trim() : model.trim();
+const normalizeSessionModel = (model: string, provider: SessionProvider) => {
+  if (provider !== 'claude') {
+    return model.trim();
+  }
+
+  if (isClaudeSyntheticModel(model)) {
+    return getDefaultModelForProvider(provider);
+  }
+
+  return normalizeClaudeModelSelection(model) ?? model.trim();
+};
 
 const describeError = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -1461,7 +1470,7 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
 
     if (parsed.type === 'assistant') {
       const messageObj = parsed.message as { model?: string; content?: unknown };
-      if (typeof messageObj?.model === 'string') {
+      if (typeof messageObj?.model === 'string' && !isClaudeSyntheticModel(messageObj.model)) {
         model = messageObj.model;
       }
       if (!Array.isArray(messageObj?.content)) {

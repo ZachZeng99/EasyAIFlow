@@ -79,7 +79,10 @@ import {
 import { buildClaudePrintArgs, DEFAULT_CLAUDE_EFFORT } from '../electron/claudePrintArgs.js';
 import { buildClaudeSessionArgs } from '../electron/claudeSessionArgs.js';
 import { buildPermissionRulesForPath } from '../electron/permissionRules.js';
-import { readLatestNativeClaudeApiError } from '../electron/nativeClaudeError.js';
+import {
+  readLatestNativeClaudeApiError,
+  readLatestNativeClaudeThinkingBlockMutationApiError,
+} from '../electron/nativeClaudeError.js';
 import { getClaudeSpawnOptions } from '../electron/claudeSpawn.js';
 import { createSequentialLineProcessor } from '../electron/sequentialLineProcessor.js';
 import { enqueueSessionRun } from '../electron/sessionRunQueue.js';
@@ -2682,9 +2685,10 @@ export const switchClaudeSessionEffort = async (
   };
 };
 
-const buildMissingClaudeConversationRecoveryPrompt = async (
+const buildNativeClaudeConversationRecoveryPrompt = async (
   prepared: PreparedClaudeRun,
-  missingClaudeSessionId: string,
+  nativeClaudeSessionId: string,
+  reason: string,
 ) => {
   const resolvedPrompt = prepared.resolvedPrompt.trim();
   if (/^\/\S+/.test(resolvedPrompt)) {
@@ -2704,7 +2708,8 @@ const buildMissingClaudeConversationRecoveryPrompt = async (
   }
 
   return [
-    `EasyAIFlow could not resume the previous native Claude conversation (${missingClaudeSessionId}) because Claude no longer has that local transcript.`,
+    `EasyAIFlow is starting a fresh native Claude conversation instead of resuming ${nativeClaudeSessionId}.`,
+    `Reason: ${reason}`,
     'The EasyAIFlow transcript before the current message is provided below as recovery context.',
     'Use it only as supporting context; do not claim the native Claude conversation was recovered.',
     '',
@@ -2715,20 +2720,52 @@ const buildMissingClaudeConversationRecoveryPrompt = async (
   ].join('\n\n');
 };
 
-const detachMissingClaudeConversation = async (
+const detachNativeClaudeConversation = async (
   prepared: PreparedClaudeRun,
-  missingClaudeSessionId: string,
+  nativeClaudeSessionId: string,
+  reason: string,
 ) => {
-  prepared.resolvedPrompt = await buildMissingClaudeConversationRecoveryPrompt(
+  prepared.resolvedPrompt = await buildNativeClaudeConversationRecoveryPrompt(
     prepared,
-    missingClaudeSessionId,
+    nativeClaudeSessionId,
+    reason,
   );
-  if (prepared.session.claudeSessionId === missingClaudeSessionId) {
+  if (prepared.session.claudeSessionId === nativeClaudeSessionId) {
     prepared.session.claudeSessionId = undefined;
   }
   await setSessionRuntime(prepared.sessionId, {
     claudeSessionId: null,
   });
+};
+
+const detachMissingClaudeConversation = async (
+  prepared: PreparedClaudeRun,
+  missingClaudeSessionId: string,
+) =>
+  detachNativeClaudeConversation(
+    prepared,
+    missingClaudeSessionId,
+    'Claude no longer has that local transcript.',
+  );
+
+const detachThinkingBlockMutationClaudeConversation = async (prepared: PreparedClaudeRun) => {
+  const nativeSessionId = prepared.session.claudeSessionId;
+  if (!nativeSessionId) {
+    return false;
+  }
+
+  const thinkingBlockMutationError =
+    await readLatestNativeClaudeThinkingBlockMutationApiError(prepared.session.workspace, nativeSessionId);
+  if (!thinkingBlockMutationError) {
+    return false;
+  }
+
+  await detachNativeClaudeConversation(
+    prepared,
+    nativeSessionId,
+    'Claude API rejected the resume transcript because the latest assistant thinking block no longer matches the original response.',
+  );
+  return true;
 };
 
 const executePreparedClaudeRunAttempt = async (
@@ -2762,6 +2799,8 @@ export const executePreparedClaudeRun = async (
   releaseQueuedTurn: () => void,
 ) => {
   let recoveredMissingClaudeSessionId: string | undefined;
+
+  await detachThinkingBlockMutationClaudeConversation(prepared);
 
   for (;;) {
     try {

@@ -60,6 +60,27 @@ run('applyParsedSessionMetadata keeps the latest assistant model metadata', () =
   });
 });
 
+run('applyParsedSessionMetadata ignores synthetic API error model metadata', () => {
+  const updated = applyParsedSessionMetadata(
+    {
+      claudeSessionId: 'existing-session',
+      model: 'claude-opus-4-8',
+    },
+    {
+      type: 'assistant',
+      isApiErrorMessage: true,
+      message: {
+        model: '<synthetic>',
+      },
+    },
+  );
+
+  assert.deepEqual(updated, {
+    claudeSessionId: 'existing-session',
+    model: 'claude-opus-4-8',
+  });
+});
+
 run('applyParsedSessionMetadata captures the init model before the first assistant turn', () => {
   const updated = applyParsedSessionMetadata(
     {

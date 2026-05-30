@@ -53,8 +53,16 @@ run('resolveClaudeModelArg keeps explicit model names unchanged', () => {
   assert.equal(resolveClaudeModelArg('kimi-k2.5', { _env: { ANTHROPIC_MODEL: 'other' } }), 'kimi-k2.5');
 });
 
+run('resolveClaudeModelArg ignores Claude synthetic placeholder models', () => {
+  assert.equal(resolveClaudeModelArg('<synthetic>'), undefined);
+});
+
 run('resolveClaudeSessionModelArg falls back to the session model when no model is requested', () => {
   assert.equal(resolveClaudeSessionModelArg(undefined, 'opus[1m]'), 'claude-opus-4-8[1m]');
+});
+
+run('resolveClaudeSessionModelArg ignores synthetic session model fallbacks', () => {
+  assert.equal(resolveClaudeSessionModelArg(undefined, '<synthetic>'), undefined);
 });
 
 run('resolveClaudeSessionModelArg upgrades legacy native Opus session models through the UI alias', () => {

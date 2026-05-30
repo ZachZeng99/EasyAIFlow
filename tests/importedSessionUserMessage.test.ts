@@ -246,3 +246,79 @@ await run('createProject skips native Claude local-command sessions that contain
 
   assert.equal(importedTitles.includes(`Imported ${sessionId.slice(0, 8)}`), false);
 });
+
+await run('createProject ignores synthetic API error models when importing native Claude sessions', async () => {
+  const tempRoot = path.join(process.cwd(), '.tmp-tests', 'imported-synthetic-api-model');
+  await rm(tempRoot, { recursive: true, force: true });
+
+  const appDataRoot = path.join(tempRoot, 'AppData', 'Roaming');
+  const userProfile = path.join(tempRoot, 'UserProfile');
+  process.env.APPDATA = appDataRoot;
+  process.env.USERPROFILE = userProfile;
+  process.env.HOME = userProfile;
+
+  const rootPath = 'X:\\AITool\\EasyAIFlow\\.tmp-tests\\ImportedSyntheticApiModelProject';
+  const sessionId = 'native-synthetic-api-model';
+
+  const { toClaudeProjectDirName } = await import('../electron/workspacePaths.ts');
+  const dirName = toClaudeProjectDirName(rootPath);
+  assert.ok(dirName);
+
+  const nativeDir = path.join(userProfile, '.claude', 'projects', dirName);
+  await mkdir(nativeDir, { recursive: true });
+  await writeFile(
+    path.join(nativeDir, `${sessionId}.jsonl`),
+    [
+      {
+        type: 'custom-title',
+        customTitle: 'Synthetic model import',
+        sessionId,
+      },
+      {
+        type: 'user',
+        timestamp: '2026-05-30T04:28:27.220Z',
+        cwd: rootPath,
+        sessionId,
+        message: {
+          role: 'user',
+          content: '继续',
+        },
+      },
+      {
+        type: 'assistant',
+        timestamp: '2026-05-30T04:28:28.000Z',
+        cwd: rootPath,
+        sessionId,
+        message: {
+          model: 'claude-opus-4-8',
+          content: [{ type: 'text', text: '正常回复' }],
+        },
+      },
+      {
+        type: 'assistant',
+        timestamp: '2026-05-30T04:31:27.720Z',
+        cwd: rootPath,
+        sessionId,
+        isApiErrorMessage: true,
+        message: {
+          model: '<synthetic>',
+          content: [
+            {
+              type: 'text',
+              text: 'API Error: 500 No available Claude accounts support the requested model: <synthetic>.',
+            },
+          ],
+        },
+      },
+    ]
+      .map((line) => JSON.stringify(line))
+      .join('\n')
+      .concat('\n'),
+    'utf8',
+  );
+
+  const { createProject } = await import('../electron/sessionStore.ts');
+  const result = await createProject('Imported Synthetic API Model Project', rootPath);
+
+  assert.equal(result.session.model, 'opus[1m]');
+});

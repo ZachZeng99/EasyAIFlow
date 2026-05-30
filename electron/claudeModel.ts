@@ -7,6 +7,9 @@ const DEFAULT_OPUS_MODEL = 'claude-opus-4-8';
 const DEFAULT_SONNET_MODEL = 'claude-sonnet-4-6';
 const DEFAULT_HAIKU_MODEL = 'claude-haiku-4-5';
 
+export const isClaudeSyntheticModel = (value: string | undefined) =>
+  value?.trim().toLowerCase() === '<synthetic>';
+
 const readEnvModel = (settings: ClaudeSettings | undefined, key: string) => {
   const value = settings?._env?.[key] ?? process.env[key];
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
@@ -19,6 +22,9 @@ export const normalizeClaudeModelSelection = (value: string | undefined) => {
   }
 
   const normalized = trimmed.toLowerCase();
+  if (isClaudeSyntheticModel(normalized)) {
+    return undefined;
+  }
   if (normalized === 'claude') {
     return 'opus[1m]';
   }
@@ -38,6 +44,9 @@ export const normalizeClaudeModelSelection = (value: string | undefined) => {
 export const resolveClaudeModelArg = (requestedModel: string | undefined, settings?: ClaudeSettings) => {
   const trimmed = requestedModel?.trim();
   if (!trimmed) {
+    return undefined;
+  }
+  if (isClaudeSyntheticModel(trimmed)) {
     return undefined;
   }
 

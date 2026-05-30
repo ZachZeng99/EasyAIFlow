@@ -23,7 +23,6 @@ export const buildClaudePrintArgs = ({
     'stream-json',
     '--input-format',
     'stream-json',
-    '--include-partial-messages',
     '--permission-mode',
     permissionMode,
     '--permission-prompt-tool',

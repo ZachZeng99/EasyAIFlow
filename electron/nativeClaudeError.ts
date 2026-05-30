@@ -16,6 +16,27 @@ const toNativeClaudeProjectDir = (cwd: string) => {
   return rest ? `${drive}--${rest}` : `${drive}--`;
 };
 
+const extractSyntheticApiErrorText = (parsed: Record<string, unknown>) => {
+  if (parsed.type !== 'assistant' || parsed.isApiErrorMessage !== true) {
+    return undefined;
+  }
+
+  const message = parsed.message as { content?: Array<{ type?: string; text?: string }> } | undefined;
+  return message?.content
+    ?.filter((block): block is { type: 'text'; text: string } => block.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text.trim())
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+};
+
+export const isClaudeThinkingBlockMutationApiError = (value: string | undefined) =>
+  Boolean(
+    value &&
+      /thinking`?\s+or\s+`?redacted_thinking`?\s+blocks/i.test(value) &&
+      /latest assistant message cannot be modified/i.test(value),
+  );
+
 export const extractLatestSyntheticApiError = (raw: string, sessionId?: string) => {
   const lines = raw.split(/\r?\n/).filter(Boolean);
 
@@ -25,19 +46,31 @@ export const extractLatestSyntheticApiError = (raw: string, sessionId?: string) 
       if (sessionId && parsed.sessionId !== sessionId) {
         continue;
       }
-      if (parsed.type !== 'assistant' || parsed.isApiErrorMessage !== true) {
+      const text = extractSyntheticApiErrorText(parsed);
+
+      if (text) {
+        return text;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return undefined;
+};
+
+export const extractLatestThinkingBlockMutationApiError = (raw: string, sessionId?: string) => {
+  const lines = raw.split(/\r?\n/).filter(Boolean);
+
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    try {
+      const parsed = JSON.parse(lines[index]) as Record<string, unknown>;
+      if (sessionId && parsed.sessionId !== sessionId) {
         continue;
       }
 
-      const message = parsed.message as { content?: Array<{ type?: string; text?: string }> } | undefined;
-      const text = message?.content
-        ?.filter((block): block is { type: 'text'; text: string } => block.type === 'text' && typeof block.text === 'string')
-        .map((block) => block.text.trim())
-        .filter(Boolean)
-        .join('\n')
-        .trim();
-
-      if (text) {
+      const text = extractSyntheticApiErrorText(parsed);
+      if (isClaudeThinkingBlockMutationApiError(text)) {
         return text;
       }
     } catch {
@@ -58,6 +91,21 @@ export const readLatestNativeClaudeApiError = async (cwd: string, sessionId?: st
   try {
     const raw = await readFile(filePath, 'utf8');
     return extractLatestSyntheticApiError(raw, sessionId);
+  } catch {
+    return undefined;
+  }
+};
+
+export const readLatestNativeClaudeThinkingBlockMutationApiError = async (cwd: string, sessionId?: string) => {
+  const dirName = toNativeClaudeProjectDir(cwd);
+  if (!dirName || !sessionId) {
+    return undefined;
+  }
+
+  const filePath = path.join(process.env.USERPROFILE ?? '', '.claude', 'projects', dirName, `${sessionId}.jsonl`);
+  try {
+    const raw = await readFile(filePath, 'utf8');
+    return extractLatestThinkingBlockMutationApiError(raw, sessionId);
   } catch {
     return undefined;
   }

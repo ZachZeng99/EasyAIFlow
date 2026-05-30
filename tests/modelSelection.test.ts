@@ -41,6 +41,15 @@ run('normalizeModelSelectionValue maps native model names back to 1m aliases for
   assert.equal(normalizeModelSelectionValue('claude'), 'opus[1m]');
 });
 
+run('normalizeModelSelectionValue ignores Claude synthetic placeholder models', () => {
+  assert.equal(normalizeModelSelectionValue('<synthetic>'), undefined);
+});
+
+run('syncImplicitModelSelection keeps current model when session model is synthetic', () => {
+  const result = syncImplicitModelSelection('opus[1m]', 'implicit', '<synthetic>');
+  assert.deepEqual(result, { model: 'opus[1m]', source: 'implicit' });
+});
+
 run('shouldSwitchSessionModel requires a persisted Claude session and a real model change', () => {
   assert.equal(
     shouldSwitchSessionModel('opus[1m]', 'claude-sonnet-4-6', 'session-123', 'continue this task'),

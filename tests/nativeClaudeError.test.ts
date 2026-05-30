@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
-import { extractLatestSyntheticApiError } from '../electron/nativeClaudeError.js';
+import {
+  extractLatestThinkingBlockMutationApiError,
+  extractLatestSyntheticApiError,
+  isClaudeThinkingBlockMutationApiError,
+} from '../electron/nativeClaudeError.js';
 
 const run = (name: string, fn: () => void) => {
   try {
@@ -44,4 +48,40 @@ run('extractLatestSyntheticApiError ignores normal assistant output', () => {
   });
 
   assert.equal(extractLatestSyntheticApiError(raw, 's1'), undefined);
+});
+
+run('isClaudeThinkingBlockMutationApiError detects unrecoverable thinking block resume errors', () => {
+  assert.equal(
+    isClaudeThinkingBlockMutationApiError(
+      'API Error: 400 messages.121.content.14: `thinking` or `redacted_thinking` blocks in the latest assistant message cannot be modified. These blocks must remain as they were in the original response.',
+    ),
+    true,
+  );
+  assert.equal(
+    isClaudeThinkingBlockMutationApiError(
+      'API Error: 500 No available Claude accounts support the requested model: <synthetic>.',
+    ),
+    false,
+  );
+});
+
+run('extractLatestThinkingBlockMutationApiError scans past later non-matching synthetic errors', () => {
+  const mutationError =
+    'API Error: 400 messages.121.content.14: `thinking` or `redacted_thinking` blocks in the latest assistant message cannot be modified.';
+  const raw = [
+    JSON.stringify({
+      type: 'assistant',
+      sessionId: 's1',
+      isApiErrorMessage: true,
+      message: { content: [{ type: 'text', text: mutationError }] },
+    }),
+    JSON.stringify({
+      type: 'assistant',
+      sessionId: 's1',
+      isApiErrorMessage: true,
+      message: { content: [{ type: 'text', text: 'API Error: 500 transient' }] },
+    }),
+  ].join('\n');
+
+  assert.equal(extractLatestThinkingBlockMutationApiError(raw, 's1'), mutationError);
 });
