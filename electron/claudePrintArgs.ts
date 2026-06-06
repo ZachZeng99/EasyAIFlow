@@ -14,7 +14,7 @@ export const buildClaudePrintArgs = ({
   effort = DEFAULT_CLAUDE_EFFORT,
   sessionArgs = [],
   tools,
-  permissionMode = 'default',
+  permissionMode = 'bypassPermissions',
   noSessionPersistence = false,
 }: ClaudePrintArgOptions) => {
   const args = [
