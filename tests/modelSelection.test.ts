@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+  getKnownModelContextWindow,
   normalizeModelSelectionValue,
   resolveRequestedModelArg,
   shouldSwitchSessionModel,
@@ -40,6 +41,14 @@ run('normalizeModelSelectionValue maps native model names back to 1m aliases for
   assert.equal(normalizeModelSelectionValue('claude-opus-4-8'), 'opus[1m]');
   assert.equal(normalizeModelSelectionValue('claude'), 'fable');
   assert.equal(normalizeModelSelectionValue('claude-fable'), 'fable');
+});
+
+run('getKnownModelContextWindow treats fable as a million-token Claude model', () => {
+  assert.equal(getKnownModelContextWindow('fable'), 1000000);
+  assert.equal(getKnownModelContextWindow('claude'), 1000000);
+  assert.equal(getKnownModelContextWindow('claude-fable'), 1000000);
+  assert.equal(getKnownModelContextWindow('opus[1m]'), 1000000);
+  assert.equal(getKnownModelContextWindow('sonnet'), undefined);
 });
 
 run('normalizeModelSelectionValue ignores Claude synthetic placeholder models', () => {

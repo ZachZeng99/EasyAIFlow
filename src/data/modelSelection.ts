@@ -3,6 +3,8 @@ import { getDefaultModelForProvider, normalizeSessionProvider } from './sessionP
 
 export type ModelSelectionSource = 'implicit' | 'explicit';
 
+export const MILLION_TOKEN_CONTEXT_WINDOW = 1000000;
+
 const isSyntheticClaudeModel = (value: string | undefined) =>
   value?.trim().toLowerCase() === '<synthetic>';
 
@@ -33,6 +35,20 @@ export const normalizeModelSelectionValue = (value: string | undefined) => {
   }
 
   return trimmed;
+};
+
+export const getKnownModelContextWindow = (value: string | undefined) => {
+  const normalized = normalizeModelSelectionValue(value);
+  const selected = (normalized ?? value?.trim() ?? '').toLowerCase();
+  if (!selected || isSyntheticClaudeModel(selected)) {
+    return undefined;
+  }
+
+  if (selected === 'fable' || selected.includes('fable') || selected.includes('[1m]')) {
+    return MILLION_TOKEN_CONTEXT_WINDOW;
+  }
+
+  return undefined;
 };
 
 export const syncImplicitModelSelection = (

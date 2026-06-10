@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { normalizeSessionProvider } from '../data/sessionProvider';
 import type { ContextReference, ContextReferenceMode, SessionProvider, TokenUsage } from '../data/types';
-import { normalizeModelSelectionValue } from '../data/modelSelection';
+import { getKnownModelContextWindow, normalizeModelSelectionValue } from '../data/modelSelection';
 
 export type ComposerAttachment = {
   id: string;
@@ -73,7 +73,7 @@ const formatSize = (value: number) => {
 const isImageAttachment = (attachment: ComposerAttachment) => attachment.mimeType.startsWith('image/');
 const MODEL_OPTIONS = {
   claude: [
-    { value: 'fable', label: 'fable' },
+    { value: 'fable', label: 'fable[1M]' },
     { value: 'opus[1m]', label: 'opus4.8[1M]' },
     { value: 'sonnet', label: 'sonnet4.6' },
   ],
@@ -115,27 +115,23 @@ export function ChatComposer({
   const normalizedProvider = normalizeSessionProvider(provider);
   const canSend = draft.trim().length > 0 || attachments.length > 0;
   const showStopAction = isSending || (isResponding && !allowSendWhileResponding);
-  const requestedModel =
-    (normalizeModelSelectionValue(model) ?? model.trim()).toLowerCase();
-  const actualSessionModel =
-    (normalizeModelSelectionValue(sessionModel) ?? sessionModel.trim()).toLowerCase();
-  const staleLegacyWindow =
-    requestedModel.includes('[1m]') &&
-    !actualSessionModel.includes('[1m]') &&
-    tokenUsage.contextWindow > 0 &&
-    tokenUsage.contextWindow < 1000000;
+  const knownModelContextWindow = Math.max(
+    getKnownModelContextWindow(model) ?? 0,
+    getKnownModelContextWindow(sessionModel) ?? 0,
+  );
+  const runtimeContextWindow =
+    Number.isFinite(tokenUsage.contextWindow) && tokenUsage.contextWindow > 0
+      ? tokenUsage.contextWindow
+      : 0;
+  const effectiveContextWindow = Math.max(runtimeContextWindow, knownModelContextWindow);
   const hasKnownContextWindow =
-    tokenUsage.windowSource !== 'unknown' &&
-    Number.isFinite(tokenUsage.contextWindow) &&
-    tokenUsage.contextWindow > 0 &&
-    !staleLegacyWindow;
-  const usageRatio = hasKnownContextWindow && tokenUsage.contextWindow > 0
-    ? tokenUsage.used / tokenUsage.contextWindow
-    : 0;
+    effectiveContextWindow > 0 &&
+    (tokenUsage.windowSource !== 'unknown' || knownModelContextWindow > 0);
+  const usageRatio = hasKnownContextWindow ? tokenUsage.used / effectiveContextWindow : 0;
   const usagePercentNum = hasKnownContextWindow ? Math.round(usageRatio * 100) : 0;
   const usageEmoji = usagePercentNum >= 80 ? '\u{1F631}' : usagePercentNum >= 40 ? '\u{1F60A}' : '\u{1F60B}';
   const usageSummary = hasKnownContextWindow
-    ? `${formatTokens(tokenUsage.used)} / ${formatTokens(tokenUsage.contextWindow)}`
+    ? `${formatTokens(tokenUsage.used)} / ${formatTokens(effectiveContextWindow)}`
     : `${formatTokens(tokenUsage.used)} / --`;
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const slashItemRefs = useRef<Array<HTMLButtonElement | null>>([]);

@@ -50,12 +50,12 @@ export const projectTree: ProjectRecord[] = [
             dreamName: 'Desktop Dream',
             groups: [groups.ui, groups.relay, groups.memory],
             tokenUsage: {
-              contextWindow: 0,
+              contextWindow: 1000000,
               used: 84210,
               input: 54320,
               output: 17640,
               cached: 12250,
-              windowSource: 'unknown',
+              windowSource: 'runtime',
             },
             branchSnapshot: {
               branch: 'codex/desktop-shell',
@@ -83,12 +83,12 @@ export const projectTree: ProjectRecord[] = [
             dreamName: 'Desktop Dream',
             groups: [groups.ui, groups.memory],
             tokenUsage: {
-              contextWindow: 0,
+              contextWindow: 1000000,
               used: 49280,
               input: 34020,
               output: 9180,
               cached: 6080,
-              windowSource: 'unknown',
+              windowSource: 'runtime',
             },
             branchSnapshot: {
               branch: 'codex/session-tree',
@@ -121,12 +121,12 @@ export const projectTree: ProjectRecord[] = [
             dreamName: 'Bridge Dream',
             groups: [groups.relay, groups.memory],
             tokenUsage: {
-              contextWindow: 0,
+              contextWindow: 1000000,
               used: 61600,
               input: 42000,
               output: 10300,
               cached: 9300,
-              windowSource: 'unknown',
+              windowSource: 'runtime',
             },
             branchSnapshot: {
               branch: 'codex/group-routing',

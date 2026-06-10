@@ -144,7 +144,37 @@ run('ChatComposer includes fable as the default Claude model option', () => {
   );
 
   assert.match(html, /value="fable"/);
-  assert.match(html, />fable</);
+  assert.match(html, />fable\[1M\]</);
+});
+
+run('ChatComposer uses the known fable million-token context window for usage display', () => {
+  const html = renderToStaticMarkup(
+    createElement(ChatComposer, {
+      draft: '继续这个需求',
+      tokenUsage,
+      sessionModel: 'fable',
+      contextReferences: [],
+      slashCommands: [],
+      attachments: [],
+      isSending: false,
+      isResponding: false,
+      model: 'fable',
+      effort: 'medium',
+      onDraftChange: () => undefined,
+      onInsertDroppedPaths: () => undefined,
+      onAttachFiles: () => undefined,
+      onRemoveAttachment: () => undefined,
+      onModelChange: () => undefined,
+      onEffortChange: () => undefined,
+      onUpdateContextReferenceMode: () => undefined,
+      onRemoveContextReference: () => undefined,
+      onSend: () => undefined,
+      onStop: () => undefined,
+    }),
+  );
+
+  assert.match(html, /1k \/ 1M/);
+  assert.doesNotMatch(html, /1k \/ 200k/);
 });
 
 
