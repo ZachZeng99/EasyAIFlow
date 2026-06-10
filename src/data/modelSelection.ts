@@ -17,7 +17,10 @@ export const normalizeModelSelectionValue = (value: string | undefined) => {
     return undefined;
   }
   if (normalized === 'claude') {
-    return 'opus[1m]';
+    return 'fable';
+  }
+  if (normalized.includes('fable')) {
+    return 'fable';
   }
   if (normalized.includes('opus')) {
     return 'opus[1m]';
@@ -74,7 +77,7 @@ const normalizeProviderModelSelectionValue = (
 
 const getKnownProviderModelValues = (provider: SessionProvider | string | undefined) =>
   normalizeSessionProvider(provider) === 'claude'
-    ? ['opus[1m]', 'sonnet', 'haiku[1m]']
+    ? ['fable', 'opus[1m]', 'sonnet', 'haiku[1m]']
     : ['gpt-5.5', 'gpt-5.5-mini'];
 
 export const syncModelSelectionForSession = (

@@ -259,7 +259,10 @@ const normalizeContextReferences = (references: ContextReference[] | undefined) 
 const normalizeTokenUsage = (tokenUsage: TokenUsage | undefined, model: string): TokenUsage => {
   const normalizedModel = model.trim().toLowerCase();
   const isClaudeModel =
-    normalizedModel.includes('opus') || normalizedModel.includes('sonnet') || normalizedModel.includes('claude');
+    normalizedModel.includes('fable') ||
+    normalizedModel.includes('opus') ||
+    normalizedModel.includes('sonnet') ||
+    normalizedModel.includes('claude');
   const source = tokenUsage?.windowSource ?? 'unknown';
   const keepWindow = !isClaudeModel || source === 'runtime' || source === 'derived';
 

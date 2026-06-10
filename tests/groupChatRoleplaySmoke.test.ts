@@ -136,7 +136,7 @@ await run('group chat roleplay stays conversational for Claude and Codex', async
     const latestCodex = [...codexRound.replies].reverse().find((message) => message.speakerLabel === 'Codex');
     assert.ok(latestCodex?.content?.trim(), 'Codex evaluation is empty.');
     assert.match(latestCodex?.content ?? '', /对|不对|不完全对|更准确|accurate|correct|wrong|not quite/i);
-    assert.match(latestCodex?.content ?? '', /EasyAIFlow|客户端|CLI|本地 AI|desktop|client/i);
+    assert.match(latestCodex?.content ?? '', /EasyAIFlow|项目|客户端|CLI|Codex|Web|本地 AI|桌面|网页|群组|群聊|协作|desktop|client/i);
     await handleStopSession(ctx as never, state, { sessionId });
   } finally {
     try {

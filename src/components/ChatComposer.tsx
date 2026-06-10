@@ -73,6 +73,7 @@ const formatSize = (value: number) => {
 const isImageAttachment = (attachment: ComposerAttachment) => attachment.mimeType.startsWith('image/');
 const MODEL_OPTIONS = {
   claude: [
+    { value: 'fable', label: 'fable' },
     { value: 'opus[1m]', label: 'opus4.8[1M]' },
     { value: 'sonnet', label: 'sonnet4.6' },
   ],

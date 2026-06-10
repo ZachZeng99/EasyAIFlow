@@ -117,6 +117,37 @@ run('ChatComposer renders an inline notice when the host provides one', () => {
   assert.match(html, /session restarts/);
 });
 
+run('ChatComposer includes fable as the default Claude model option', () => {
+  const html = renderToStaticMarkup(
+    createElement(ChatComposer, {
+      draft: '继续这个需求',
+      tokenUsage,
+      sessionModel: 'fable',
+      contextReferences: [],
+      slashCommands: [],
+      attachments: [],
+      isSending: false,
+      isResponding: false,
+      model: 'fable',
+      effort: 'medium',
+      onDraftChange: () => undefined,
+      onInsertDroppedPaths: () => undefined,
+      onAttachFiles: () => undefined,
+      onRemoveAttachment: () => undefined,
+      onModelChange: () => undefined,
+      onEffortChange: () => undefined,
+      onUpdateContextReferenceMode: () => undefined,
+      onRemoveContextReference: () => undefined,
+      onSend: () => undefined,
+      onStop: () => undefined,
+    }),
+  );
+
+  assert.match(html, /value="fable"/);
+  assert.match(html, />fable</);
+});
+
+
 run('ChatComposer shows mention quick options in group chats when the user types @', () => {
   const html = renderToStaticMarkup(
     createElement(ChatComposer, {

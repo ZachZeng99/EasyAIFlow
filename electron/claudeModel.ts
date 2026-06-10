@@ -6,6 +6,7 @@ type ClaudeSettings = {
 const DEFAULT_OPUS_MODEL = 'claude-opus-4-8';
 const DEFAULT_SONNET_MODEL = 'claude-sonnet-4-6';
 const DEFAULT_HAIKU_MODEL = 'claude-haiku-4-5';
+const DEFAULT_FABLE_MODEL = 'fable';
 
 export const isClaudeSyntheticModel = (value: string | undefined) =>
   value?.trim().toLowerCase() === '<synthetic>';
@@ -26,7 +27,10 @@ export const normalizeClaudeModelSelection = (value: string | undefined) => {
     return undefined;
   }
   if (normalized === 'claude') {
-    return 'opus[1m]';
+    return 'fable';
+  }
+  if (normalized.includes('fable')) {
+    return 'fable';
   }
   if (normalized.includes('opus')) {
     return 'opus[1m]';
@@ -55,7 +59,10 @@ export const resolveClaudeModelArg = (requestedModel: string | undefined, settin
   const modelString = has1mTag ? normalized.replace(/\[1m\]$/i, '').trim() : normalized;
   const with1m = (model: string) => `${model}${has1mTag ? '[1m]' : ''}`;
 
-  if (modelString === 'claude' || modelString === 'opus') {
+  if (modelString === 'claude' || modelString === 'fable') {
+    return readEnvModel(settings, 'ANTHROPIC_DEFAULT_FABLE_MODEL') ?? DEFAULT_FABLE_MODEL;
+  }
+  if (modelString === 'opus') {
     return with1m(
       readEnvModel(settings, 'ANTHROPIC_DEFAULT_OPUS_MODEL') ??
         readEnvModel(settings, 'ANTHROPIC_MODEL') ??

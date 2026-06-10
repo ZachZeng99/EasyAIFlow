@@ -18,7 +18,7 @@ const run = (name: string, fn: () => void) => {
 };
 
 run('resolveRequestedModelArg omits model when selection is implicit', () => {
-  assert.equal(resolveRequestedModelArg('opus[1m]', 'implicit'), undefined);
+  assert.equal(resolveRequestedModelArg('fable', 'implicit'), undefined);
 });
 
 run('resolveRequestedModelArg keeps model when selection is explicit', () => {
@@ -38,7 +38,8 @@ run('syncImplicitModelSelection preserves user choice when selection is explicit
 run('normalizeModelSelectionValue maps native model names back to 1m aliases for UI controls', () => {
   assert.equal(normalizeModelSelectionValue('claude-sonnet-4-6'), 'sonnet');
   assert.equal(normalizeModelSelectionValue('claude-opus-4-8'), 'opus[1m]');
-  assert.equal(normalizeModelSelectionValue('claude'), 'opus[1m]');
+  assert.equal(normalizeModelSelectionValue('claude'), 'fable');
+  assert.equal(normalizeModelSelectionValue('claude-fable'), 'fable');
 });
 
 run('normalizeModelSelectionValue ignores Claude synthetic placeholder models', () => {
@@ -46,8 +47,8 @@ run('normalizeModelSelectionValue ignores Claude synthetic placeholder models', 
 });
 
 run('syncImplicitModelSelection keeps current model when session model is synthetic', () => {
-  const result = syncImplicitModelSelection('opus[1m]', 'implicit', '<synthetic>');
-  assert.deepEqual(result, { model: 'opus[1m]', source: 'implicit' });
+  const result = syncImplicitModelSelection('fable', 'implicit', '<synthetic>');
+  assert.deepEqual(result, { model: 'fable', source: 'implicit' });
 });
 
 run('shouldSwitchSessionModel requires a persisted Claude session and a real model change', () => {

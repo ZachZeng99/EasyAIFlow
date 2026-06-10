@@ -45,8 +45,12 @@ run('resolveClaudeModelArg expands opus alias to the latest default Claude Opus 
   assert.equal(resolveClaudeModelArg('opus[1m]'), 'claude-opus-4-8[1m]');
 });
 
-run('resolveClaudeModelArg treats bare claude as the default opus alias', () => {
-  assert.equal(resolveClaudeModelArg('claude'), 'claude-opus-4-8');
+run('resolveClaudeModelArg treats bare claude as the default fable alias', () => {
+  assert.equal(resolveClaudeModelArg('claude'), 'fable');
+});
+
+run('resolveClaudeModelArg keeps fable alias as the CLI model name', () => {
+  assert.equal(resolveClaudeModelArg('fable'), 'fable');
 });
 
 run('resolveClaudeModelArg keeps explicit model names unchanged', () => {
@@ -59,6 +63,10 @@ run('resolveClaudeModelArg ignores Claude synthetic placeholder models', () => {
 
 run('resolveClaudeSessionModelArg falls back to the session model when no model is requested', () => {
   assert.equal(resolveClaudeSessionModelArg(undefined, 'opus[1m]'), 'claude-opus-4-8[1m]');
+});
+
+run('resolveClaudeSessionModelArg falls back to fable for bare Claude sessions', () => {
+  assert.equal(resolveClaudeSessionModelArg(undefined, 'claude'), 'fable');
 });
 
 run('resolveClaudeSessionModelArg ignores synthetic session model fallbacks', () => {
@@ -81,8 +89,13 @@ run('normalizeClaudeModelSelection maps native opus model names back to UI alias
   assert.equal(normalizeClaudeModelSelection('claude-opus-4-8'), 'opus[1m]');
 });
 
+run('normalizeClaudeModelSelection maps fable names back to the UI alias', () => {
+  assert.equal(normalizeClaudeModelSelection('fable'), 'fable');
+  assert.equal(normalizeClaudeModelSelection('claude-fable'), 'fable');
+});
+
 run('normalizeClaudeModelSelection maps bare claude back to the default UI alias', () => {
-  assert.equal(normalizeClaudeModelSelection('claude'), 'opus[1m]');
+  assert.equal(normalizeClaudeModelSelection('claude'), 'fable');
 });
 
 run('shouldSwitchClaudeSessionModel only switches persisted sessions and ignores slash prompts', () => {
