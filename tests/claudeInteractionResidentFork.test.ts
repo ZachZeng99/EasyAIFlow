@@ -11,7 +11,7 @@ const run = (name: string, fn: () => void) => {
   }
 };
 
-run('shouldForkResidentClaudeSession keeps standard sessions on fork when settings change', () => {
+run('shouldForkResidentClaudeSession keeps standard sessions on resume when only model changes', () => {
   assert.equal(
     shouldForkResidentClaudeSession({
       session: {
@@ -22,6 +22,22 @@ run('shouldForkResidentClaudeSession keeps standard sessions on fork when settin
       resolvedModel: 'sonnet',
       hasResident: true,
       effortChanged: false,
+    }),
+    false,
+  );
+});
+
+run('shouldForkResidentClaudeSession keeps standard sessions on fork when resident effort changes', () => {
+  assert.equal(
+    shouldForkResidentClaudeSession({
+      session: {
+        claudeSessionId: 'claude-session',
+        sessionKind: 'standard',
+      },
+      persistedModel: 'opus[1m]',
+      resolvedModel: 'opus[1m]',
+      hasResident: true,
+      effortChanged: true,
     }),
     true,
   );

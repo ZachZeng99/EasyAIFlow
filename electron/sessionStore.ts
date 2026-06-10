@@ -2555,6 +2555,7 @@ const importNativeClaudeSessions = async (
 
   const seenNativeIds = new Set<string>();
   const importedSessions: SessionRecord[] = [];
+  const latestImportedUpdatedAtBySessionId = new Map<string, number>();
 
   for (const file of files) {
     const parsed = await parseCachedNativeClaudeSessionFile(file, cache);
@@ -2562,7 +2563,7 @@ const importNativeClaudeSessions = async (
       continue;
     }
     const workspace = parsed.workspace || project.rootPath;
-    if (!sameWorkspacePath(workspace, project.rootPath)) {
+    if (!isWorkspaceWithinProjectTree(project.rootPath, workspace)) {
       continue;
     }
     if (deletedImports.claudeSessionIds.includes(parsed.nativeSessionId)) {
@@ -2573,6 +2574,14 @@ const importNativeClaudeSessions = async (
     const existing =
       findImportedSessionTarget(projectSessions, parsed.nativeSessionId, parsed.title, workspace, 'claudeSessionId', 'claude') ??
       existingByClaudeSessionId.get(parsed.nativeSessionId);
+    if (existing) {
+      const importedUpdatedAt = parsed.updatedAt ?? 0;
+      const previousImportedUpdatedAt = latestImportedUpdatedAtBySessionId.get(existing.id);
+      if (previousImportedUpdatedAt !== undefined && importedUpdatedAt < previousImportedUpdatedAt) {
+        continue;
+      }
+      latestImportedUpdatedAtBySessionId.set(existing.id, importedUpdatedAt);
+    }
     const display = resolveImportedSessionDisplay(existing, parsed);
     const existingDream = existing ? existingDreamBySessionId.get(existing.id) : undefined;
     const targetDreamId = existingDream?.id ?? existing?.dreamId ?? temporary.id;
@@ -2772,6 +2781,25 @@ const recoverExistingSessionsFromNativeHistory = async (
   }
 };
 
+const importNativeSessionsIntoState = async (state: AppState) => {
+  const importCache: NativeImportCache = {};
+  for (const project of state.projects) {
+    try {
+      await importNativeProjectSessions(project, state.deletedImports, importCache);
+    } catch {
+      // Preserve the persisted project tree when auxiliary native-session import fails.
+    }
+  }
+
+  try {
+    await recoverExistingSessionsFromNativeHistory(state.projects, importCache);
+  } catch {
+    // Keep the persisted project tree even if native-history recovery cannot complete.
+  }
+
+  state.projects = normalizeProjectsFromPersistence(normalizeProjects(state.projects));
+};
+
 export const recoverSessionFromNativeHistory = async (sessionId: string) => {
   const state = await getMutableState();
   const sessions = state.projects.flatMap((project) =>
@@ -2921,17 +2949,6 @@ const buildInitialProjects = () => {
 
 const cloneProjects = (projects: ProjectRecord[]) => JSON.parse(JSON.stringify(projects)) as ProjectRecord[];
 const cloneSessionRecord = (session: SessionRecord) => JSON.parse(JSON.stringify(session)) as SessionRecord;
-const cloneProjectsWithoutMessages = (projects: ProjectRecord[]) =>
-  projects.map((project) => ({
-    ...project,
-    dreams: project.dreams.map((dream) => ({
-      ...dream,
-      sessions: dream.sessions.map((session) => ({
-        ...(session as SessionRecord),
-        messages: [],
-      })),
-    })),
-  })) as ProjectRecord[];
 
 const cacheState = (state: AppState) => {
   if (state === cachedState) {
@@ -2957,15 +2974,6 @@ const summarizeProjectsForBootstrap = (projects: ProjectRecord[]) =>
       })),
     })),
   })) as ProjectRecord[];
-
-const summarizeStateForBootstrap = (state: AppState) => {
-  const lightweightProjects = cloneProjectsWithoutMessages(state.projects);
-  try {
-    return summarizeProjectsForBootstrap(normalizeProjectsForCache(normalizeProjects(lightweightProjects)));
-  } catch {
-    return summarizeProjectsForBootstrap(lightweightProjects);
-  }
-};
 
 const findSessionInProjects = (projects: ProjectRecord[], sessionId: string): SessionRecord | null => {
   for (const project of projects) {
@@ -3061,22 +3069,7 @@ const readStateFromDisk = async () => {
 };
 
 const hydrateLoadedState = async (state: AppState) => {
-  const importCache: NativeImportCache = {};
-  for (const project of state.projects) {
-    try {
-      await importNativeProjectSessions(project, state.deletedImports, importCache);
-    } catch {
-      // Preserve the persisted project tree when auxiliary native-session import fails.
-    }
-  }
-
-  try {
-    await recoverExistingSessionsFromNativeHistory(state.projects, importCache);
-  } catch {
-    // Keep the persisted project tree even if native-history recovery cannot complete.
-  }
-
-  state.projects = normalizeProjectsFromPersistence(normalizeProjects(state.projects));
+  await importNativeSessionsIntoState(state);
 };
 
 const loadStateUncached = async () => {
@@ -3116,6 +3109,24 @@ export const loadState = async () => {
 };
 
 const getMutableState = async () => cachedState ?? await loadState();
+
+let nativeImportRefreshPromise: Promise<void> | null = null;
+
+const refreshNativeImports = async (state: AppState) => {
+  if (nativeImportRefreshPromise) {
+    await nativeImportRefreshPromise;
+    return;
+  }
+
+  nativeImportRefreshPromise = (async () => {
+    await importNativeSessionsIntoState(state);
+    await saveState(state);
+  })().finally(() => {
+    nativeImportRefreshPromise = null;
+  });
+
+  await nativeImportRefreshPromise;
+};
 
 let pendingSaveTimer: ReturnType<typeof setTimeout> | null = null;
 const SAVE_DEBOUNCE_MS = 800;
@@ -3188,18 +3199,14 @@ export const flushPendingSave = async () => {
 
 export const getProjects = async () => {
   const state = await loadState();
+  await refreshNativeImports(state);
   return cloneVisibleProjects(state.projects);
 };
 
 export const getProjectsForBootstrap = async () => {
-  if (cachedState) {
-    return summarizeProjectsForBootstrap(cachedState.projects);
-  }
-
-  const loaded = await readStateFromDisk();
-  return loaded.state
-    ? summarizeStateForBootstrap(loaded.state)
-    : summarizeProjectsForBootstrap(buildInitialProjects());
+  const state = await loadState();
+  await refreshNativeImports(state);
+  return summarizeProjectsForBootstrap(state.projects);
 };
 
 export const getSessionRecordForBootstrap = async (sessionId: string) => {

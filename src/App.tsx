@@ -72,6 +72,7 @@ const isTerminalBackgroundTaskStatus = (
 ) => status === 'completed' || status === 'failed' || status === 'stopped';
 
 const CREATE_SESSION_TIMEOUT_MS = 15_000;
+const PROJECT_FOCUS_REFRESH_MIN_INTERVAL_MS = 5_000;
 
 const withTimeout = async <T,>(
   promise: Promise<T>,
@@ -450,9 +451,18 @@ export default function App() {
     });
   }, []);
   const loadingSessionRecordIds = useRef(new Set<string>());
+  const lastProjectRefreshAtRef = useRef(0);
   const replaceProjects = useCallback((nextProjects: ProjectRecord[]) => {
     setProjects((current) => mergeProjectSnapshots(current, nextProjects));
   }, []);
+  const refreshProjectsFromBridge = useCallback(async () => {
+    const bootstrap = await bridge.getProjects();
+    const nextProjects = bootstrap?.projects ?? [];
+    replaceProjects(nextProjects);
+    setSessionInteractions(new Map(Object.entries(bootstrap?.interactions ?? {})));
+    lastProjectRefreshAtRef.current = Date.now();
+    return nextProjects;
+  }, [replaceProjects]);
   const hydrateSessionRecord = useCallback((sessionRecord: SessionRecord) => {
     setProjects((current) =>
       updateSessionInProjects(current, sessionRecord.id, () => ({
@@ -949,7 +959,7 @@ export default function App() {
   useEffect(() => {
     const loadMeta = async () => {
       try {
-        const [meta, bootstrap] = await Promise.all([bridge.getAppMeta(), bridge.getProjects()]);
+        const [meta, nextProjects] = await Promise.all([bridge.getAppMeta(), refreshProjectsFromBridge()]);
 
         if (meta?.version) {
           setAppVersion(meta.version);
@@ -959,9 +969,6 @@ export default function App() {
           setModelSelectionSource('implicit');
         }
 
-        const nextProjects = bootstrap?.projects ?? [];
-        replaceProjects(nextProjects);
-        setSessionInteractions(new Map(Object.entries(bootstrap?.interactions ?? {})));
         const firstSession = flattenVisibleSessions(nextProjects)[0];
         if (firstSession) {
           setSelectedSessionId((current) => current || firstSession.id);
@@ -974,7 +981,31 @@ export default function App() {
     };
 
     void loadMeta();
-  }, [replaceProjects]);
+  }, [refreshProjectsFromBridge]);
+
+  useEffect(() => {
+    const refreshOnFocus = () => {
+      if (document.visibilityState === 'hidden') {
+        return;
+      }
+
+      const now = Date.now();
+      if (now - lastProjectRefreshAtRef.current < PROJECT_FOCUS_REFRESH_MIN_INTERVAL_MS) {
+        return;
+      }
+
+      void refreshProjectsFromBridge().catch((error) => {
+        setUiError(error instanceof Error ? error.message : 'Failed to refresh sessions.');
+      });
+    };
+
+    window.addEventListener('focus', refreshOnFocus);
+    document.addEventListener('visibilitychange', refreshOnFocus);
+    return () => {
+      window.removeEventListener('focus', refreshOnFocus);
+      document.removeEventListener('visibilitychange', refreshOnFocus);
+    };
+  }, [refreshProjectsFromBridge]);
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;

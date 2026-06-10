@@ -64,6 +64,27 @@ run('findImportedSessionTarget falls back to a unique non-temporary title match'
   assert.equal(result?.id, 'memory');
 });
 
+run('findImportedSessionTarget matches a nested native cwd under the existing session workspace', () => {
+  const crashSession = makeSession({
+    id: 'crash-bindless',
+    title: 'bindless',
+    dreamName: 'Crash',
+    provider: 'claude',
+    workspace: 'D:\\PBZ',
+  });
+
+  const result = findImportedSessionTarget(
+    [crashSession],
+    'new-native',
+    'bindless',
+    'D:\\PBZ\\PBZGitEngine\\Engine\\Source\\Runtime\\D3D12RHI\\Private',
+    'claudeSessionId',
+    'claude',
+  );
+
+  assert.equal(result?.id, 'crash-bindless');
+});
+
 run('findImportedSessionTarget keeps same-title Claude and Codex sessions distinct', () => {
   const claude = makeSession({
     id: 'claude-memory',

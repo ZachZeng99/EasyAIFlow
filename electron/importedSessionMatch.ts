@@ -1,7 +1,12 @@
 import type { SessionRecord } from '../src/data/types.js';
 import type { SessionProvider } from '../src/data/types.js';
 import { normalizeSessionProvider } from '../src/data/sessionProvider.js';
-import { sameWorkspacePath } from './workspacePaths.js';
+import { isWorkspaceWithinProjectTree, sameWorkspacePath } from './workspacePaths.js';
+
+const sameProjectWorkspace = (left: string, right: string) =>
+  sameWorkspacePath(left, right) ||
+  isWorkspaceWithinProjectTree(left, right) ||
+  isWorkspaceWithinProjectTree(right, left);
 
 export const findImportedSessionTarget = (
   projectSessions: SessionRecord[],
@@ -20,7 +25,7 @@ export const findImportedSessionTarget = (
   const sameTitle = projectSessions.filter(
     (session) =>
       session.title === title &&
-      sameWorkspacePath(session.workspace, workspace) &&
+      sameProjectWorkspace(session.workspace, workspace) &&
       normalizeSessionProvider(session.provider) === provider &&
       (
         session.dreamName !== 'Temporary' ||

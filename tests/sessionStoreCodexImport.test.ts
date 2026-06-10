@@ -166,6 +166,346 @@ await run('createProject imports Codex CLI sessions under the opened project tre
   }
 });
 
+await run('getProjectsForBootstrap refreshes Codex CLI sessions added after state is cached', async () => {
+  const tempBase = path.resolve('.tmp-tests');
+  await mkdir(tempBase, { recursive: true });
+  const tempRoot = await mkdtemp(path.join(tempBase, 'session-store-codex-bootstrap-refresh-'));
+  const userDataPath = path.join(tempRoot, 'userData');
+  const homePath = path.join(tempRoot, 'home');
+  const projectRoot = path.join(tempRoot, 'PBZ');
+  const codexSessionsDir = path.join(homePath, '.codex', 'sessions', '2026', '06', '04');
+  const codexIndexPath = path.join(homePath, '.codex', 'session_index.jsonl');
+  const storeFile = path.join(userDataPath, 'easyaiflow-sessions.json');
+
+  await mkdir(userDataPath, { recursive: true });
+  await mkdir(projectRoot, { recursive: true });
+  await writeFile(
+    storeFile,
+    JSON.stringify(
+      {
+        projects: [
+          {
+            id: 'project-1',
+            name: 'PBZ',
+            rootPath: projectRoot,
+            isClosed: false,
+            dreams: [
+              {
+                id: 'temporary',
+                name: 'Temporary',
+                isTemporary: true,
+                sessions: [],
+              },
+            ],
+          },
+        ],
+        deletedImports: {
+          claudeSessionIds: [],
+          codexThreadIds: [],
+        },
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+
+  const previousUserProfile = process.env.USERPROFILE;
+  process.env.USERPROFILE = homePath;
+  configureRuntimePaths({ mode: 'web', userDataPath, homePath });
+
+  try {
+    const sessionStore = await importFreshSessionStore();
+    const initialProjects = await sessionStore.getProjectsForBootstrap();
+    const initialSessions = initialProjects.flatMap((project) =>
+      project.dreams.flatMap((dream) => dream.sessions),
+    );
+    assert.equal(initialSessions.some((session) => session.codexThreadId === 'cached-thread'), false);
+
+    await mkdir(codexSessionsDir, { recursive: true });
+    await mkdir(path.dirname(codexIndexPath), { recursive: true });
+    await writeFile(
+      codexIndexPath,
+      `${JSON.stringify({
+        id: 'cached-thread',
+        thread_name: 'Cached Codex refresh',
+        updated_at: '2026-06-04T02:00:03.000Z',
+      })}\n`,
+      'utf8',
+    );
+    await writeFile(
+      path.join(codexSessionsDir, 'rollout-2026-06-04T02-00-00-cached-thread.jsonl'),
+      [
+        JSON.stringify({
+          timestamp: '2026-06-04T02:00:00.000Z',
+          type: 'session_meta',
+          payload: {
+            id: 'cached-thread',
+            cwd: projectRoot,
+          },
+        }),
+        JSON.stringify({
+          timestamp: '2026-06-04T02:00:01.000Z',
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'show cached codex' }],
+          },
+        }),
+        JSON.stringify({
+          timestamp: '2026-06-04T02:00:02.000Z',
+          type: 'turn_context',
+          payload: {
+            cwd: projectRoot,
+            model: 'gpt-5.5',
+          },
+        }),
+        JSON.stringify({
+          timestamp: '2026-06-04T02:00:03.000Z',
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'cached import visible' }],
+          },
+        }),
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const refreshedProjects = await sessionStore.getProjectsForBootstrap();
+    const refreshedSessions = refreshedProjects.flatMap((project) =>
+      project.dreams.flatMap((dream) => dream.sessions),
+    ) as Array<{
+      id: string;
+      codexThreadId?: string;
+      title?: string;
+      messagesLoaded?: boolean;
+      messages?: unknown[];
+    }>;
+    const imported = refreshedSessions.find((session) => session.codexThreadId === 'cached-thread');
+
+    assert.equal(imported?.title, 'Cached Codex refresh');
+    assert.equal(imported?.messagesLoaded, false);
+    assert.deepEqual(imported?.messages, []);
+
+    const fullSession = imported ? await sessionStore.getSessionRecordForBootstrap(imported.id) : null;
+    assert.equal(fullSession?.messages?.at(-1)?.content, 'cached import visible');
+  } finally {
+    if (previousUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = previousUserProfile;
+    }
+  }
+});
+
+await run('native Claude import reconnects a model-switched session whose cwd moved under the project tree', async () => {
+  const tempBase = path.resolve('.tmp-tests');
+  await mkdir(tempBase, { recursive: true });
+  const tempRoot = await mkdtemp(path.join(tempBase, 'session-store-claude-nested-cwd-'));
+  const userDataPath = path.join(tempRoot, 'userData');
+  const homePath = path.join(tempRoot, 'home');
+  const projectRoot = path.join(tempRoot, 'PBZ');
+  const nestedWorkspace = path.join(projectRoot, 'PBZGitEngine', 'Engine', 'Source', 'Runtime', 'D3D12RHI', 'Private');
+  const claudeProjectsDir = path.join(
+    homePath,
+    '.claude',
+    'projects',
+    toClaudeProjectDirName(projectRoot) ?? 'PBZ',
+  );
+  const storeFile = path.join(userDataPath, 'easyaiflow-sessions.json');
+
+  await mkdir(userDataPath, { recursive: true });
+  await mkdir(nestedWorkspace, { recursive: true });
+  await mkdir(claudeProjectsDir, { recursive: true });
+
+  await writeFile(
+    storeFile,
+    JSON.stringify(
+      {
+        projects: [
+          {
+            id: 'project-1',
+            name: 'PBZ',
+            rootPath: projectRoot,
+            isClosed: false,
+            dreams: [
+              {
+                id: 'temporary',
+                name: 'Temporary',
+                isTemporary: true,
+                sessions: [],
+              },
+              {
+                id: 'crash',
+                name: 'Crash',
+                sessions: [
+                  {
+                    id: 'bindless-session',
+                    title: 'bindless',
+                    preview: 'old reply',
+                    timeLabel: '6/10 08:40',
+                    updatedAt: 1,
+                    provider: 'claude',
+                    model: 'claude-opus-4-8',
+                    workspace: projectRoot,
+                    projectId: 'project-1',
+                    projectName: 'PBZ',
+                    dreamId: 'crash',
+                    dreamName: 'Crash',
+                    claudeSessionId: 'old-native',
+                    sessionKind: 'standard',
+                    hidden: false,
+                    groups: [],
+                    contextReferences: [],
+                    tokenUsage: {
+                      contextWindow: 0,
+                      used: 0,
+                      input: 0,
+                      output: 0,
+                      cached: 0,
+                      windowSource: 'unknown',
+                    },
+                    branchSnapshot: {
+                      branch: 'main',
+                      ahead: 0,
+                      behind: 0,
+                      dirty: false,
+                      changedFiles: [],
+                    },
+                    messages: [
+                      {
+                        id: 'old-message',
+                        role: 'assistant',
+                        kind: 'message',
+                        timestamp: '6/10 08:40',
+                        title: 'old reply',
+                        content: 'old reply',
+                        status: 'complete',
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        deletedImports: {
+          claudeSessionIds: [],
+          codexThreadIds: [],
+        },
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+
+  await writeFile(
+    path.join(claudeProjectsDir, 'new-native.jsonl'),
+    [
+      JSON.stringify({
+        type: 'custom-title',
+        customTitle: 'bindless',
+        sessionId: 'new-native',
+      }),
+      JSON.stringify({
+        type: 'queue-operation',
+        operation: 'enqueue',
+        timestamp: '2026-06-10T03:39:53.529Z',
+        sessionId: 'new-native',
+        content: '你现在是更强的fable，根据前文再分析分析',
+      }),
+      JSON.stringify({
+        type: 'user',
+        timestamp: '2026-06-10T06:33:51.262Z',
+        cwd: projectRoot,
+        sessionId: 'new-native',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: '好的，做吧' }],
+        },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        timestamp: '2026-06-10T06:48:24.656Z',
+        cwd: nestedWorkspace,
+        sessionId: 'new-native',
+        message: {
+          model: 'claude-fable-5',
+          role: 'assistant',
+          content: [{ type: 'text', text: '下午 fable 分析完成。' }],
+        },
+      }),
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  await writeFile(
+    path.join(claudeProjectsDir, 'old-native.jsonl'),
+    [
+      JSON.stringify({
+        type: 'custom-title',
+        customTitle: 'bindless',
+        sessionId: 'old-native',
+      }),
+      JSON.stringify({
+        type: 'user',
+        timestamp: '2026-06-10T00:39:53.000Z',
+        cwd: projectRoot,
+        sessionId: 'old-native',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: '早上的问题' }],
+        },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        timestamp: '2026-06-10T00:40:53.000Z',
+        cwd: projectRoot,
+        sessionId: 'old-native',
+        message: {
+          model: 'claude-opus-4-8',
+          role: 'assistant',
+          content: [{ type: 'text', text: '早上的旧回复。' }],
+        },
+      }),
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  const previousUserProfile = process.env.USERPROFILE;
+  process.env.USERPROFILE = homePath;
+  configureRuntimePaths({ mode: 'web', userDataPath, homePath });
+
+  try {
+    const sessionStore = await importFreshSessionStore();
+    const projects = await sessionStore.getProjects();
+    const crash = projects[0]?.dreams.find((dream) => dream.id === 'crash');
+    const temporary = projects[0]?.dreams.find((dream) => dream.isTemporary);
+    const session = crash?.sessions.find((candidate) => candidate.id === 'bindless-session');
+
+    assert.equal(session?.claudeSessionId, 'new-native');
+    assert.equal(session?.model, 'fable');
+    assert.equal(session?.messages.at(-1)?.content, '下午 fable 分析完成。');
+    assert.equal(
+      temporary?.sessions.some((candidate) => candidate.claudeSessionId === 'new-native'),
+      false,
+    );
+  } finally {
+    if (previousUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = previousUserProfile;
+    }
+  }
+});
+
 await run('loadState keeps an existing Codex session in its non-temporary streamwork', async () => {
   const tempBase = path.resolve('.tmp-tests');
   await mkdir(tempBase, { recursive: true });

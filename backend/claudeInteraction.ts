@@ -1322,9 +1322,7 @@ export const shouldForkResidentClaudeSession = (input: {
   hasResident: boolean;
   effortChanged: boolean;
 }) => {
-  const settingsChanged =
-    Boolean(input.persistedModel && input.resolvedModel && input.persistedModel !== input.resolvedModel) ||
-    (input.hasResident && input.effortChanged);
+  const settingsChanged = input.hasResident && input.effortChanged;
 
   if (!input.session.claudeSessionId || !settingsChanged) {
     return false;
