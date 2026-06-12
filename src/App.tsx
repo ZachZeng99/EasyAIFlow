@@ -42,6 +42,11 @@ import {
   normalizeSessionProvider,
   providerSupportsBtw,
 } from './data/sessionProvider';
+import {
+  clearSessionSending,
+  isSessionSending,
+  markSessionSending,
+} from './data/sessionSendState';
 import type {
   BtwResponse,
   ClaudeStreamEvent,
@@ -420,7 +425,7 @@ export default function App() {
   const [selectedSessionId, setSelectedSessionId] = useState('');
   const [draftsBySessionId, setDraftsBySessionId] = useState<Record<string, string>>({});
   const [appVersion, setAppVersion] = useState('desktop');
-  const [isSending, setIsSending] = useState(false);
+  const [sendingSessionIds, setSendingSessionIds] = useState<string[]>([]);
   const [model, setModel] = useState('fable');
   const [modelSelectionSource, setModelSelectionSource] = useState<ModelSelectionSource>('implicit');
   const [effort, setEffort] = useState<'low' | 'medium' | 'high' | 'xhigh' | 'max'>('max');
@@ -653,6 +658,7 @@ export default function App() {
     [],
   );
   const activeSelectedSessionId = selectedSession?.id ?? selectedSessionId;
+  const isSelectedSessionSending = isSessionSending(sendingSessionIds, selectedSession?.id);
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedSession?.projectId) ?? projects[0],
     [projects, selectedSession],
@@ -1429,7 +1435,7 @@ export default function App() {
     }
 
     const prompt = draft.trim();
-    if ((!prompt && attachments.length === 0) || isSending) {
+    if ((!prompt && attachments.length === 0) || isSelectedSessionSending) {
       return;
     }
 
@@ -1457,7 +1463,8 @@ export default function App() {
       return;
     }
 
-    setIsSending(true);
+    const sendingSessionId = selectedSession.id;
+    setSendingSessionIds((current) => markSessionSending(current, sendingSessionId));
     setUiError(null);
     setUnreadSessionIds((current) => current.filter((sessionId) => sessionId !== selectedSession.id));
 
@@ -1543,6 +1550,7 @@ export default function App() {
           })),
         );
       }
+      setSendingSessionIds((current) => clearSessionSending(current, sendingSessionId));
       return;
     }
 
@@ -1562,7 +1570,7 @@ export default function App() {
       const message = error instanceof Error ? error.message : 'Failed to send message.';
       setUiError(message);
     } finally {
-      setIsSending(false);
+      setSendingSessionIds((current) => clearSessionSending(current, sendingSessionId));
     }
   };
 
@@ -1573,9 +1581,10 @@ export default function App() {
 
     try {
       setUiError(null);
-      setIsSending(false);
+      const sessionId = selectedSession.id;
+      setSendingSessionIds((current) => clearSessionSending(current, sessionId));
       const result = await bridge.stopSessionRun({
-        sessionId: selectedSession.id,
+        sessionId,
       });
       if (result?.projects) {
         replaceProjects(result.projects);
@@ -1682,7 +1691,7 @@ export default function App() {
 
     try {
       setUiError(null);
-      setIsSending(false);
+      setSendingSessionIds((current) => clearSessionSending(current, sessionId));
       const result = await bridge.disconnectSession({ sessionId });
       if (result?.projects) {
         replaceProjects(result.projects);
@@ -2291,7 +2300,7 @@ export default function App() {
                 slashCommands={slashCommands}
                 mentionOptions={groupMentionOptions}
                 attachments={attachments}
-                isSending={isSending}
+                isSending={isSelectedSessionSending}
                 isResponding={isSelectedSessionResponding}
                 allowSendWhileResponding={hasActiveSelectedBackgroundTasks}
                 model={model}
