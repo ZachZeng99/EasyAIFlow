@@ -204,3 +204,22 @@ export const mergeGroupRoomRuntimeState = (
 
   return roomState;
 };
+
+export const mergeGroupRoomAskUserQuestionState = (
+  roomState: SessionInteractionState | undefined,
+  participantStates: Array<SessionInteractionState | undefined>,
+): SessionInteractionState | undefined => {
+  const participantQuestionState = participantStates.find((state) => state?.askUserQuestion);
+  const askUserQuestion = roomState?.askUserQuestion ?? participantQuestionState?.askUserQuestion;
+  if (!askUserQuestion) {
+    return roomState;
+  }
+
+  return {
+    ...(roomState ?? {}),
+    askUserQuestion,
+    isSubmittingAskUserQuestion:
+      roomState?.isSubmittingAskUserQuestion ??
+      participantQuestionState?.isSubmittingAskUserQuestion,
+  };
+};

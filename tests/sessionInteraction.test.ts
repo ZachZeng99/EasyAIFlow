@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import {
+  mergeGroupRoomAskUserQuestionState,
   mergeGroupRoomRuntimeState,
   mergeSessionRuntimeStates,
   setSessionRuntimeState,
 } from '../src/data/sessionInteraction.ts';
+import type { SessionInteractionState } from '../src/data/sessionInteraction.ts';
 import type { SessionRuntimeState } from '../src/data/types.ts';
 
 const run = (name: string, fn: () => void) => {
@@ -86,6 +88,29 @@ run('mergeGroupRoomRuntimeState falls back to the room runtime when no backing r
     phase: 'running',
     updatedAt: 50,
   });
+});
+
+run('mergeGroupRoomAskUserQuestionState surfaces pending participant questions on the room', () => {
+  const participantInteraction: SessionInteractionState = {
+    askUserQuestion: {
+      sessionId: 'backing-session',
+      toolUseId: 'toolu-question',
+      questions: [
+        {
+          question: 'Which direction should we take?',
+          options: [
+            { label: 'Fast', description: 'Prioritize speed.' },
+            { label: 'Careful', description: 'Prioritize confidence.' },
+          ],
+        },
+      ],
+    },
+  };
+
+  const merged = mergeGroupRoomAskUserQuestionState(undefined, [participantInteraction]);
+
+  assert.equal(merged?.askUserQuestion?.sessionId, 'backing-session');
+  assert.equal(merged?.askUserQuestion?.toolUseId, 'toolu-question');
 });
 
 run('setSessionRuntimeState prunes stale active background tasks when the runtime is no longer background', () => {

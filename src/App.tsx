@@ -20,6 +20,7 @@ import {
   type AskUserQuestionDraft,
 } from './data/askUserQuestion';
 import {
+  mergeGroupRoomAskUserQuestionState,
   mergeGroupRoomRuntimeState,
   setSessionRuntimeState,
   upsertSessionBackgroundTask,
@@ -563,6 +564,7 @@ export default function App() {
       string,
       {
         interaction: SessionInteractionState | undefined;
+        participantInteractions: Array<SessionInteractionState | undefined>;
         runtime: SessionRuntimeState | undefined;
         result: SessionInteractionState | undefined;
       }
@@ -608,10 +610,22 @@ export default function App() {
 
       const interaction = sessionInteractions.get(session.id);
       const runtime = getEffectiveSessionRuntime(session);
+      const participantInteractions =
+        session.sessionKind === 'group' && session.group?.kind === 'room'
+          ? session.group.participants.map((participant) =>
+              sessionInteractions.get(participant.backingSessionId),
+            )
+          : [];
 
       const cache = effectiveInteractionCacheRef.current;
       const cached = cache.get(session.id);
-      if (cached && cached.interaction === interaction && cached.runtime === runtime) {
+      if (
+        cached &&
+        cached.interaction === interaction &&
+        cached.runtime === runtime &&
+        cached.participantInteractions.length === participantInteractions.length &&
+        cached.participantInteractions.every((value, index) => value === participantInteractions[index])
+      ) {
         return cached.result;
       }
 
@@ -624,7 +638,11 @@ export default function App() {
         result = interaction ? { ...interaction, runtime } : { runtime };
       }
 
-      cache.set(session.id, { interaction, runtime, result });
+      if (session.sessionKind === 'group' && session.group?.kind === 'room') {
+        result = mergeGroupRoomAskUserQuestionState(result, participantInteractions);
+      }
+
+      cache.set(session.id, { interaction, participantInteractions, runtime, result });
       return result;
     },
     [getEffectiveSessionRuntime, sessionInteractions],
@@ -1777,7 +1795,9 @@ export default function App() {
   };
 
   const handleSubmitAskUserQuestion = async (sessionId: string, draft?: AskUserQuestionDraft) => {
-    const interaction = sessionInteractions.get(sessionId);
+    const interaction =
+      getEffectiveSessionInteraction(allSessions.find((session) => session.id === sessionId)) ??
+      sessionInteractions.get(sessionId);
     const askQuestion = interaction?.askUserQuestion;
     if (!askQuestion) {
       return;
@@ -1790,7 +1810,27 @@ export default function App() {
           annotations: {},
         };
 
-    updateSessionInteraction(sessionId, (s) => ({ ...s, isSubmittingAskUserQuestion: true }));
+    const setAskUserQuestionSubmitting = (targetSessionId: string, isSubmitting: boolean) => {
+      updateSessionInteraction(targetSessionId, (s) => ({
+        ...s,
+        isSubmittingAskUserQuestion: isSubmitting,
+      }));
+    };
+    const clearAskUserQuestion = (targetSessionId: string) => {
+      updateSessionInteraction(targetSessionId, (s) => ({
+        ...s,
+        askUserQuestion:
+          s.askUserQuestion?.toolUseId === askQuestion.toolUseId
+            ? undefined
+            : s.askUserQuestion,
+        isSubmittingAskUserQuestion: false,
+      }));
+    };
+
+    setAskUserQuestionSubmitting(sessionId, true);
+    if (askQuestion.sessionId !== sessionId) {
+      setAskUserQuestionSubmitting(askQuestion.sessionId, true);
+    }
     try {
       const mode = await bridge.respondToAskUserQuestion({
         toolUseId: askQuestion.toolUseId,
@@ -1815,15 +1855,17 @@ export default function App() {
         });
       }
 
-      updateSessionInteraction(sessionId, (s) => ({
-        ...s,
-        askUserQuestion: undefined,
-        isSubmittingAskUserQuestion: false,
-      }));
+      clearAskUserQuestion(sessionId);
+      if (askQuestion.sessionId !== sessionId) {
+        clearAskUserQuestion(askQuestion.sessionId);
+      }
       setUiError(null);
     } catch (error) {
       setUiError(error instanceof Error ? error.message : 'Failed to answer the pending question.');
-      updateSessionInteraction(sessionId, (s) => ({ ...s, isSubmittingAskUserQuestion: false }));
+      setAskUserQuestionSubmitting(sessionId, false);
+      if (askQuestion.sessionId !== sessionId) {
+        setAskUserQuestionSubmitting(askQuestion.sessionId, false);
+      }
     }
   };
 
