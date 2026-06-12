@@ -48,6 +48,10 @@ import {
   isSessionSending,
   markSessionSending,
 } from './data/sessionSendState';
+import {
+  restoreSessionDraftIfUnchanged,
+  setSessionDraftValue,
+} from './data/sessionDrafts';
 import type {
   BtwResponse,
   ClaudeStreamEvent,
@@ -512,24 +516,7 @@ export default function App() {
   );
   const draft = selectedSession ? draftsBySessionId[selectedSession.id] ?? '' : '';
   const setSessionDraft = useCallback((sessionId: string, value: string) => {
-    setDraftsBySessionId((current) => {
-      if (value.length === 0) {
-        if (!(sessionId in current)) {
-          return current;
-        }
-        const { [sessionId]: _removed, ...rest } = current;
-        return rest;
-      }
-
-      if (current[sessionId] === value) {
-        return current;
-      }
-
-      return {
-        ...current,
-        [sessionId]: value,
-      };
-    });
+    setDraftsBySessionId((current) => setSessionDraftValue(current, sessionId, value));
   }, []);
   const ensureSessionRecordLoaded = useCallback((sessionId: string) => {
     const existing = allSessions.find((session) => session.id === sessionId);
@@ -1515,6 +1502,7 @@ export default function App() {
     if (optimisticSend) {
       setProjects(optimisticSend.projects);
     }
+    setSessionDraft(sendingSessionId, '');
 
     try {
       const result = await bridge.sendMessage({
@@ -1569,6 +1557,9 @@ export default function App() {
         );
       }
       setSendingSessionIds((current) => clearSessionSending(current, sendingSessionId));
+      setDraftsBySessionId((current) =>
+        restoreSessionDraftIfUnchanged(current, sendingSessionId, '', prompt),
+      );
       return;
     }
 
@@ -1582,7 +1573,6 @@ export default function App() {
         });
       }
 
-      setSessionDraft(selectedSession.id, '');
       clearAttachments();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to send message.';
