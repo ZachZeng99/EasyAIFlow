@@ -58,6 +58,7 @@ import type {
   SessionSummary,
 } from '../src/data/types.js';
 import type { PlanModeResponsePayload } from '../src/data/planMode.js';
+import { createSseClientRegistry } from './sseClients.js';
 
 // ---------------------------------------------------------------------------
 // Runtime paths configuration
@@ -75,14 +76,11 @@ configureRuntimePaths({
 // SSE event clients
 // ---------------------------------------------------------------------------
 
-const eventClients = new Set<ServerResponse<IncomingMessage>>();
+const eventClients = createSseClientRegistry();
 
 const ctx: ClaudeInteractionContext = {
   broadcastEvent: (event: ClaudeStreamEvent) => {
-    const data = JSON.stringify(event);
-    eventClients.forEach((client) => {
-      client.write(`data: ${data}\n\n`);
-    });
+    eventClients.broadcastEvent(event);
   },
   attachmentRoot: () => path.join(getRuntimePaths().userDataPath, 'attachments'),
   claudeSettingsPath: () => path.join(getRuntimePaths().homePath, '.claude', 'settings.json'),
@@ -95,7 +93,7 @@ const writeSseEvent = (
   client: ServerResponse<IncomingMessage>,
   event: ClaudeStreamEvent,
 ) => {
-  client.write(`data: ${JSON.stringify(event)}\n\n`);
+  eventClients.writeEvent(client, event);
 };
 
 const replayInteractionSnapshots = (client: ServerResponse<IncomingMessage>) => {
@@ -525,17 +523,27 @@ createServer(async (request, response) => {
       Connection: 'keep-alive',
       'Access-Control-Allow-Origin': '*',
     });
-    response.write(': connected\n\n');
     eventClients.add(response);
+    if (!eventClients.writeComment(response, 'connected')) {
+      return;
+    }
     replayInteractionSnapshots(response);
+    if (!eventClients.has(response)) {
+      return;
+    }
     const heartbeat = setInterval(() => {
-      response.write(': heartbeat\n\n');
+      if (!eventClients.writeComment(response, 'heartbeat')) {
+        clearInterval(heartbeat);
+      }
     }, 15_000);
 
-    request.on('close', () => {
+    const cleanup = () => {
       clearInterval(heartbeat);
-      eventClients.delete(response);
-    });
+      eventClients.remove(response);
+    };
+    request.on('close', cleanup);
+    response.on('close', cleanup);
+    response.on('error', cleanup);
     return;
   }
 
