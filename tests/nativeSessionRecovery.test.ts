@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+  mergeNativeConversationMessages,
   mergeNativeSessionIntoExisting,
   shouldRecoverSessionFromNative,
   type ParsedNativeSession,
@@ -94,6 +95,62 @@ run('mergeNativeSessionIntoExisting replaces broken messages but keeps local own
   assert.equal(recovered.preview, '## 源码验证结果汇总');
   assert.equal(recovered.messages.length, 1);
   assert.equal(recovered.messages[0]?.content.startsWith('## 源码验证结果汇总'), true);
+});
+
+run('mergeNativeConversationMessages appends recovered fresh-session turns without duplicating context', () => {
+  const existing = [
+    makeMessage({
+      id: 'old-user',
+      role: 'user',
+      title: 'hi',
+      content: 'hi',
+    }),
+    makeMessage({
+      id: 'old-assistant',
+      title: '你好',
+      content: '你好',
+    }),
+  ];
+  const recoveryPrompt = [
+    'EasyAIFlow is starting a fresh native Claude conversation instead of resuming old-native.',
+    'Reason: Claude no longer has that local transcript.',
+    'The EasyAIFlow transcript before the current message is provided below as recovery context.',
+    'Use it only as supporting context; do not claim the native Claude conversation was recovered.',
+    '',
+    'Session: FogBlink',
+    'Transcript:',
+    '[USER | 6/14 15:47 | hi]',
+    'hi',
+    '',
+    'Current user message:',
+    '',
+    '你看现在还缺什么',
+  ].join('\n');
+  const parsed = [
+    makeMessage({
+      id: 'native-user',
+      role: 'user',
+      title: 'EasyAIFlow is starting a fresh native Claude',
+      content: recoveryPrompt,
+    }),
+    makeMessage({
+      id: 'native-assistant',
+      title: '还缺一次完整构建验证。',
+      content: '还缺一次完整构建验证。',
+    }),
+  ];
+
+  const merged = mergeNativeConversationMessages(existing, parsed);
+  const mergedAgain = mergeNativeConversationMessages(merged, parsed);
+
+  assert.equal(merged.length, 4);
+  assert.equal(merged[2]?.content, '你看现在还缺什么');
+  assert.equal(merged[2]?.title, '你看现在还缺什么');
+  assert.equal(merged.some((message) => message.content.includes('Session: FogBlink')), false);
+  assert.deepEqual(
+    mergedAgain.map((message) => message.content),
+    merged.map((message) => message.content),
+  );
 });
 
 run('shouldRecoverSessionFromNative ignores cleanup-only assistant follow-ups when comparing final answers', () => {

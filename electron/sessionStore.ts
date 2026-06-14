@@ -25,7 +25,11 @@ import {
 } from './claudeRunState.js';
 import { isClaudeSyntheticModel, normalizeClaudeModelSelection } from './claudeModel.js';
 import { mergeNativeImportedSessions } from './nativeSessionMerge.js';
-import { mergeNativeSessionIntoExisting, shouldRecoverSessionFromNative } from './nativeSessionRecovery.js';
+import {
+  mergeNativeConversationMessages,
+  mergeNativeSessionIntoExisting,
+  shouldRecoverSessionFromNative,
+} from './nativeSessionRecovery.js';
 import { hydrateProjectForOpen } from './projectOpen.js';
 import { buildRecordedCodeChangeDiff } from './recordedCodeChangeDiff.js';
 import {
@@ -1182,6 +1186,40 @@ const getNativeClaudeProjectDirPaths = (rootPath: string) =>
 
 const getExistingNativeClaudeProjectDirPaths = (rootPath: string) =>
   getNativeClaudeProjectDirPaths(rootPath).filter((candidate) => existsSync(candidate));
+
+const getExistingNativeClaudeProjectTreeDirPaths = async (rootPath: string) => {
+  const exactPaths = getExistingNativeClaudeProjectDirPaths(rootPath);
+  const rootDirNames = getClaudeProjectDirNameCandidates(rootPath);
+  if (rootDirNames.length === 0) {
+    return exactPaths;
+  }
+
+  const normalizedRootDirNames = rootDirNames.map((dirName) => dirName.toLowerCase());
+  const nativeRoot = nativeClaudeProjectsRoot();
+  let dirents: import('node:fs').Dirent[];
+  try {
+    dirents = await readdir(nativeRoot, { withFileTypes: true });
+  } catch {
+    return exactPaths;
+  }
+
+  const paths = new Set(exactPaths);
+  dirents.forEach((dirent) => {
+    if (!dirent.isDirectory()) {
+      return;
+    }
+    const normalizedName = dirent.name.toLowerCase();
+    if (
+      normalizedRootDirNames.some(
+        (rootDirName) => normalizedName === rootDirName || normalizedName.startsWith(`${rootDirName}-`),
+      )
+    ) {
+      paths.add(path.join(nativeRoot, dirent.name));
+    }
+  });
+
+  return [...paths];
+};
 
 const nativeClaudeSessionFilePath = (rootPath: string, claudeSessionId: string) => {
   const existingDir =
@@ -2532,7 +2570,7 @@ const importNativeClaudeSessions = async (
       .map((session) => [session.claudeSessionId, session]),
   );
 
-  const nativeDirs = getExistingNativeClaudeProjectDirPaths(project.rootPath);
+  const nativeDirs = await getExistingNativeClaudeProjectTreeDirPaths(project.rootPath);
   if (nativeDirs.length === 0) {
     temporary.sessions = existingSessions;
     return;
@@ -2614,7 +2652,9 @@ const importNativeClaudeSessions = async (
         windowSource: 'unknown',
       },
       branchSnapshot: existing?.branchSnapshot ?? makeEmptyBranchSnapshot(project.rootPath),
-      messages: parsed.messages,
+      messages: existing
+        ? mergeNativeConversationMessages(existing.messages, parsed.messages)
+        : parsed.messages,
     };
     if (existing) {
       Object.assign(existing, importedSession);

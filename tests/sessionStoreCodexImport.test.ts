@@ -506,6 +506,170 @@ await run('native Claude import reconnects a model-switched session whose cwd mo
   }
 });
 
+await run('native Claude import scans nested cwd project directories for matching sessions', async () => {
+  const tempBase = path.resolve('.tmp-tests');
+  await mkdir(tempBase, { recursive: true });
+  const tempRoot = await mkdtemp(path.join(tempBase, 'session-store-claude-nested-dir-'));
+  const userDataPath = path.join(tempRoot, 'userData');
+  const homePath = path.join(tempRoot, 'home');
+  const projectRoot = path.join(tempRoot, 'PBZ');
+  const nestedWorkspace = path.join(projectRoot, 'PBZGitEngine', 'Engine', 'Plugins', 'RealLinkToolkit', 'Tools', 'RealLinkCmd');
+  const claudeProjectsDir = path.join(
+    homePath,
+    '.claude',
+    'projects',
+    toClaudeProjectDirName(nestedWorkspace) ?? 'PBZ',
+  );
+  const storeFile = path.join(userDataPath, 'easyaiflow-sessions.json');
+
+  await mkdir(userDataPath, { recursive: true });
+  await mkdir(nestedWorkspace, { recursive: true });
+  await mkdir(claudeProjectsDir, { recursive: true });
+
+  await writeFile(
+    storeFile,
+    JSON.stringify(
+      {
+        projects: [
+          {
+            id: 'project-1',
+            name: 'PBZ',
+            rootPath: projectRoot,
+            isClosed: false,
+            dreams: [
+              {
+                id: 'temporary',
+                name: 'Temporary',
+                isTemporary: true,
+                sessions: [],
+              },
+              {
+                id: 'render-bug',
+                name: 'RenderBug',
+                sessions: [
+                  {
+                    id: 'fogblink-session',
+                    title: 'FogBlink',
+                    preview: 'old reply',
+                    timeLabel: '6/14 16:15',
+                    updatedAt: 1,
+                    provider: 'claude',
+                    model: 'claude-opus-4-8',
+                    workspace: nestedWorkspace,
+                    projectId: 'project-1',
+                    projectName: 'PBZ',
+                    dreamId: 'render-bug',
+                    dreamName: 'RenderBug',
+                    claudeSessionId: 'old-native',
+                    sessionKind: 'standard',
+                    hidden: false,
+                    groups: [],
+                    contextReferences: [],
+                    tokenUsage: {
+                      contextWindow: 0,
+                      used: 0,
+                      input: 0,
+                      output: 0,
+                      cached: 0,
+                      windowSource: 'unknown',
+                    },
+                    branchSnapshot: {
+                      branch: 'main',
+                      ahead: 0,
+                      behind: 0,
+                      dirty: false,
+                      changedFiles: [],
+                    },
+                    messages: [
+                      {
+                        id: 'old-message',
+                        role: 'assistant',
+                        kind: 'message',
+                        timestamp: '6/14 16:15',
+                        title: 'old reply',
+                        content: 'old reply',
+                        status: 'complete',
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        deletedImports: {
+          claudeSessionIds: [],
+          codexThreadIds: [],
+        },
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+
+  await writeFile(
+    path.join(claudeProjectsDir, 'new-native.jsonl'),
+    [
+      JSON.stringify({
+        type: 'custom-title',
+        customTitle: 'FogBlink',
+        sessionId: 'new-native',
+      }),
+      JSON.stringify({
+        type: 'user',
+        timestamp: '2026-06-14T08:18:33.359Z',
+        cwd: nestedWorkspace,
+        sessionId: 'new-native',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: '你看现在还缺什么' }],
+        },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        timestamp: '2026-06-14T08:21:54.721Z',
+        cwd: nestedWorkspace,
+        sessionId: 'new-native',
+        message: {
+          model: 'claude-fable-5',
+          role: 'assistant',
+          content: [{ type: 'text', text: '还缺一次完整构建验证。' }],
+        },
+      }),
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  const previousUserProfile = process.env.USERPROFILE;
+  process.env.USERPROFILE = homePath;
+  configureRuntimePaths({ mode: 'web', userDataPath, homePath });
+
+  try {
+    const sessionStore = await importFreshSessionStore();
+    const projects = await sessionStore.getProjects();
+    const renderBug = projects[0]?.dreams.find((dream) => dream.id === 'render-bug');
+    const temporary = projects[0]?.dreams.find((dream) => dream.isTemporary);
+    const session = renderBug?.sessions.find((candidate) => candidate.id === 'fogblink-session');
+
+    assert.equal(session?.claudeSessionId, 'new-native');
+    assert.equal(session?.title, 'FogBlink');
+    assert.equal(session?.model, 'fable');
+    assert.equal(session?.messages.at(-1)?.content, '还缺一次完整构建验证。');
+    assert.equal(
+      temporary?.sessions.some((candidate) => candidate.claudeSessionId === 'new-native'),
+      false,
+    );
+  } finally {
+    if (previousUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = previousUserProfile;
+    }
+  }
+});
+
 await run('loadState keeps an existing Codex session in its non-temporary streamwork', async () => {
   const tempBase = path.resolve('.tmp-tests');
   await mkdir(tempBase, { recursive: true });
