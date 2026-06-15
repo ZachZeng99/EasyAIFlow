@@ -12,7 +12,11 @@ import {
   reconcileLiveTraceMessage,
   reconcileOptimisticSendMessages,
 } from './data/optimisticSend';
-import { mergeProjectSnapshots } from './data/projectSnapshots';
+import {
+  hydrateSessionRecordInProjects,
+  mergeProjectSnapshots,
+  mergeProjectSnapshotsAndHydrateSession,
+} from './data/projectSnapshots';
 import { getLastGroupResponder } from './data/groupChat';
 import {
   buildAskUserQuestionFollowUpPrompt,
@@ -164,10 +168,7 @@ const applyClaudeEvent = (projects: ProjectRecord[], event: ClaudeStreamEvent) =
   event.type === 'interaction-sync'
     ? projects
     : event.type === 'session-sync'
-      ? updateSessionInProjects(projects, event.sessionId, () => ({
-          ...event.session,
-          messagesLoaded: true,
-        }))
+      ? hydrateSessionRecordInProjects(projects, event.session)
     :
   updateSessionInProjects(projects, event.sessionId, (session) => {
     const updatedAt = Date.now();
@@ -465,6 +466,14 @@ export default function App() {
   const replaceProjects = useCallback((nextProjects: ProjectRecord[]) => {
     setProjects((current) => mergeProjectSnapshots(current, nextProjects));
   }, []);
+  const replaceProjectsAndHydrateSession = useCallback(
+    (nextProjects: ProjectRecord[], sessionRecord: SessionRecord) => {
+      setProjects((current) =>
+        mergeProjectSnapshotsAndHydrateSession(current, nextProjects, sessionRecord),
+      );
+    },
+    [],
+  );
   const refreshProjectsFromBridge = useCallback(async () => {
     const bootstrap = await bridge.getProjects();
     const nextProjects = bootstrap?.projects ?? [];
@@ -474,12 +483,7 @@ export default function App() {
     return nextProjects;
   }, [replaceProjects]);
   const hydrateSessionRecord = useCallback((sessionRecord: SessionRecord) => {
-    setProjects((current) =>
-      updateSessionInProjects(current, sessionRecord.id, () => ({
-        ...sessionRecord,
-        messagesLoaded: true,
-      })),
-    );
+    setProjects((current) => hydrateSessionRecordInProjects(current, sessionRecord));
   }, []);
   const [isMobileLayout, setIsMobileLayout] = useState(() =>
     globalThis.matchMedia ? globalThis.matchMedia('(max-width: 920px)').matches : false,
@@ -1718,7 +1722,7 @@ export default function App() {
     try {
       const result = await bridge.openProjectDirectory();
       if (result) {
-        replaceProjects(result.projects);
+        replaceProjectsAndHydrateSession(result.projects, result.session);
         setSelectedSessionId(result.session.id);
         setUiError(null);
       }
@@ -1911,7 +1915,7 @@ export default function App() {
         projectId,
         name: name.trim(),
       });
-      replaceProjects(result.projects);
+      replaceProjectsAndHydrateSession(result.projects, result.session);
       setSelectedSessionId(result.session.id);
       setUiError(null);
     } catch (error) {
@@ -2065,7 +2069,7 @@ export default function App() {
           name: fallbackName,
           rootPath,
         });
-        replaceProjects(result.projects);
+        replaceProjectsAndHydrateSession(result.projects, result.session);
         setSelectedSessionId(result.session.id);
       } else if (dialogState.kind === 'create-streamwork') {
         await handleCreateStreamwork(dialogState.targetId, name);
@@ -2081,7 +2085,7 @@ export default function App() {
           CREATE_SESSION_TIMEOUT_MS,
           'Creating the session timed out. Refresh the project list before retrying; the server may still finish the original request.',
         );
-        replaceProjects(result.projects);
+        replaceProjectsAndHydrateSession(result.projects, result.session);
         setSelectedSessionId(result.session.id);
       } else if (dialogState.kind === 'close-project') {
         await handleCloseProject(dialogState.targetId);

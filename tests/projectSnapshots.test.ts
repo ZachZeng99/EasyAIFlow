@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
-import { mergeProjectSnapshots } from '../src/data/projectSnapshots.ts';
+import {
+  hydrateSessionRecordInProjects,
+  mergeProjectSnapshots,
+  mergeProjectSnapshotsAndHydrateSession,
+} from '../src/data/projectSnapshots.ts';
 import type {
   BranchSnapshot,
   ConversationMessage,
@@ -186,6 +190,74 @@ run('mergeProjectSnapshots preserves loaded history when bootstrap only returns 
   assert.equal(session.preview, 'summary only');
   assert.equal(session.messagesLoaded, true);
   assert.equal(session.messages[0]?.content, 'existing history');
+});
+
+run('mergeProjectSnapshotsAndHydrateSession uses the full created session over the lightweight snapshot', () => {
+  const currentProjects = makeProjects(
+    makeSession('old', {
+      updatedAt: 200,
+      messagesLoaded: true,
+      messages: [makeMessage('assistant-old', 'old session history')],
+    }),
+  );
+  const createdSession = {
+    ...makeSession('new', {
+      updatedAt: 300,
+      messages: [],
+    }),
+    title: 'Followup',
+  };
+
+  const incomingProjects = makeProjects(
+    makeSession('new', {
+      updatedAt: 300,
+      messagesLoaded: false,
+      messages: [],
+    }),
+    makeSession('old', {
+      updatedAt: 210,
+      messagesLoaded: false,
+      messages: [],
+    }),
+  );
+
+  const merged = mergeProjectSnapshotsAndHydrateSession(
+    currentProjects,
+    incomingProjects,
+    createdSession,
+  );
+  const sessions = merged[0]?.dreams[0]?.sessions as SessionRecord[];
+
+  assert.equal(sessions[0]?.id, 'new');
+  assert.equal(sessions[0]?.title, 'Followup');
+  assert.equal(sessions[0]?.messagesLoaded, true);
+  assert.deepEqual(sessions[0]?.messages, []);
+  assert.equal(sessions[1]?.id, 'old');
+  assert.equal(sessions[1]?.messages[0]?.content, 'old session history');
+});
+
+run('hydrateSessionRecordInProjects inserts the full session if the snapshot does not contain it yet', () => {
+  const currentProjects = makeProjects(
+    makeSession('old', {
+      messages: [makeMessage('assistant-old', 'old session history')],
+    }),
+  );
+  const createdSession = {
+    ...makeSession('new', {
+      messages: [],
+    }),
+    title: 'Inserted Session',
+  };
+
+  const merged = hydrateSessionRecordInProjects(currentProjects, createdSession);
+  const sessions = merged[0]?.dreams[0]?.sessions as SessionRecord[];
+
+  assert.equal(sessions[0]?.id, 'new');
+  assert.equal(sessions[0]?.title, 'Inserted Session');
+  assert.equal(sessions[0]?.messagesLoaded, true);
+  assert.deepEqual(sessions[0]?.messages, []);
+  assert.equal(sessions[1]?.id, 'old');
+  assert.equal(sessions[1]?.messages[0]?.content, 'old session history');
 });
 
 run('mergeProjectSnapshots applies stale group conversion metadata and sequenced messages', () => {

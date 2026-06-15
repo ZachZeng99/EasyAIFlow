@@ -207,3 +207,58 @@ export const mergeProjectSnapshots = (
     })),
   }));
 };
+
+export const hydrateSessionRecordInProjects = (
+  projects: ProjectRecord[],
+  sessionRecord: SessionRecord,
+) => {
+  const hydratedSession = {
+    ...sessionRecord,
+    messagesLoaded: true,
+  };
+  let found = false;
+
+  const nextProjects = projects.map((project) => ({
+    ...project,
+    dreams: project.dreams.map((dream) => ({
+      ...dream,
+      sessions: dream.sessions.map((session) => {
+        if (session.id !== sessionRecord.id) {
+          return session;
+        }
+
+        found = true;
+        return hydratedSession;
+      }),
+    })),
+  }));
+
+  if (found) {
+    return nextProjects;
+  }
+
+  return nextProjects.map((project) =>
+    project.id !== sessionRecord.projectId
+      ? project
+      : {
+          ...project,
+          dreams: project.dreams.map((dream) =>
+            dream.id !== sessionRecord.dreamId
+              ? dream
+              : {
+                  ...dream,
+                  sessions: [hydratedSession, ...dream.sessions],
+                },
+          ),
+        },
+  );
+};
+
+export const mergeProjectSnapshotsAndHydrateSession = (
+  currentProjects: ProjectRecord[],
+  nextProjects: ProjectRecord[],
+  sessionRecord: SessionRecord,
+) => hydrateSessionRecordInProjects(
+  mergeProjectSnapshots(currentProjects, nextProjects),
+  sessionRecord,
+);

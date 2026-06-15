@@ -2594,6 +2594,8 @@ const importNativeClaudeSessions = async (
   const seenNativeIds = new Set<string>();
   const importedSessions: SessionRecord[] = [];
   const latestImportedUpdatedAtBySessionId = new Map<string, number>();
+  const latestImportedUpdatedAtByNativeId = new Map<string, number>();
+  const importedSessionIndexByNativeId = new Map<string, number>();
 
   for (const file of files) {
     const parsed = await parseCachedNativeClaudeSessionFile(file, cache);
@@ -2608,14 +2610,23 @@ const importNativeClaudeSessions = async (
       continue;
     }
 
+    const importedUpdatedAt = parsed.updatedAt ?? 0;
+    const previousNativeImportedUpdatedAt = latestImportedUpdatedAtByNativeId.get(parsed.nativeSessionId);
+    if (
+      previousNativeImportedUpdatedAt !== undefined &&
+      importedUpdatedAt <= previousNativeImportedUpdatedAt
+    ) {
+      continue;
+    }
+    latestImportedUpdatedAtByNativeId.set(parsed.nativeSessionId, importedUpdatedAt);
+
     seenNativeIds.add(parsed.nativeSessionId);
     const existing =
       findImportedSessionTarget(projectSessions, parsed.nativeSessionId, parsed.title, workspace, 'claudeSessionId', 'claude') ??
       existingByClaudeSessionId.get(parsed.nativeSessionId);
     if (existing) {
-      const importedUpdatedAt = parsed.updatedAt ?? 0;
       const previousImportedUpdatedAt = latestImportedUpdatedAtBySessionId.get(existing.id);
-      if (previousImportedUpdatedAt !== undefined && importedUpdatedAt < previousImportedUpdatedAt) {
+      if (previousImportedUpdatedAt !== undefined && importedUpdatedAt <= previousImportedUpdatedAt) {
         continue;
       }
       latestImportedUpdatedAtBySessionId.set(existing.id, importedUpdatedAt);
@@ -2662,7 +2673,13 @@ const importNativeClaudeSessions = async (
         importedSessions.push(existing);
       }
     } else {
-      importedSessions.push(importedSession);
+      const previousIndex = importedSessionIndexByNativeId.get(parsed.nativeSessionId);
+      if (previousIndex !== undefined) {
+        importedSessions[previousIndex] = importedSession;
+      } else {
+        importedSessionIndexByNativeId.set(parsed.nativeSessionId, importedSessions.length);
+        importedSessions.push(importedSession);
+      }
     }
   }
 

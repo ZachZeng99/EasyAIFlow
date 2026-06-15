@@ -63,8 +63,19 @@ const normalizeMessageKey = (message: ConversationMessage) =>
     message.role,
     message.kind ?? 'message',
     message.content.trim(),
-    message.status ?? '',
   ].join('\u0000');
+
+const countMatchingPrefix = (left: string[], right: string[], leftStart = 0) => {
+  let matched = 0;
+  while (
+    leftStart + matched < left.length &&
+    matched < right.length &&
+    left[leftStart + matched] === right[matched]
+  ) {
+    matched += 1;
+  }
+  return matched;
+};
 
 const appendMissingMessageSuffix = (
   existingMessages: ConversationMessage[],
@@ -79,14 +90,7 @@ const appendMissingMessageSuffix = (
   let bestPrefixLength = 0;
 
   for (let existingIndex = 0; existingIndex < existingKeys.length; existingIndex += 1) {
-    let matched = 0;
-    while (
-      existingIndex + matched < existingKeys.length &&
-      matched < incomingKeys.length &&
-      existingKeys[existingIndex + matched] === incomingKeys[matched]
-    ) {
-      matched += 1;
-    }
+    const matched = countMatchingPrefix(existingKeys, incomingKeys, existingIndex);
     bestPrefixLength = Math.max(bestPrefixLength, matched);
   }
 
@@ -94,6 +98,20 @@ const appendMissingMessageSuffix = (
     ...existingMessages.map(cloneMessage),
     ...incomingMessages.slice(bestPrefixLength).map(cloneMessage),
   ];
+};
+
+const isRepeatedRecoveryImport = (
+  existingMessages: ConversationMessage[],
+  incomingMessages: ConversationMessage[],
+) => {
+  if (incomingMessages.length < 10 || existingMessages.length < incomingMessages.length * 2) {
+    return false;
+  }
+
+  const sampleSize = Math.min(20, incomingMessages.length);
+  const existingKeys = existingMessages.map(normalizeMessageKey);
+  const incomingKeys = incomingMessages.map(normalizeMessageKey);
+  return countMatchingPrefix(existingKeys, incomingKeys.slice(0, sampleSize)) === sampleSize;
 };
 
 const normalizeRecoveredNativeMessages = (messages: ConversationMessage[]) => {
@@ -126,6 +144,13 @@ const normalizeRecoveredNativeMessages = (messages: ConversationMessage[]) => {
   ];
 };
 
+const hasRawNativeRecoveryPrompt = (messages: ConversationMessage[]) =>
+  messages.some(
+    (message) =>
+      message.role === 'user' &&
+      message.content.startsWith(nativeRecoveryPromptPrefix),
+  );
+
 export const mergeNativeConversationMessages = (
   existingMessages: ConversationMessage[] | undefined,
   parsedMessages: ConversationMessage[],
@@ -136,7 +161,14 @@ export const mergeNativeConversationMessages = (
     parsedMessages[0]?.role === 'user' &&
     parsedMessages[0]?.content.startsWith(nativeRecoveryPromptPrefix)
   ) {
-    return appendMissingMessageSuffix(currentMessages, normalizedParsedMessages);
+    if (hasRawNativeRecoveryPrompt(currentMessages)) {
+      return normalizedParsedMessages;
+    }
+    if (isRepeatedRecoveryImport(currentMessages, normalizedParsedMessages)) {
+      return normalizedParsedMessages;
+    }
+
+    return appendMissingMessageSuffix(currentMessages.map(cloneMessage), normalizedParsedMessages);
   }
 
   return normalizedParsedMessages;

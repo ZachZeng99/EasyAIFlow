@@ -153,6 +153,164 @@ run('mergeNativeConversationMessages appends recovered fresh-session turns witho
   );
 });
 
+run('mergeNativeConversationMessages replaces previously imported raw recovery prompts', () => {
+  const recoveryPrompt = [
+    'EasyAIFlow is starting a fresh native Claude conversation instead of resuming old-native.',
+    'Reason: Claude no longer has that local transcript.',
+    '',
+    'Current user message:',
+    '',
+    '你改了然后运行编辑器试试',
+  ].join('\n');
+  const pollutedExisting = [
+    makeMessage({
+      id: 'polluted-user',
+      role: 'user',
+      title: 'EasyAIFlow is starting a fresh native Claude',
+      content: recoveryPrompt,
+    }),
+    makeMessage({
+      id: 'duplicated-tool',
+      role: 'system',
+      kind: 'tool_use',
+      title: 'Edit',
+      content: 'Edit(D:\\PBZ\\PBZGitEngine\\Engine\\Source\\Runtime\\D3D12RHI\\Private\\D3D12BindlessDescriptors.cpp)',
+      status: 'success',
+    }),
+    makeMessage({
+      id: 'duplicated-tool-2',
+      role: 'system',
+      kind: 'tool_use',
+      title: 'Edit',
+      content: 'Edit(D:\\PBZ\\PBZGitEngine\\Engine\\Source\\Runtime\\D3D12RHI\\Private\\D3D12BindlessDescriptors.cpp)',
+      status: 'success',
+    }),
+  ];
+  const parsed = [
+    makeMessage({
+      id: 'native-user',
+      role: 'user',
+      title: 'EasyAIFlow is starting a fresh native Claude',
+      content: recoveryPrompt,
+    }),
+    makeMessage({
+      id: 'native-assistant',
+      title: '我先恢复上下文',
+      content: '我先恢复上下文：读一下记忆文件和当前代码改动状态。',
+    }),
+  ];
+
+  const merged = mergeNativeConversationMessages(pollutedExisting, parsed);
+
+  assert.equal(merged.length, 2);
+  assert.equal(merged[0]?.content, '你改了然后运行编辑器试试');
+  assert.equal(merged.some((message) => message.content.startsWith('EasyAIFlow is starting')), false);
+  assert.equal(merged.some((message) => message.title === 'Edit'), false);
+});
+
+run('mergeNativeConversationMessages does not reappend normalized recovery turns when statuses differ', () => {
+  const recoveryPrompt = [
+    'EasyAIFlow is starting a fresh native Claude conversation instead of resuming old-native.',
+    'Reason: Claude no longer has that local transcript.',
+    '',
+    'Current user message:',
+    '',
+    '你改了然后运行编辑器试试',
+  ].join('\n');
+  const existing = [
+    makeMessage({
+      id: 'existing-user',
+      role: 'user',
+      title: '你改了然后运行编辑器试试',
+      content: '你改了然后运行编辑器试试',
+      status: 'complete',
+    }),
+    makeMessage({
+      id: 'existing-tool',
+      role: 'system',
+      kind: 'tool_use',
+      title: 'Edit',
+      content: 'Edit(D:\\PBZ\\PBZGitEngine\\Engine\\Source\\Runtime\\D3D12RHI\\Private\\D3D12BindlessDescriptors.cpp)',
+      status: 'success',
+    }),
+  ];
+  const parsed = [
+    makeMessage({
+      id: 'native-user',
+      role: 'user',
+      title: 'EasyAIFlow is starting a fresh native Claude',
+      content: recoveryPrompt,
+      status: undefined,
+    }),
+    makeMessage({
+      id: 'native-tool',
+      role: 'system',
+      kind: 'tool_use',
+      title: 'Edit',
+      content: 'Edit(D:\\PBZ\\PBZGitEngine\\Engine\\Source\\Runtime\\D3D12RHI\\Private\\D3D12BindlessDescriptors.cpp)',
+      status: 'running',
+    }),
+  ];
+
+  const merged = mergeNativeConversationMessages(existing, parsed);
+
+  assert.deepEqual(
+    merged.map((message) => message.content),
+    existing.map((message) => message.content),
+  );
+});
+
+run('mergeNativeConversationMessages compacts repeated normalized recovery imports', () => {
+  const recoveryPrompt = [
+    'EasyAIFlow is starting a fresh native Claude conversation instead of resuming old-native.',
+    'Reason: Claude no longer has that local transcript.',
+    '',
+    'Current user message:',
+    '',
+    '你改了然后运行编辑器试试',
+  ].join('\n');
+  const parsed = [
+    makeMessage({
+      id: 'native-user',
+      role: 'user',
+      title: 'EasyAIFlow is starting a fresh native Claude',
+      content: recoveryPrompt,
+    }),
+    ...Array.from({ length: 20 }, (_, index) =>
+      makeMessage({
+        id: `native-tool-${index}`,
+        role: 'system',
+        kind: 'tool_use',
+        title: 'Edit',
+        content: `Edit(D:\\PBZ\\File${index}.cpp)`,
+        status: 'running',
+      }),
+    ),
+  ];
+  const normalizedOnce = mergeNativeConversationMessages([], parsed);
+  const pollutedExisting = [
+    ...normalizedOnce,
+    ...normalizedOnce.map((message, index) => ({
+      ...message,
+      id: `duplicate-${index}`,
+      status: message.status === 'running' ? 'success' as const : message.status,
+    })),
+    ...normalizedOnce.map((message, index) => ({
+      ...message,
+      id: `duplicate-2-${index}`,
+    })),
+  ];
+
+  const merged = mergeNativeConversationMessages(pollutedExisting, parsed);
+
+  assert.equal(merged.length, normalizedOnce.length);
+  assert.equal(merged[0]?.content, '你改了然后运行编辑器试试');
+  assert.deepEqual(
+    merged.map((message) => message.content),
+    normalizedOnce.map((message) => message.content),
+  );
+});
+
 run('shouldRecoverSessionFromNative ignores cleanup-only assistant follow-ups when comparing final answers', () => {
   const existing = makeSession({
     preview: '(Background task cleaned up — no action needed.)',
