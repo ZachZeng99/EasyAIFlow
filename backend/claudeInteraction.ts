@@ -459,6 +459,15 @@ export const respondToPlanModeRequest = (
 // Helper: clean up pending requests for a child or run
 // ---------------------------------------------------------------------------
 
+// Note: pending ask-user-questions are intentionally NOT cleaned up here.
+// When Claude's AskUserQuestion tool auto-resolves, we kill the child to wait
+// for the user's own answer (see handleClaudeStreamLine). That answer is
+// delivered later via a follow-up prompt, so the question stays valid even
+// after its owning run/child has exited. Dropping it here would make the
+// backend snapshot stop reporting the question, and the next interaction
+// refresh would wipe the still-open dialog from the UI before the user picks.
+// These entries are cleared when answered/skipped (handleRespondToAskUserQuestion)
+// or when the session is explicitly stopped (stopSessions).
 const cleanupPendingRequestsForRun = (state: ClaudeInteractionState, runId: string) => {
   for (const [requestId, pending] of state.pendingPermissionRequests) {
     if (pending.activeRun.runId === runId) {
@@ -468,11 +477,6 @@ const cleanupPendingRequestsForRun = (state: ClaudeInteractionState, runId: stri
   for (const [requestId, pending] of state.pendingPlanModeRequests) {
     if (pending.activeRun.runId === runId) {
       state.pendingPlanModeRequests.delete(requestId);
-    }
-  }
-  for (const [toolUseId, pending] of state.pendingAskUserQuestions) {
-    if (pending.activeRun.runId === runId) {
-      state.pendingAskUserQuestions.delete(toolUseId);
     }
   }
 };
@@ -486,11 +490,6 @@ const cleanupPendingRequestsForChild = (state: ClaudeInteractionState, child: Cl
   for (const [requestId, pending] of state.pendingPlanModeRequests) {
     if (pending.activeRun.child === child) {
       state.pendingPlanModeRequests.delete(requestId);
-    }
-  }
-  for (const [toolUseId, pending] of state.pendingAskUserQuestions) {
-    if (pending.activeRun.child === child) {
-      state.pendingAskUserQuestions.delete(toolUseId);
     }
   }
 };

@@ -431,7 +431,7 @@ export default function App() {
   const [draftsBySessionId, setDraftsBySessionId] = useState<Record<string, string>>({});
   const [appVersion, setAppVersion] = useState('desktop');
   const [sendingSessionIds, setSendingSessionIds] = useState<string[]>([]);
-  const [model, setModel] = useState('fable');
+  const [model, setModel] = useState('opus[1m]');
   const [modelSelectionSource, setModelSelectionSource] = useState<ModelSelectionSource>('implicit');
   const [effort, setEffort] = useState<'low' | 'medium' | 'high' | 'xhigh' | 'max'>('max');
   const [composerNotice, setComposerNotice] = useState<string | null>(null);
