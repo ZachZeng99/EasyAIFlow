@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import React, { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ChatThread } from '../src/components/ChatThread.js';
+import {
+  buildChatThreadAutoScrollKey,
+  ChatThread,
+} from '../src/components/ChatThread.js';
+import type { SessionInteractionState } from '../src/data/sessionInteraction.js';
 import type { ConversationMessage, SessionSummary } from '../src/data/types.js';
 
 (globalThis as typeof globalThis & { React?: typeof React }).React = React;
@@ -216,4 +220,51 @@ run('ChatThread surfaces active monitors in the main session view', () => {
   assert.match(html, /2 tasks/);
   assert.match(html, /Wait for install completion and send Lark with \[SGamePC\] prefix/);
   assert.match(html, /Install package to PS5 DevKit 192\.168\.103\.101/);
+});
+
+run('ChatThread auto-scroll key ignores unchanged cloned props', () => {
+  const interaction: SessionInteractionState = {
+    backgroundTasks: [
+      {
+        taskId: 'agent-1',
+        status: 'running',
+        description: 'Watch install progress',
+        summary: 'Still running',
+        updatedAt: 123,
+      },
+    ],
+  };
+
+  const clonedMessages = messages.map((message) => ({ ...message }));
+  const clonedInteraction: SessionInteractionState = {
+    backgroundTasks: interaction.backgroundTasks?.map((task) => ({ ...task })),
+  };
+
+  assert.equal(
+    buildChatThreadAutoScrollKey(session.id, messages, interaction),
+    buildChatThreadAutoScrollKey(session.id, clonedMessages, clonedInteraction),
+  );
+});
+
+run('ChatThread auto-scroll key changes when visible current-session content changes', () => {
+  const baseKey = buildChatThreadAutoScrollKey(session.id, messages);
+  const nextKey = buildChatThreadAutoScrollKey(session.id, [
+    ...messages,
+    {
+      id: 'assistant-2',
+      role: 'assistant',
+      timestamp: '3/23 20:54',
+      title: 'Reply',
+      content: 'New answer.',
+    },
+  ]);
+
+  assert.notEqual(baseKey, nextKey);
+});
+
+run('ChatThread auto-scroll key changes when switching sessions', () => {
+  assert.notEqual(
+    buildChatThreadAutoScrollKey(session.id, messages),
+    buildChatThreadAutoScrollKey('session-2', messages),
+  );
 });

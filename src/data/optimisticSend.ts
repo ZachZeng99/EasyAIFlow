@@ -230,6 +230,63 @@ const findOptimisticReplacementIndex = (
   return -1;
 };
 
+const getMessageStatusRank = (status: ConversationMessage['status']) => {
+  switch (status) {
+    case 'complete':
+    case 'error':
+      return 4;
+    case 'success':
+      return 3;
+    case 'streaming':
+    case 'running':
+    case 'background':
+      return 2;
+    case 'queued':
+      return 1;
+    default:
+      return 0;
+  }
+};
+
+const shouldUseIncomingMessageBody = (
+  existingMessage: ConversationMessage,
+  incomingMessage: ConversationMessage,
+) => {
+  const existingRank = getMessageStatusRank(existingMessage.status);
+  const incomingRank = getMessageStatusRank(incomingMessage.status);
+
+  return (
+    incomingRank > existingRank ||
+    (!existingMessage.content && Boolean(incomingMessage.content)) ||
+    (
+      incomingRank === existingRank &&
+      Boolean(incomingMessage.content) &&
+      incomingMessage.content.length >= existingMessage.content.length
+    )
+  );
+};
+
+const mergeLiveTraceMessage = (
+  existingMessage: ConversationMessage,
+  incomingMessage: ConversationMessage,
+): ConversationMessage => {
+  const bodySource = shouldUseIncomingMessageBody(existingMessage, incomingMessage)
+    ? incomingMessage
+    : existingMessage;
+
+  return {
+    ...existingMessage,
+    ...incomingMessage,
+    title: incomingMessage.title || bodySource.title,
+    content: bodySource.content,
+    status: bodySource.status,
+    contextReferences: existingMessage.contextReferences ?? incomingMessage.contextReferences,
+    attachments: existingMessage.attachments ?? incomingMessage.attachments,
+    recordedDiff: existingMessage.recordedDiff ?? incomingMessage.recordedDiff,
+    steps: existingMessage.steps ?? incomingMessage.steps,
+  };
+};
+
 export const reconcileLiveTraceMessage = (
   messages: ConversationMessage[],
   incomingMessage: ConversationMessage,
@@ -237,7 +294,7 @@ export const reconcileLiveTraceMessage = (
   const nextMessages = [...messages];
   const existingIndex = nextMessages.findIndex((message) => message.id === incomingMessage.id);
   if (existingIndex >= 0) {
-    nextMessages[existingIndex] = incomingMessage;
+    nextMessages[existingIndex] = mergeLiveTraceMessage(nextMessages[existingIndex], incomingMessage);
     return nextMessages;
   }
 

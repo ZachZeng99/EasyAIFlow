@@ -294,3 +294,30 @@ run('reconcileLiveTraceMessage replaces optimistic placeholders when server mess
     false,
   );
 });
+
+run('reconcileLiveTraceMessage keeps newer trace content for repeated updates with the same id', () => {
+  const messages = [
+    {
+      id: 'trace-1',
+      role: 'system' as const,
+      kind: 'progress' as const,
+      timestamp: '2026/3/25 08:09:11',
+      title: 'Running command',
+      content: 'first line',
+      status: 'running' as const,
+    },
+  ];
+
+  const updated = reconcileLiveTraceMessage(messages, {
+    id: 'trace-1',
+    role: 'system',
+    kind: 'progress',
+    timestamp: '2026/3/25 08:09:12',
+    title: 'Running command',
+    content: 'first line\nsecond line',
+    status: 'running',
+  });
+
+  assert.equal(updated[0]?.content, 'first line\nsecond line');
+  assert.equal(updated[0]?.status, 'running');
+});

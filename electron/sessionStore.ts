@@ -3075,15 +3075,16 @@ const listStateRecoveryFiles = async () => {
   try {
     const dir = path.dirname(storePath());
     const activeName = path.basename(storePath());
+    const isRecoveryCandidate = (entryName: string) =>
+      entryName !== activeName &&
+      (
+        (entryName.startsWith('easyaiflow-sessions.') && entryName.endsWith('.json')) ||
+        (entryName.startsWith(`${activeName}.`) && entryName.endsWith('.tmp'))
+      );
     const entries = await readdir(dir, { withFileTypes: true });
     const candidates = await Promise.all(
       entries
-        .filter((entry) =>
-          entry.isFile() &&
-          entry.name !== activeName &&
-          entry.name.startsWith('easyaiflow-sessions.') &&
-          entry.name.endsWith('.json'),
-        )
+        .filter((entry) => entry.isFile() && isRecoveryCandidate(entry.name))
         .map(async (entry) => {
           const filePath = path.join(dir, entry.name);
           try {

@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   getSessionInteractionSnapshots,
+  readNativeClaudeTerminalBackgroundTasks,
+  recordUnownedResidentBackgroundTask,
   syncResidentRuntimeState,
 } from '../backend/claudeInteraction.ts';
 import {
@@ -248,4 +250,118 @@ run('resident runtime snapshots reconcile stale running tasks from native Claude
     configureRuntimePaths({ homePath: previousHomePath });
     rmSync(tempHome, { recursive: true, force: true });
   }
+});
+
+run('readNativeClaudeTerminalBackgroundTasks returns only requested task ids from native history', () => {
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousHomePath = getRuntimePaths().homePath;
+  const tempHome = mkdtempSync(path.join(os.tmpdir(), 'resident-runtime-native-filter-'));
+
+  try {
+    process.env.USERPROFILE = tempHome;
+    configureRuntimePaths({ homePath: tempHome });
+
+    const projectRoot = 'D:\\PBZ';
+    const claudeSessionId = 'native-session-filter';
+    const nativeDir = path.join(
+      tempHome,
+      '.claude',
+      'projects',
+      toClaudeProjectDirName(projectRoot) ?? 'workspace',
+    );
+    mkdirSync(nativeDir, { recursive: true });
+    writeFileSync(
+      path.join(nativeDir, `${claudeSessionId}.jsonl`),
+      [
+        JSON.stringify({
+          type: 'queue-operation',
+          operation: 'enqueue',
+          sessionId: claudeSessionId,
+          content: `<task-notification>
+<task-id>task-unrelated</task-id>
+<status>completed</status>
+<result>${'x'.repeat(4096)}</result>
+</task-notification>`,
+        }),
+        JSON.stringify({
+          type: 'queue-operation',
+          operation: 'enqueue',
+          sessionId: claudeSessionId,
+          content: `<task-notification>
+<task-id>task-target</task-id>
+<status>completed</status>
+<summary>Target task finished</summary>
+</task-notification>`,
+        }),
+      ].join('\n'),
+      'utf8',
+    );
+
+    const tasks = readNativeClaudeTerminalBackgroundTasks(
+      projectRoot,
+      claudeSessionId,
+      new Set(['task-target']),
+    );
+
+    assert.deepEqual([...tasks.keys()], ['task-target']);
+    assert.equal(tasks.get('task-target')?.status, 'completed');
+    assert.equal(tasks.get('task-target')?.summary, 'Target task finished');
+  } finally {
+    if (previousUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = previousUserProfile;
+    }
+    configureRuntimePaths({ homePath: previousHomePath });
+    rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+run('recordUnownedResidentBackgroundTask surfaces task notifications without a foreground turn', () => {
+  const state = createClaudeInteractionState();
+  const events: Array<{
+    type: string;
+    task?: { taskId?: string; status?: string; summary?: string };
+    runtime?: { phase?: string; processActive?: boolean };
+  }> = [];
+  const ctx: ClaudeInteractionContext = {
+    broadcastEvent: (event) => {
+      events.push(event);
+    },
+    attachmentRoot: () => 'D:\\AIAgent\\EasyAIFlow',
+    claudeSettingsPath: () => 'D:\\AIAgent\\EasyAIFlow\\.claude.json',
+    homePath: () => 'D:\\AIAgent\\EasyAIFlow',
+  };
+
+  const resident = {
+    child: {
+      killed: false,
+      exitCode: null,
+      signalCode: null,
+    },
+    configuredEffort: 'max',
+    currentTurn: undefined,
+    activeOutputTurn: undefined,
+    backgroundTaskOwners: new Map(),
+    queuedTurns: new Map(),
+  } as unknown as ResidentClaudeSession;
+
+  state.residentSessions.set('session-orphan', resident);
+
+  recordUnownedResidentBackgroundTask(ctx, state, 'session-orphan', resident, {
+    taskId: 'task-orphan',
+    status: 'running',
+    description: 'External monitor',
+    summary: 'Intermediate monitor output',
+    updatedAt: 10,
+  });
+
+  const snapshots = getSessionInteractionSnapshots(state);
+
+  assert.equal(events[0]?.type, 'background-task');
+  assert.equal(events[0]?.task?.taskId, 'task-orphan');
+  assert.equal(events[1]?.type, 'runtime-state');
+  assert.equal(events[1]?.runtime?.phase, 'background');
+  assert.equal(snapshots['session-orphan']?.runtime?.phase, 'background');
+  assert.equal(snapshots['session-orphan']?.backgroundTasks?.[0]?.summary, 'Intermediate monitor output');
 });

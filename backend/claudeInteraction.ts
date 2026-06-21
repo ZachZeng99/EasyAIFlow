@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, openSync, readSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 import type { ClaudeInteractionContext } from './claudeInteractionContext.js';
 import { getRuntimePaths } from './runtimePaths.js';
 import type {
@@ -524,11 +525,13 @@ const hasActiveBackgroundTasks = (runState: ClaudeRunState) =>
 
 type NativeClaudeBackgroundTaskCacheEntry = {
   mtimeMs: number;
+  taskIdsKey: string;
   tasks: Map<string, BackgroundTaskRecord>;
 };
 
 const nativeClaudeBackgroundTaskCache = new Map<string, NativeClaudeBackgroundTaskCacheEntry>();
 const terminalBackgroundTaskStatuses = new Set(['completed', 'failed', 'stopped']);
+const NATIVE_CLAUDE_LOG_READ_CHUNK_BYTES = 64 * 1024;
 
 const listResidentRunStates = (resident: ResidentClaudeSession) => {
   const states: ClaudeRunState[] = [];
@@ -545,6 +548,9 @@ const listResidentRunStates = (resident: ResidentClaudeSession) => {
   return states;
 };
 
+const getResidentOrphanBackgroundTasks = (resident: ResidentClaudeSession) =>
+  resident.orphanBackgroundTasks ?? (resident.orphanBackgroundTasks = new Map());
+
 const getResidentClaudeSessionIds = (resident: ResidentClaudeSession) =>
   [
     ...new Set(
@@ -554,6 +560,20 @@ const getResidentClaudeSessionIds = (resident: ResidentClaudeSession) =>
         .map((value) => value.trim()),
     ),
   ];
+
+const getActiveBackgroundTaskIds = (runStates: ClaudeRunState[]) => {
+  const taskIds = new Set<string>();
+
+  runStates.forEach((runState) => {
+    runState.backgroundTasks.forEach((task, taskId) => {
+      if (task.status === 'pending' || task.status === 'running') {
+        taskIds.add(task.taskId || taskId);
+      }
+    });
+  });
+
+  return taskIds;
+};
 
 const nativeClaudeProjectsRoot = () =>
   path.join(process.env.USERPROFILE ?? getRuntimePaths().homePath, '.claude', 'projects');
@@ -577,50 +597,104 @@ const resolveNativeClaudeSessionLogPath = (
   return null;
 };
 
-const readNativeClaudeTerminalBackgroundTasks = (
+const normalizeRequestedTaskIds = (taskIds?: Iterable<string>) =>
+  new Set(
+    [...(taskIds ?? [])]
+      .map((taskId) => taskId.trim())
+      .filter(Boolean),
+  );
+
+const getTaskIdsCacheKey = (taskIds: Set<string>) => [...taskIds].sort().join('\0');
+
+const lineMayContainRequestedTaskId = (line: string, requestedTaskIds: Set<string>) =>
+  requestedTaskIds.size === 0 || [...requestedTaskIds].some((taskId) => line.includes(taskId));
+
+const parseNativeClaudeTerminalBackgroundTaskLine = (
+  line: string,
+  requestedTaskIds: Set<string>,
+  tasks: Map<string, BackgroundTaskRecord>,
+) => {
+  const trimmed = line.trim();
+  if (!trimmed || !lineMayContainRequestedTaskId(trimmed, requestedTaskIds)) {
+    return;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    const task = parseClaudeBackgroundTaskEvent(parsed);
+    if (!task || !terminalBackgroundTaskStatuses.has(task.status)) {
+      return;
+    }
+    if (requestedTaskIds.size > 0 && !requestedTaskIds.has(task.taskId)) {
+      return;
+    }
+
+    tasks.set(task.taskId, {
+      ...(tasks.get(task.taskId) ?? {}),
+      ...task,
+    });
+  } catch {
+    // Ignore malformed native log lines while reconciling resident state.
+  }
+};
+
+export const readNativeClaudeTerminalBackgroundTasks = (
   projectRoot: string | undefined,
   claudeSessionId: string,
+  taskIds?: Iterable<string>,
 ) => {
+  const requestedTaskIds = normalizeRequestedTaskIds(taskIds);
+  if (taskIds && requestedTaskIds.size === 0) {
+    return new Map<string, BackgroundTaskRecord>();
+  }
+
   const filePath = resolveNativeClaudeSessionLogPath(projectRoot, claudeSessionId);
   if (!filePath) {
     return new Map<string, BackgroundTaskRecord>();
   }
 
+  const taskIdsKey = getTaskIdsCacheKey(requestedTaskIds);
+  let file: number | null = null;
   try {
-    const { mtimeMs } = statSync(filePath);
+    file = openSync(filePath, 'r');
+    const { mtimeMs } = fstatSync(file);
     const cached = nativeClaudeBackgroundTaskCache.get(filePath);
-    if (cached?.mtimeMs === mtimeMs) {
+    if (cached?.mtimeMs === mtimeMs && cached.taskIdsKey === taskIdsKey) {
       return cached.tasks;
     }
 
     const tasks = new Map<string, BackgroundTaskRecord>();
-    const content = readFileSync(filePath, 'utf8');
-    content.split(/\r?\n/).forEach((line) => {
-      const trimmed = line.trim();
-      if (!trimmed) {
-        return;
+    const decoder = new StringDecoder('utf8');
+    const buffer = Buffer.allocUnsafe(NATIVE_CLAUDE_LOG_READ_CHUNK_BYTES);
+    let pending = '';
+
+    for (;;) {
+      const bytesRead = readSync(file, buffer, 0, buffer.length, null);
+      if (bytesRead === 0) {
+        break;
       }
 
-      try {
-        const parsed = JSON.parse(trimmed) as unknown;
-        const task = parseClaudeBackgroundTaskEvent(parsed);
-        if (!task || !terminalBackgroundTaskStatuses.has(task.status)) {
-          return;
-        }
-
-        tasks.set(task.taskId, {
-          ...(tasks.get(task.taskId) ?? {}),
-          ...task,
-        });
-      } catch {
-        // Ignore malformed native log lines while reconciling resident state.
+      pending += decoder.write(buffer.subarray(0, bytesRead));
+      let lineEnd = pending.indexOf('\n');
+      while (lineEnd >= 0) {
+        const line = pending.slice(0, lineEnd);
+        pending = pending.slice(lineEnd + 1);
+        parseNativeClaudeTerminalBackgroundTaskLine(line, requestedTaskIds, tasks);
+        lineEnd = pending.indexOf('\n');
       }
-    });
+    }
 
-    nativeClaudeBackgroundTaskCache.set(filePath, { mtimeMs, tasks });
+    pending += decoder.end();
+    parseNativeClaudeTerminalBackgroundTaskLine(pending, requestedTaskIds, tasks);
+
+    nativeClaudeBackgroundTaskCache.set(filePath, { mtimeMs, taskIdsKey, tasks });
     return tasks;
   } catch {
     return new Map<string, BackgroundTaskRecord>();
+  } finally {
+    if (file !== null) {
+      closeSync(file);
+    }
   }
 };
 
@@ -634,10 +708,14 @@ const reconcileResidentBackgroundTasksFromNativeHistory = (resident: ResidentCla
   if (runStates.length === 0) {
     return;
   }
+  const activeTaskIds = getActiveBackgroundTaskIds(runStates);
+  if (activeTaskIds.size === 0) {
+    return;
+  }
 
   const terminalTasks = new Map<string, BackgroundTaskRecord>();
   getResidentClaudeSessionIds(resident).forEach((claudeSessionId) => {
-    readNativeClaudeTerminalBackgroundTasks(projectRoot, claudeSessionId).forEach((task, taskId) => {
+    readNativeClaudeTerminalBackgroundTasks(projectRoot, claudeSessionId, activeTaskIds).forEach((task, taskId) => {
       terminalTasks.set(taskId, {
         ...(terminalTasks.get(taskId) ?? {}),
         ...task,
@@ -715,6 +793,9 @@ const getResidentProcessUnavailableMessage = (
 
 const canRestartResidentSession = (resident: ResidentClaudeSession) =>
   !resident.currentTurn &&
+  ![...getResidentOrphanBackgroundTasks(resident).values()].some(
+    (task) => task.status === 'pending' || task.status === 'running',
+  ) &&
   ![...resident.backgroundTaskOwners.values()].some((owner) =>
     [...owner.runState.backgroundTasks.values()].some(
       (task) => task.status === 'pending' || task.status === 'running',
@@ -778,6 +859,26 @@ const registerBackgroundTaskOwner = (
     assistantMessageId,
     runState,
   });
+};
+
+export const recordUnownedResidentBackgroundTask = (
+  ctx: ClaudeInteractionContext,
+  state: ClaudeInteractionState,
+  sessionId: string,
+  resident: ResidentClaudeSession,
+  task: BackgroundTaskRecord,
+) => {
+  const mergedTask = mergeBackgroundTaskRecord(
+    getResidentOrphanBackgroundTasks(resident).get(task.taskId),
+    task,
+  );
+  getResidentOrphanBackgroundTasks(resident).set(mergedTask.taskId, mergedTask);
+  ctx.broadcastEvent({
+    type: 'background-task',
+    sessionId,
+    task: mergedTask,
+  });
+  syncResidentRuntimeState(ctx, state, sessionId, resident);
 };
 
 const handoffResidentTurnToBackground = (
@@ -861,6 +962,9 @@ const finalizeBackgroundOwnersIfSettled = async (
 };
 
 const residentHasActiveBackgroundTasks = (resident: ResidentClaudeSession) =>
+  [...getResidentOrphanBackgroundTasks(resident).values()].some(
+    (task) => task.status === 'pending' || task.status === 'running',
+  ) ||
   [...resident.backgroundTaskOwners.values()].some((owner) =>
     [...owner.runState.backgroundTasks.values()].some(
       (task) => task.status === 'pending' || task.status === 'running',
@@ -889,6 +993,12 @@ const collectResidentBackgroundTasks = (resident: ResidentClaudeSession): Backgr
   collect(resident.currentTurn?.runState);
   collect(resident.activeOutputTurn?.runState);
   resident.backgroundTaskOwners.forEach((owner) => collect(owner.runState));
+  getResidentOrphanBackgroundTasks(resident).forEach((task, taskId) => {
+    tasks.set(taskId, {
+      ...(tasks.get(taskId) ?? {}),
+      ...task,
+    });
+  });
 
   return [...tasks.values()]
     .sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0))
@@ -2269,7 +2379,7 @@ const ensureResidentClaudeSession = async (
   const args = buildClaudePrintArgs({
     model: resolvedModel,
     effort: options?.effort,
-    sessionArgs: buildClaudeSessionArgs(session.claudeSessionId, session.title, forkSession),
+    sessionArgs: buildClaudeSessionArgs(session.claudeSessionId, session.title, forkSession, session.id),
   });
 
   const child = spawn('claude', args, getClaudeSpawnOptions(session.workspace));
@@ -2301,6 +2411,7 @@ const ensureResidentClaudeSession = async (
     stderrBuffer: '',
     queuedTurns: new Map(),
     backgroundTaskOwners: new Map(),
+    orphanBackgroundTasks: new Map(),
     pendingControlRequests: new Map(),
     stdoutProcessor: createSequentialLineProcessor(async (line) => {
       let parsed: Record<string, unknown>;
@@ -2386,6 +2497,19 @@ const ensureResidentClaudeSession = async (
       const releaseTurn = turn?.releaseQueuedTurn ?? (() => undefined);
 
       if (!assistantMessageId || !runState) {
+        if (parsedBackgroundTask) {
+          recordUnownedResidentBackgroundTask(
+            ctx,
+            state,
+            session.id,
+            currentResident,
+            parsedBackgroundTask,
+          );
+          if (terminalBackgroundTaskStatuses.has(parsedBackgroundTask.status)) {
+            await syncRecoveredResidentSession(ctx, session.id);
+          }
+          return;
+        }
         if (
           parsed.type === 'system' &&
           (parsed.subtype === 'task_notification' ||
@@ -2682,14 +2806,54 @@ export const switchClaudeSessionEffort = async (
   };
 };
 
+const buildClaudeConversationRecoveryPrompt = (
+  prepared: PreparedClaudeRun,
+  historySession: SessionRecord,
+  introLines: string[],
+) => {
+  const resolvedPrompt = prepared.resolvedPrompt.trim();
+  if (/^\/\S+/.test(resolvedPrompt)) {
+    return prepared.resolvedPrompt;
+  }
+
+  if (getConversationMessages(historySession).length === 0) {
+    return prepared.resolvedPrompt;
+  }
+
+  return [
+    ...introLines,
+    '',
+    buildSessionTranscriptContext(historySession),
+    '',
+    'Current user message:',
+    prepared.resolvedPrompt,
+  ].join('\n\n');
+};
+
 const buildNativeClaudeConversationRecoveryPrompt = async (
   prepared: PreparedClaudeRun,
   nativeClaudeSessionId: string,
   reason: string,
 ) => {
-  const resolvedPrompt = prepared.resolvedPrompt.trim();
-  if (/^\/\S+/.test(resolvedPrompt)) {
-    return prepared.resolvedPrompt;
+  const latestSession = await findSession(prepared.sessionId);
+  const historySession: SessionRecord = {
+    ...(latestSession ?? (prepared.session as SessionRecord)),
+    messages: (latestSession?.messages ?? (prepared.session as SessionRecord).messages ?? []).filter(
+      (message) => message.id !== prepared.userMessageId && message.id !== prepared.assistantMessageId,
+    ),
+  };
+
+  return buildClaudeConversationRecoveryPrompt(prepared, historySession, [
+    `EasyAIFlow is starting a fresh native Claude conversation instead of resuming ${nativeClaudeSessionId}.`,
+    `Reason: ${reason}`,
+    'The EasyAIFlow transcript before the current message is provided below as recovery context.',
+    'Use it only as supporting context; do not claim the native Claude conversation was recovered.',
+  ]);
+};
+
+export const attachLegacyEafTranscriptForFirstNativeClaudeRun = async (prepared: PreparedClaudeRun) => {
+  if (prepared.session.claudeSessionId) {
+    return false;
   }
 
   const latestSession = await findSession(prepared.sessionId);
@@ -2699,22 +2863,18 @@ const buildNativeClaudeConversationRecoveryPrompt = async (
       (message) => message.id !== prepared.userMessageId && message.id !== prepared.assistantMessageId,
     ),
   };
+  const nextPrompt = buildClaudeConversationRecoveryPrompt(prepared, historySession, [
+    'EasyAIFlow is starting a native Claude conversation for this existing EasyAIFlow session.',
+    'The existing EasyAIFlow transcript before the current message is provided below as recovery context.',
+    'Use it only as supporting context; do not claim the native Claude conversation was recovered.',
+  ]);
 
-  if (getConversationMessages(historySession).length === 0) {
-    return prepared.resolvedPrompt;
+  if (nextPrompt === prepared.resolvedPrompt) {
+    return false;
   }
 
-  return [
-    `EasyAIFlow is starting a fresh native Claude conversation instead of resuming ${nativeClaudeSessionId}.`,
-    `Reason: ${reason}`,
-    'The EasyAIFlow transcript before the current message is provided below as recovery context.',
-    'Use it only as supporting context; do not claim the native Claude conversation was recovered.',
-    '',
-    buildSessionTranscriptContext(historySession),
-    '',
-    'Current user message:',
-    prepared.resolvedPrompt,
-  ].join('\n\n');
+  prepared.resolvedPrompt = nextPrompt;
+  return true;
 };
 
 const detachNativeClaudeConversation = async (
@@ -2797,6 +2957,7 @@ export const executePreparedClaudeRun = async (
 ) => {
   let recoveredMissingClaudeSessionId: string | undefined;
 
+  await attachLegacyEafTranscriptForFirstNativeClaudeRun(prepared);
   await detachThinkingBlockMutationClaudeConversation(prepared);
 
   for (;;) {

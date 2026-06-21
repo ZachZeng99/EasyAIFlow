@@ -93,6 +93,9 @@ const readXmlTag = (content: string, tag: string) => {
   return match?.[1]?.trim();
 };
 
+const joinSummaryAndEvent = (summary: string | undefined, event: string | undefined) =>
+  [summary, event].filter((value): value is string => Boolean(value?.trim())).join('\n') || undefined;
+
 export const parseBackgroundTaskNotificationContent = (
   content: string,
 ): BackgroundTaskRecord | null => {
@@ -115,16 +118,18 @@ export const parseBackgroundTaskNotificationContent = (
         })
       : undefined;
   const summary = readXmlTag(content, 'summary');
+  const event = readXmlTag(content, 'event');
+  const displaySummary = joinSummaryAndEvent(summary, event);
   const result = readXmlTag(content, 'result');
 
   return {
     taskId,
     status: normalizeBackgroundTaskStatus(readXmlTag(content, 'status')) ?? 'running',
-    description: summary ?? `Background task ${taskId}`,
+    description: summary ?? event ?? `Background task ${taskId}`,
     toolUseId: readXmlTag(content, 'tool-use-id'),
     taskType: readXmlTag(content, 'task-type'),
     outputFile: readXmlTag(content, 'output-file'),
-    summary,
+    summary: displaySummary,
     result,
     usage,
     updatedAt: Date.now(),
@@ -149,6 +154,7 @@ export const parseClaudeBackgroundTaskEvent = (
     prompt?: unknown;
     output_file?: unknown;
     summary?: unknown;
+    event?: unknown;
     result?: unknown;
     last_tool_name?: unknown;
     status?: unknown;
@@ -189,13 +195,15 @@ export const parseClaudeBackgroundTaskEvent = (
 
     if (record.subtype === 'task_notification') {
       const summary = getString(record.summary);
+      const event = getString(record.event);
+      const displaySummary = joinSummaryAndEvent(summary, event);
       return {
         taskId,
         status: normalizeBackgroundTaskStatus(record.status) ?? 'completed',
-        description: summary ?? getString(record.description) ?? `Background task ${taskId}`,
+        description: summary ?? event ?? getString(record.description) ?? `Background task ${taskId}`,
         toolUseId: getString(record.tool_use_id),
         outputFile: getString(record.output_file),
-        summary,
+        summary: displaySummary,
         result: getString(record.result),
         usage: parseBackgroundTaskUsage(record.usage),
         updatedAt: Date.now(),

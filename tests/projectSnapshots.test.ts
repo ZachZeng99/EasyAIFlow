@@ -260,6 +260,36 @@ run('hydrateSessionRecordInProjects inserts the full session if the snapshot doe
   assert.equal(sessions[1]?.messages[0]?.content, 'old session history');
 });
 
+run('hydrateSessionRecordInProjects keeps newer live content when an older full record arrives', () => {
+  const currentProjects = makeProjects(
+    makeSession('single', {
+      updatedAt: 500,
+      messagesLoaded: true,
+      preview: 'live preview',
+      messages: [
+        {
+          ...makeMessage('assistant-live', 'partial live answer'),
+          status: 'streaming',
+        },
+      ],
+    }),
+  );
+  const incomingRecord = makeSession('single', {
+    updatedAt: 400,
+    messagesLoaded: true,
+    preview: 'stale preview',
+    messages: [makeMessage('assistant-stale', 'stale persisted answer')],
+  });
+
+  const merged = hydrateSessionRecordInProjects(currentProjects, incomingRecord);
+  const session = merged[0]?.dreams[0]?.sessions[0] as SessionRecord;
+
+  assert.equal(session.preview, 'live preview');
+  assert.equal(session.messages[0]?.id, 'assistant-live');
+  assert.equal(session.messages[0]?.content, 'partial live answer');
+  assert.equal(session.messages[0]?.status, 'streaming');
+});
+
 run('mergeProjectSnapshots applies stale group conversion metadata and sequenced messages', () => {
   const currentProjects = makeProjects(
     makeSession('room', {

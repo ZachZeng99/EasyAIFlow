@@ -9,9 +9,9 @@ import { ChatThread } from './components/ChatThread';
 import { ContextPanel } from './components/ContextPanel';
 import {
   buildOptimisticSendState,
-  reconcileLiveTraceMessage,
   reconcileOptimisticSendMessages,
 } from './data/optimisticSend';
+import { applyClaudeEventToProjects } from './data/liveSessionEvents';
 import {
   hydrateSessionRecordInProjects,
   mergeProjectSnapshots,
@@ -163,110 +163,6 @@ const updateSessionInProjects = (
       ),
     })),
   }));
-
-const applyClaudeEvent = (projects: ProjectRecord[], event: ClaudeStreamEvent) =>
-  event.type === 'interaction-sync'
-    ? projects
-    : event.type === 'session-sync'
-      ? hydrateSessionRecordInProjects(projects, event.session)
-    :
-  updateSessionInProjects(projects, event.sessionId, (session) => {
-    const updatedAt = Date.now();
-    const providerName = session.sessionKind === 'group' ? 'Group room' : getProviderDisplayName(session.provider);
-
-    if (
-      event.type === 'permission-request' ||
-      event.type === 'ask-user-question' ||
-      event.type === 'plan-mode-request' ||
-      event.type === 'background-task' ||
-      event.type === 'runtime-state'
-    ) {
-      return session;
-    }
-
-    if (event.type === 'trace') {
-      const messages = reconcileLiveTraceMessage(session.messages ?? [], event.message);
-
-      return {
-        ...session,
-        messages,
-        updatedAt,
-      };
-    }
-
-    const messages = [...(session.messages ?? [])];
-    const targetIndex = messages.findIndex((message) => message.id === event.messageId);
-    if (targetIndex === -1) {
-      return session;
-    }
-
-    const target = { ...messages[targetIndex] };
-
-    if (event.type === 'status') {
-      if (typeof event.content === 'string') {
-        target.content = event.content;
-      }
-      if (typeof event.title === 'string') {
-        target.title = event.title;
-      }
-      if (event.status) {
-        target.status = event.status;
-      }
-      messages[targetIndex] = target;
-      return {
-        ...session,
-        messages,
-        preview: target.content || session.preview,
-        timeLabel: 'Just now',
-        updatedAt,
-      };
-    }
-
-    if (event.type === 'delta') {
-      target.content += event.delta;
-      target.status = 'streaming';
-      messages[targetIndex] = target;
-      return {
-        ...session,
-        messages,
-        preview: target.content || session.preview,
-        timeLabel: 'Just now',
-        updatedAt,
-      };
-    }
-
-    if (event.type === 'complete') {
-      target.content = event.content;
-      target.status = 'complete';
-      messages[targetIndex] = target;
-      return {
-        ...session,
-        messages,
-        preview: event.content || session.preview,
-        timeLabel: 'Just now',
-        updatedAt,
-        claudeSessionId: event.claudeSessionId ?? session.claudeSessionId,
-        tokenUsage: event.tokenUsage ?? session.tokenUsage,
-      };
-    }
-
-    if (event.type === 'error' && session.sessionKind === 'group' && target.speakerLabel) {
-      target.title = `${target.speakerLabel} error`;
-    }
-    target.content = event.type === 'error' ? event.error : target.content;
-    target.status = 'error';
-    messages[targetIndex] = target;
-    return {
-      ...session,
-      messages,
-      preview:
-        session.sessionKind === 'group' && target.speakerLabel
-          ? `${target.speakerLabel} error`
-          : `${providerName} error`,
-      timeLabel: 'Just now',
-      updatedAt,
-    };
-  });
 
 const fileToDataUrl = (file: File) =>
   new Promise<string>((resolve, reject) => {
@@ -642,9 +538,14 @@ export default function App() {
     () => getEffectiveSessionInteraction(selectedSession),
     [getEffectiveSessionInteraction, selectedSession],
   );
+  const activeSelectedSessionId = selectedSession?.id ?? selectedSessionId;
+  const activeSelectedSessionIdRef = useRef(activeSelectedSessionId);
   useEffect(() => {
     setComposerNotice(null);
   }, [selectedSession?.id]);
+  useEffect(() => {
+    activeSelectedSessionIdRef.current = activeSelectedSessionId;
+  }, [activeSelectedSessionId]);
   useEffect(() => {
     if (!selectedSession || selectedSession.messagesLoaded !== false) {
       return;
@@ -666,7 +567,6 @@ export default function App() {
       session?.sessionKind === 'group' ? undefined : normalizeSessionProvider(session?.provider),
     [],
   );
-  const activeSelectedSessionId = selectedSession?.id ?? selectedSessionId;
   const isSelectedSessionSending = isSessionSending(sendingSessionIds, selectedSession?.id);
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedSession?.projectId) ?? projects[0],
@@ -1035,7 +935,7 @@ export default function App() {
       }
       const batch = pendingDeltas;
       pendingDeltas = [];
-      setProjects((current) => batch.reduce(applyClaudeEvent, current));
+      setProjects((current) => batch.reduce(applyClaudeEventToProjects, current));
     };
 
     const processEvent = (event: ClaudeStreamEvent) => {
@@ -1105,7 +1005,7 @@ export default function App() {
       }
       if (
         'sessionId' in event &&
-        event.sessionId !== activeSelectedSessionId &&
+        event.sessionId !== activeSelectedSessionIdRef.current &&
         (
           event.type === 'complete' ||
           event.type === 'error' ||
@@ -1138,7 +1038,7 @@ export default function App() {
           deltaTimer = null;
         }
         flushDeltas();
-        setProjects((current) => applyClaudeEvent(current, event));
+        setProjects((current) => applyClaudeEventToProjects(current, event));
         processEvent(event);
       });
     } catch {
@@ -1152,7 +1052,7 @@ export default function App() {
       flushDeltas();
       unsubscribe?.();
     };
-  }, [activeSelectedSessionId, playReplyCompleteTone]);
+  }, [playReplyCompleteTone]);
 
   useEffect(() => {
     if (!activeSelectedSessionId) {

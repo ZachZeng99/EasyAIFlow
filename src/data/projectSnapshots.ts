@@ -228,7 +228,7 @@ export const hydrateSessionRecordInProjects = (
         }
 
         found = true;
-        return hydratedSession;
+        return mergeSessionSnapshot(session as SessionRecord, hydratedSession);
       }),
     })),
   }));

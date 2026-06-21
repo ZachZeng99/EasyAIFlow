@@ -120,6 +120,7 @@ export type ResidentClaudeSession = ActiveClaudeRun & {
   queuedTurns: Map<string, ActiveClaudeTurn>;
   activeOutputTurn?: ActiveClaudeTurn;
   backgroundTaskOwners: Map<string, BackgroundTaskOwner>;
+  orphanBackgroundTasks: Map<string, BackgroundTaskRecord>;
   pendingControlRequests: Map<string, ResidentPendingControlRequest>;
 };
 

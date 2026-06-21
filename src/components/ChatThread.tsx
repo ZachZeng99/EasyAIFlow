@@ -72,6 +72,99 @@ type ChatThreadProps = {
   onSubmitPlanMode?: (payload: PlanModeResponsePayload) => void;
 };
 
+const fingerprintText = (value: string | undefined) => {
+  const text = value ?? '';
+  let hash = 5381;
+  for (let index = 0; index < text.length; index += 1) {
+    hash = (hash * 33) ^ text.charCodeAt(index);
+  }
+
+  return `${text.length}:${(hash >>> 0).toString(36)}`;
+};
+
+const fingerprintJson = (value: unknown) => fingerprintText(JSON.stringify(value ?? null));
+
+const buildMessageAutoScrollPart = (message: ConversationMessage) =>
+  [
+    message.id,
+    message.role,
+    message.kind ?? '',
+    message.status ?? '',
+    message.speakerLabel ?? '',
+    message.provider ?? '',
+    fingerprintText(message.title),
+    fingerprintText(message.content),
+    message.contextReferences?.length ?? 0,
+    message.attachments?.length ?? 0,
+    message.recordedDiff
+      ? [
+          message.recordedDiff.filePath,
+          message.recordedDiff.kind,
+          fingerprintText(message.recordedDiff.content),
+        ].join(',')
+      : '',
+  ].join(',');
+
+const buildInteractionAutoScrollPart = (interaction?: SessionInteractionState) => {
+  const activePermissionRequest = getActiveSessionPermissionRequest(interaction);
+  const activeBackgroundTasks = (interaction?.backgroundTasks ?? []).filter(
+    (task) => task.status === 'pending' || task.status === 'running',
+  );
+
+  return [
+    activePermissionRequest
+      ? [
+          activePermissionRequest.requestId ?? '',
+          activePermissionRequest.sessionId,
+          activePermissionRequest.path,
+          activePermissionRequest.sensitive ? 'sensitive' : 'normal',
+        ].join(',')
+      : '',
+    interaction?.askUserQuestion
+      ? [
+          interaction.askUserQuestion.sessionId,
+          interaction.askUserQuestion.toolUseId,
+          fingerprintJson(interaction.askUserQuestion.questions),
+        ].join(',')
+      : '',
+    interaction?.planModeRequest
+      ? [
+          interaction.planModeRequest.sessionId,
+          interaction.planModeRequest.request.toolUseId,
+          interaction.planModeRequest.request.toolName,
+          fingerprintText(interaction.planModeRequest.request.plan),
+          fingerprintJson(interaction.planModeRequest.request.allowedPrompts),
+          interaction.planModeRequest.request.planFilePath ?? '',
+        ].join(',')
+      : '',
+    activeBackgroundTasks
+      .map((task) =>
+        [
+          task.taskId,
+          task.status,
+          task.taskType ?? '',
+          task.lastToolName ?? '',
+          task.outputFile ?? '',
+          fingerprintText(task.description),
+          fingerprintText(task.summary),
+        ].join(','),
+      )
+      .join('|'),
+  ].join('||');
+};
+
+export const buildChatThreadAutoScrollKey = (
+  sessionId: string,
+  messages: ConversationMessage[],
+  interaction?: SessionInteractionState,
+) =>
+  [
+    sessionId,
+    messages.length,
+    messages.map(buildMessageAutoScrollPart).join('|'),
+    buildInteractionAutoScrollPart(interaction),
+  ].join('||');
+
 function ChatThreadComponent({
   session,
   messages,
@@ -106,6 +199,10 @@ function ChatThreadComponent({
   const [codeChangeDiffs, setCodeChangeDiffs] = useState<Record<string, DiffPayload | null>>({});
   const [loadingCodeChangeDiffIds, setLoadingCodeChangeDiffIds] = useState<Record<string, boolean>>({});
   const streamRef = useRef<HTMLDivElement | null>(null);
+  const autoScrollKey = useMemo(
+    () => buildChatThreadAutoScrollKey(session.id, messages, interaction),
+    [session.id, messages, interaction],
+  );
 
   const traceSummary = useMemo(() => {
     const traceItems = displayItems.flatMap((item) => (item.type === 'trace-group' ? item.items : []));
@@ -123,7 +220,7 @@ function ChatThreadComponent({
     }
 
     element.scrollTop = element.scrollHeight;
-  }, [displayItems, interaction]);
+  }, [autoScrollKey]);
 
   useEffect(() => {
     setOpenCodeChangeGroupIds({});

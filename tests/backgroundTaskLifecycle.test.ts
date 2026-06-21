@@ -174,6 +174,20 @@ run('parseBackgroundTaskNotificationContent reads XML task notifications', () =>
   });
 });
 
+run('parseBackgroundTaskNotificationContent keeps monitor event output in summaries', () => {
+  const task = parseBackgroundTaskNotificationContent(`<task-notification>
+<task-id>monitor-1</task-id>
+<summary>Monitor event: "GPU crash"</summary>
+<event>- Device 0 Removed: DXGI_ERROR_DEVICE_REMOVED
+LogD3D12RHI: Error: GPU Crashed or D3D Device Removed.</event>
+</task-notification>`);
+
+  assert.equal(
+    task?.summary,
+    'Monitor event: "GPU crash"\n- Device 0 Removed: DXGI_ERROR_DEVICE_REMOVED\nLogD3D12RHI: Error: GPU Crashed or D3D Device Removed.',
+  );
+});
+
 run('parseBackgroundLaunchFromToolResult ignores ordinary read results that only mention 后台 in prose', () => {
   const task = parseBackgroundLaunchFromToolResult({
     toolUseId: 'tool-read-memory',
