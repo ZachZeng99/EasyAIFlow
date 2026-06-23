@@ -12,3 +12,7 @@ run.log
 .tmp-devweb-*.log
 .vscode/
 .DS_Store
+
+# Memory diagnostics artifacts
+mem-diag.log
+*.heapsnapshot

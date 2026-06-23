@@ -86,6 +86,7 @@ export type PreparedClaudeRun = {
 export type ClaudeLineProcessor = {
   pushChunk: (chunk: string) => void;
   flush: () => Promise<void>;
+  readonly queueDepth: number;
 };
 
 export type ActiveClaudeTurn = {

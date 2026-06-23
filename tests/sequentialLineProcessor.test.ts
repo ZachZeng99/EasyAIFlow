@@ -39,6 +39,40 @@ await run('createSequentialLineProcessor flushes a trailing line without a newli
   assert.deepEqual(handled, ['tail']);
 });
 
+await run('createSequentialLineProcessor exposes queue depth and drains it to zero', async () => {
+  let release: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const processor = createSequentialLineProcessor(async () => {
+    await gate;
+  });
+
+  processor.pushChunk('a\nb\nc\n');
+  // First line is in-flight (awaiting the gate); the rest sit in the queue.
+  assert.equal(processor.queueDepth, 2);
+
+  release?.();
+  await processor.flush();
+  assert.equal(processor.queueDepth, 0);
+});
+
+await run('createSequentialLineProcessor invokes onDrained when the backlog clears', async () => {
+  let drained = 0;
+  const processor = createSequentialLineProcessor(
+    async () => {
+      await delay(1);
+    },
+    { onDrained: () => { drained += 1; } },
+  );
+
+  processor.pushChunk('one\ntwo\n');
+  await processor.flush();
+
+  assert.ok(drained >= 1, 'onDrained should fire at least once after draining');
+  assert.equal(processor.queueDepth, 0);
+});
+
 await run('createSequentialLineProcessor reports handler failures from flush', async () => {
   const handled: string[] = [];
   const processor = createSequentialLineProcessor(async (line) => {

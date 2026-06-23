@@ -13,6 +13,8 @@
     "dev:desktop": "wait-on http-get://127.0.0.1:4273 && npm run build:electron && electron .",
     "dev:server": "tsx server/server.ts",
     "dev:server:bigmem": "node --max-old-space-size=8192 --import tsx server/server.ts",
+    "dev:server:heapdebug": "node --max-old-space-size=4096 --heapsnapshot-near-heap-limit=2 --import tsx server/server.ts",
+    "dev:web:heapdebug": "concurrently -k \"npm:dev:web:client\" \"npm:dev:server:heapdebug\"",
     "build": "npm run check && vite build && npm run build:electron",
     "build:electron": "tsc -p tsconfig.electron.json",
     "build:web": "npm run check && vite build && npm run build:server",

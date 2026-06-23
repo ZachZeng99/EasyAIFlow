@@ -532,6 +532,11 @@ type NativeClaudeBackgroundTaskCacheEntry = {
 const nativeClaudeBackgroundTaskCache = new Map<string, NativeClaudeBackgroundTaskCacheEntry>();
 const terminalBackgroundTaskStatuses = new Set(['completed', 'failed', 'stopped']);
 const NATIVE_CLAUDE_LOG_READ_CHUNK_BYTES = 64 * 1024;
+/** Cap on retained resident-session stderr. Only the tail is ever surfaced. */
+const MAX_RESIDENT_STDERR_CHARS = 256 * 1024;
+/** Pause Claude stdout once this many parsed lines are awaiting handling, so a
+ *  lagging async consumer cannot accumulate an unbounded backlog. */
+const STDOUT_BACKPRESSURE_LINES = 2000;
 
 const listResidentRunStates = (resident: ResidentClaudeSession) => {
   const states: ClaudeRunState[] = [];
@@ -2658,6 +2663,14 @@ const ensureResidentClaudeSession = async (
       } else if (parsed.type === 'system' && parsed.subtype === 'task_notification') {
         syncResidentRuntimeState(ctx, state, session.id, currentResident);
       }
+    }, {
+      // Resume reading once the consumer has caught up (see backpressure in the
+      // stdout 'data' handler below).
+      onDrained: () => {
+        if (child.stdout.isPaused()) {
+          child.stdout.resume();
+        }
+      },
     }),
   };
 
@@ -2666,10 +2679,22 @@ const ensureResidentClaudeSession = async (
 
   child.stdout.on('data', (chunk: Buffer | string) => {
     resident.stdoutProcessor.pushChunk(chunk.toString());
+    // Backpressure: if the async line handler is falling behind, stop reading
+    // so unprocessed lines can't pile up in the queue (and the OS pipe buffer
+    // back-pressures the Claude process). The onDrained callback resumes us.
+    if (resident.stdoutProcessor.queueDepth >= STDOUT_BACKPRESSURE_LINES) {
+      child.stdout.pause();
+    }
   });
 
   child.stderr.on('data', (chunk: Buffer | string) => {
     resident.stderrBuffer += chunk.toString();
+    // A resident Claude process lives across many turns and can be chatty on
+    // stderr (MCP/telemetry/debug logs). The buffer is never reset between
+    // turns, so cap it — we only ever surface the tail on error/close anyway.
+    if (resident.stderrBuffer.length > MAX_RESIDENT_STDERR_CHARS) {
+      resident.stderrBuffer = resident.stderrBuffer.slice(-MAX_RESIDENT_STDERR_CHARS);
+    }
   });
 
   child.on('close', (code) => {

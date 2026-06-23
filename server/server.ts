@@ -59,6 +59,7 @@ import type {
 } from '../src/data/types.js';
 import type { PlanModeResponsePayload } from '../src/data/planMode.js';
 import { createSseClientRegistry } from './sseClients.js';
+import { startMemoryDiagnostics } from '../backend/memoryDiagnostics.js';
 
 // ---------------------------------------------------------------------------
 // Runtime paths configuration
@@ -571,6 +572,14 @@ createServer(async (request, response) => {
 }).listen(port, host, () => {
   console.log(`EasyAIFlow web server listening on http://${host}:${port}`);
 });
+
+// Heap/structure diagnostics. Disable with EASYAIFLOW_MEM_DIAG=0.
+if (process.env.EASYAIFLOW_MEM_DIAG !== '0') {
+  startMemoryDiagnostics({
+    state,
+    sseClientCount: () => eventClients.size,
+  });
+}
 
 const killActiveRuns = () => {
   stopAllCodexRuns();

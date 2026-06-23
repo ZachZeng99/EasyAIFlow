@@ -19,6 +19,7 @@ import {
   updateAssistantMessage,
 } from '../electron/sessionStore.js';
 import { stopPendingSessionMessages } from '../electron/sessionStop.js';
+import { createSerialAsyncQueue } from '../electron/serialAsyncQueue.js';
 import { appServerManager, CodexAppServerClient } from './codexAppServer.js';
 import type { SessionInteractionState } from '../src/data/sessionInteraction.js';
 import type {
@@ -796,30 +797,28 @@ export const runCodexAppServerTurn = async (
       traceItemSnapshots: new Map(),
       toolProgressMessages: new Map(),
     };
-    let notificationQueue = Promise.resolve();
+    const notificationQueue = createSerialAsyncQueue((error) => {
+      state.error =
+        state.error ||
+        (error instanceof Error ? error.message : 'Codex app-server notification handling failed.');
+      state.completed = true;
+      clearCompletionTimer(state);
+      completionResolve(state);
+    });
 
     notificationHandler = (notification: { method: string; params: Record<string, unknown> }) => {
       if (activeTurn.stopped) return;
-      notificationQueue = notificationQueue
-        .then(() =>
-          handleAppServerNotification(
-            ctx,
-            sessionId,
-            activeTurn,
-            state,
-            completionResolve,
-            notification,
-            countActiveAppServerTurnsForCwd(activeTurn.cwd),
-          ),
-        )
-        .catch((error) => {
-          state.error =
-            state.error ||
-            (error instanceof Error ? error.message : 'Codex app-server notification handling failed.');
-          state.completed = true;
-          clearCompletionTimer(state);
-          completionResolve(state);
-        });
+      notificationQueue.push(() =>
+        handleAppServerNotification(
+          ctx,
+          sessionId,
+          activeTurn,
+          state,
+          completionResolve,
+          notification,
+          countActiveAppServerTurnsForCwd(activeTurn.cwd),
+        ),
+      );
     };
     let completionResolve: (state: TurnCaptureState) => void;
     const completionPromise = new Promise<TurnCaptureState>((resolve) => {
@@ -872,7 +871,7 @@ export const runCodexAppServerTurn = async (
       }
     }
 
-    await notificationQueue;
+    await notificationQueue.drain();
 
     clearCompletionTimer(state);
     client.removeNotificationHandler(notificationHandler);

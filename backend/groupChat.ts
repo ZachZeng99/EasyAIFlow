@@ -3,6 +3,7 @@ import type { ClaudeInteractionContext } from './claudeInteractionContext.js';
 import type { ClaudeInteractionState, ClaudePrintOptions, SessionBroadcastInterceptor } from './claudeInteractionState.js';
 import { addSessionBroadcastInterceptor, removeSessionBroadcastInterceptor } from './claudeInteractionState.js';
 import { buildMessageTitle, nowLabel } from './claudeHelpers.js';
+import { createSerialAsyncQueue } from '../electron/serialAsyncQueue.js';
 import {
   disconnectSession,
   interruptSessionTurn,
@@ -494,7 +495,19 @@ export const createMirroredContext = (
     forwardOriginalEvents?: boolean;
   },
 ) => {
-  let mirrorQueue = Promise.resolve();
+  // Serialize mirrored event processing to maintain delta ordering and prevent
+  // concurrent read-modify-write races on the room session. A bounded queue
+  // (not a `tail = tail.then(...)` chain) so a fast backing-session stream
+  // cannot accumulate an unbounded promise graph in the room's lifetime.
+  const mirrorQueue = createSerialAsyncQueue((error) => {
+    console.error(
+      '[GROUP] Failed to mirror event for room session',
+      spec.roomSessionId,
+      'from backing session',
+      spec.backingSessionId,
+      error,
+    );
+  });
 
   const mirroredCtx: ClaudeInteractionContext = {
     ...ctx,
@@ -510,56 +523,42 @@ export const createMirroredContext = (
         ctx.broadcastEvent(event);
       }
 
-      // Serialize mirrored event processing to maintain delta ordering and
-      // prevent concurrent read-modify-write races on the room session.
-      mirrorQueue = mirrorQueue
-        .then(async () => {
-          if (event.type === 'trace') {
-            await mirrorTraceMessage(ctx, spec, event.message);
-            return;
-          }
+      mirrorQueue.push(async () => {
+        if (event.type === 'trace') {
+          await mirrorTraceMessage(ctx, spec, event.message);
+          return;
+        }
 
-          if (
-            event.type === 'status' ||
-            event.type === 'delta' ||
-            event.type === 'complete' ||
-            event.type === 'error'
-          ) {
-            await mirrorAssistantEvent(ctx, spec, event);
-            return;
-          }
+        if (
+          event.type === 'status' ||
+          event.type === 'delta' ||
+          event.type === 'complete' ||
+          event.type === 'error'
+        ) {
+          await mirrorAssistantEvent(ctx, spec, event);
+          return;
+        }
 
-          if (
-            event.type === 'permission-request' ||
-            event.type === 'ask-user-question' ||
-            event.type === 'plan-mode-request' ||
-            event.type === 'background-task' ||
-            event.type === 'runtime-state'
-          ) {
-            ctx.broadcastEvent({
-              ...event,
-              sessionId: spec.roomSessionId,
-              sourceSessionId: spec.backingSessionId,
-            });
-          }
-        })
-        .catch((error) => {
-          console.error(
-            '[GROUP] Failed to mirror event',
-            event.type,
-            'for room session',
-            spec.roomSessionId,
-            'from backing session',
-            spec.backingSessionId,
-            error,
-          );
-        });
+        if (
+          event.type === 'permission-request' ||
+          event.type === 'ask-user-question' ||
+          event.type === 'plan-mode-request' ||
+          event.type === 'background-task' ||
+          event.type === 'runtime-state'
+        ) {
+          ctx.broadcastEvent({
+            ...event,
+            sessionId: spec.roomSessionId,
+            sourceSessionId: spec.backingSessionId,
+          });
+        }
+      });
     },
   };
 
   return {
     ctx: mirroredCtx,
-    flush: () => mirrorQueue,
+    flush: () => mirrorQueue.drain(),
   };
 };
 
