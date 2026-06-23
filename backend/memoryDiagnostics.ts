@@ -1,5 +1,5 @@
 import v8 from 'node:v8';
-import { appendFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync } from 'node:fs';
 import path from 'node:path';
 import type { ClaudeInteractionState } from './claudeInteractionState.js';
 
@@ -33,10 +33,11 @@ export const startMemoryDiagnostics = ({
 }: MemoryDiagnosticsOptions) => {
   let snapshotWritten = false;
 
-  // Start each run with a fresh log so the file always reflects the latest
-  // session's climb (and so I can read it back after an OOM crash).
+  // Append (don't truncate): a crash followed by a restart must NOT wipe the
+  // crashed run's history — that history is exactly what diagnoses the leak.
+  // A `# mem-diag started` separator delimits each run within the file.
   try {
-    writeFileSync(logFilePath, `# mem-diag started, pid=${process.pid}\n`);
+    appendFileSync(logFilePath, `\n# mem-diag started, pid=${process.pid}, uptime0=${Math.round(process.uptime())}s\n`);
   } catch {
     // Non-fatal: fall back to console-only logging.
   }
