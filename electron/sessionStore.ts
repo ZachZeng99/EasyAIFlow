@@ -120,6 +120,112 @@ const isMissingFsEntryError = (error: unknown) =>
   'code' in error &&
   (error as { code?: unknown }).code === 'ENOENT';
 
+type NativeClaudeHistoryEntry = {
+  display: string;
+  pastedContents: Record<string, never>;
+  timestamp: number;
+  project: string;
+  sessionId: string;
+};
+
+const firstNativeClaudeHistoryDisplayLine = (value: string | undefined) =>
+  (value ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean) ?? '';
+
+const buildNativeClaudeHistoryEntry = (session: SessionSummary): NativeClaudeHistoryEntry | null => {
+  const sessionId = session.claudeSessionId?.trim();
+  const project = session.workspace.trim();
+  if (!sessionId || !project) {
+    return null;
+  }
+
+  return {
+    display:
+      firstNativeClaudeHistoryDisplayLine(session.title) ||
+      firstNativeClaudeHistoryDisplayLine(session.preview) ||
+      `Claude session ${sessionId.slice(0, 8)}`,
+    pastedContents: {},
+    timestamp: Number.isFinite(session.updatedAt) ? (session.updatedAt as number) : Date.now(),
+    project,
+    sessionId,
+  };
+};
+
+const buildNativeClaudeHistoryEntryFromTitle = (
+  project: string,
+  sessionId: string,
+  title: string,
+): NativeClaudeHistoryEntry | null => {
+  const display = firstNativeClaudeHistoryDisplayLine(title);
+  const trimmedProject = project.trim();
+  const trimmedSessionId = sessionId.trim();
+  if (!display || !trimmedProject || !trimmedSessionId) {
+    return null;
+  }
+
+  return {
+    display,
+    pastedContents: {},
+    timestamp: Date.now(),
+    project: trimmedProject,
+    sessionId: trimmedSessionId,
+  };
+};
+
+const upsertNativeClaudeHistoryEntry = async (entry: NativeClaudeHistoryEntry) => {
+  const historyPath = nativeClaudeHistoryPath();
+  let raw = '';
+  try {
+    raw = await readFile(historyPath, 'utf8');
+  } catch (error) {
+    if (!isMissingFsEntryError(error)) {
+      throw error;
+    }
+  }
+
+  const lines = raw.split(/\r?\n/).filter((line) => line.trim());
+  const nextLine = JSON.stringify(entry);
+  let existingIndex = -1;
+  lines.forEach((line, index) => {
+    try {
+      const parsed = JSON.parse(line) as { sessionId?: unknown };
+      if (parsed.sessionId === entry.sessionId) {
+        existingIndex = index;
+      }
+    } catch {
+      // Preserve malformed history lines; they are not ours to normalize.
+    }
+  });
+
+  if (existingIndex >= 0) {
+    if (lines[existingIndex] === nextLine) {
+      return;
+    }
+    lines[existingIndex] = nextLine;
+  } else {
+    lines.push(nextLine);
+  }
+
+  await mkdir(path.dirname(historyPath), { recursive: true });
+  await writeFile(historyPath, `${lines.join('\n')}\n`, 'utf8');
+};
+
+const safelyUpsertNativeClaudeHistoryEntry = async (entry: NativeClaudeHistoryEntry | null) => {
+  if (!entry) {
+    return;
+  }
+
+  try {
+    await upsertNativeClaudeHistoryEntry(entry);
+  } catch (error) {
+    console.warn(
+      `[SESSION_STORE] Failed to update native Claude history "${nativeClaudeHistoryPath()}": ${describeError(error)}`,
+    );
+  }
+};
+
 const logNativeCleanupWarnings = (warnings: string[]) => {
   warnings.forEach((warning) => console.warn(`[SESSION_STORE] ${warning}`));
 };
@@ -1230,6 +1336,95 @@ const nativeClaudeSessionFilePath = (rootPath: string, claudeSessionId: string) 
   }
 
   return path.join(existingDir, `${claudeSessionId}.jsonl`);
+};
+
+const syncNativeClaudeSessionResumeMetadata = async (
+  rootPath: string,
+  claudeSessionId: string,
+  title: string,
+) => {
+  const display = firstNativeClaudeHistoryDisplayLine(title);
+  const sessionId = claudeSessionId.trim();
+  if (!display || !sessionId) {
+    return;
+  }
+
+  const filePath = nativeClaudeSessionFilePath(rootPath, sessionId);
+  if (!filePath) {
+    return;
+  }
+
+  let raw = '';
+  try {
+    raw = await readFile(filePath, 'utf8');
+  } catch {
+    return;
+  }
+
+  const aiTitleLine = JSON.stringify({
+    type: 'ai-title',
+    aiTitle: display,
+    sessionId,
+  });
+  let hasAiTitle = false;
+  let changed = false;
+  const lines = raw
+    .split(/\r?\n/)
+    .filter((line) => line.trim())
+    .map((line) => {
+      try {
+        const parsed = JSON.parse(line) as Record<string, unknown>;
+        let lineChanged = false;
+        // Claude 2.1.x's interactive resume picker ignores SDK/print sessions.
+        if (parsed.entrypoint === 'sdk-cli') {
+          parsed.entrypoint = 'cli';
+          lineChanged = true;
+        }
+        if (parsed.promptSource === 'sdk') {
+          parsed.promptSource = 'typed';
+          lineChanged = true;
+        }
+        if (parsed.type === 'ai-title' && parsed.sessionId === sessionId) {
+          hasAiTitle = true;
+          if (parsed.aiTitle !== display) {
+            parsed.aiTitle = display;
+            lineChanged = true;
+          }
+        }
+
+        if (lineChanged) {
+          changed = true;
+          return JSON.stringify(parsed);
+        }
+      } catch {
+        return line;
+      }
+
+      return line;
+    });
+
+  if (!hasAiTitle) {
+    lines.unshift(aiTitleLine);
+    changed = true;
+  }
+
+  if (changed) {
+    await writeFile(filePath, `${lines.join('\n')}\n`, 'utf8');
+  }
+};
+
+const safelySyncNativeClaudeSessionResumeMetadata = async (
+  rootPath: string,
+  claudeSessionId: string,
+  title: string,
+) => {
+  try {
+    await syncNativeClaudeSessionResumeMetadata(rootPath, claudeSessionId, title);
+  } catch (error) {
+    console.warn(
+      `[SESSION_STORE] Failed to update native Claude resume metadata for "${claudeSessionId}": ${describeError(error)}`,
+    );
+  }
 };
 
 const extractTextFromContent = (content: unknown): string => {
@@ -2349,6 +2544,10 @@ const renameNativeClaudeSession = async (rootPath: string, claudeSessionId: stri
   if (!filePath) {
     return;
   }
+  const title = nextName.trim();
+  if (!title) {
+    return;
+  }
 
   let raw = '';
   try {
@@ -2359,7 +2558,7 @@ const renameNativeClaudeSession = async (rootPath: string, claudeSessionId: stri
 
   const nextLine = JSON.stringify({
     type: 'custom-title',
-    customTitle: nextName,
+    customTitle: title,
     sessionId: claudeSessionId,
   });
 
@@ -2383,6 +2582,10 @@ const renameNativeClaudeSession = async (rootPath: string, claudeSessionId: stri
 
   const output = found ? lines : [nextLine, ...lines];
   await writeFile(filePath, `${output.join('\n')}\n`, 'utf8');
+  await safelyUpsertNativeClaudeHistoryEntry(
+    buildNativeClaudeHistoryEntryFromTitle(rootPath, claudeSessionId, title),
+  );
+  await safelySyncNativeClaudeSessionResumeMetadata(rootPath, claudeSessionId, title);
 };
 
 export const renameNativeCodexThread = async (codexThreadId: string, nextName: string) => {
@@ -3189,6 +3392,51 @@ const refreshNativeImports = async (state: AppState) => {
 let pendingSaveTimer: ReturnType<typeof setTimeout> | null = null;
 const SAVE_DEBOUNCE_MS = 800;
 
+/**
+ * Cap on messages persisted per session. The whole store is held in memory and
+ * fully re-serialized (and the previous file re-read + re-parsed) on every
+ * debounced save, so an unbounded message history makes each save allocate
+ * gigabytes transiently — overlapping saves then breach the V8 heap ceiling.
+ * Trimming bounds the persisted file (and therefore every save's peak memory).
+ * Older messages remain available in the rotating backups / .tmp files on disk.
+ * Override with EASYAIFLOW_MAX_PERSISTED_MESSAGES (0 disables trimming).
+ */
+const MAX_PERSISTED_MESSAGES_PER_SESSION = (() => {
+  const raw = Number(process.env.EASYAIFLOW_MAX_PERSISTED_MESSAGES);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 400;
+})();
+
+/**
+ * Builds a persist-time view of the state with each session's message history
+ * capped to the last N. Uses shallow structural copies and Array.slice (which
+ * shares the retained message objects), so it adds negligible memory versus the
+ * full deep clone a naive trim would cost.
+ */
+export const buildPersistableState = (state: AppState): AppState => {
+  const limit = MAX_PERSISTED_MESSAGES_PER_SESSION;
+  if (!limit) {
+    return state;
+  }
+
+  let trimmedAny = false;
+  const projects = state.projects.map((project) => ({
+    ...project,
+    dreams: project.dreams.map((dream) => ({
+      ...dream,
+      sessions: dream.sessions.map((session) => {
+        const messages = (session as SessionRecord).messages;
+        if (!messages || messages.length <= limit) {
+          return session;
+        }
+        trimmedAny = true;
+        return { ...(session as SessionRecord), messages: messages.slice(-limit) };
+      }),
+    })),
+  }));
+
+  return trimmedAny ? { ...state, projects } : state;
+};
+
 const writeToDisk = async () => {
   if (!cachedState) {
     return;
@@ -3208,7 +3456,7 @@ const writeToDisk = async () => {
   const filePath = storePath();
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   const backupPath = `${filePath}.last-good.json`;
-  const serialized = JSON.stringify(cachedState, null, 2);
+  const serialized = JSON.stringify(buildPersistableState(cachedState), null, 2);
   await writeFile(tempPath, serialized, 'utf8');
   if (onDisk.state) {
     try {
@@ -3526,6 +3774,8 @@ export const setSessionRuntime = async (
   },
 ) => {
   const state = await loadState();
+  const nativeClaudeHistoryEntries: NativeClaudeHistoryEntry[] = [];
+  const nativeClaudeResumeMetadataTasks: Array<Promise<void>> = [];
 
   forEachSession(state.projects, (session) => {
     if (session.id !== sessionId) {
@@ -3551,9 +3801,28 @@ export const setSessionRuntime = async (
       session.tokenUsage = values.tokenUsage;
     }
     session.updatedAt = Date.now();
+    if (session.provider === 'claude' && session.claudeSessionId) {
+      const entry = buildNativeClaudeHistoryEntry(session);
+      if (entry) {
+        nativeClaudeHistoryEntries.push(entry);
+      }
+      if (values.claudeSessionId !== undefined) {
+        nativeClaudeResumeMetadataTasks.push(
+          safelySyncNativeClaudeSessionResumeMetadata(
+            session.workspace,
+            session.claudeSessionId,
+            session.title,
+          ),
+        );
+      }
+    }
   });
 
   await saveState(state);
+  await Promise.all([
+    ...nativeClaudeHistoryEntries.map((entry) => safelyUpsertNativeClaudeHistoryEntry(entry)),
+    ...nativeClaudeResumeMetadataTasks,
+  ]);
 };
 
 export const updateSessionContextReferences = async (
