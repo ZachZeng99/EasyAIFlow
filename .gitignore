@@ -9,7 +9,10 @@ run.log
 .codex-dev.stderr.log
 .codex-logs/
 .tmp-tests/
+.tmp-restart/
+.tmp-group-roleplay-*/
 .tmp-devweb-*.log
+index-search-project.txt
 .vscode/
 .DS_Store
 

@@ -217,6 +217,7 @@ await run('renameEntity keeps group backing session titles aligned with the grou
     'projects',
     toClaudeProjectDirName(projectRoot) ?? 'workspace',
   );
+  const claudeHistoryPath = path.join(homePath, '.claude', 'history.jsonl');
   const claudeSessionId = 'claude-room-session';
   const claudeSessionPath = path.join(claudeProjectsDir, `${claudeSessionId}.jsonl`);
 
@@ -279,6 +280,13 @@ await run('renameEntity keeps group backing session titles aligned with the grou
     const updatedClaudeSession = await readFile(claudeSessionPath, 'utf8');
     assert.match(updatedClaudeSession, /"sessionId":"claude-room-session"/);
     assert.match(updatedClaudeSession, /"customTitle":"\[Group\] Renamed room"/);
+
+    const updatedClaudeHistory = (await readFile(claudeHistoryPath, 'utf8'))
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line) as { display?: string; sessionId?: string });
+    const historyEntry = updatedClaudeHistory.find((entry) => entry.sessionId === claudeSessionId);
+    assert.equal(historyEntry?.display, '[Group] Renamed room');
   } finally {
     if (previousUserProfile === undefined) {
       delete process.env.USERPROFILE;
