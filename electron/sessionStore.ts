@@ -4112,6 +4112,42 @@ const MAX_PERSISTED_MESSAGES_PER_SESSION = (() => {
 })();
 
 /**
+ * Cap on the message history retained in the *live* in-memory state, mirroring
+ * MAX_PERSISTED_MESSAGES_PER_SESSION. Without this, `cachedState` keeps every
+ * ConversationMessage of every session for the whole process lifetime — a long
+ * Claude session appends tens of thousands of trace/tool/delta messages that GC
+ * cannot reclaim because they stay reachable from the live `session.messages`
+ * array. That unbounded array (not the trimmed save-time copy) is what grew the
+ * web server to the ~4GB V8 ceiling and OOM-crashed it.
+ *
+ * Trimming the live array to the same bound the persisted file already uses
+ * keeps in-memory and on-disk history consistent: a reload only ever restores
+ * the last N anyway, so dropping older messages from memory loses nothing that
+ * survives a restart. Override with EASYAIFLOW_MAX_RESIDENT_MESSAGES (0 disables,
+ * matching the persisted-cap opt-out — at the cost of unbounded heap growth).
+ */
+const MAX_RESIDENT_MESSAGES_PER_SESSION = (() => {
+  const raw = Number(process.env.EASYAIFLOW_MAX_RESIDENT_MESSAGES);
+  return Number.isFinite(raw) && raw >= 0 ? raw : MAX_PERSISTED_MESSAGES_PER_SESSION;
+})();
+
+/**
+ * Trims a session's live message array to the resident cap, in place. Reassigns
+ * via slice so the dropped message objects become unreachable and collectible.
+ * Cheap and idempotent: a no-op once the array is at or under the cap.
+ */
+const capResidentSessionMessages = (session: SessionRecord) => {
+  const limit = MAX_RESIDENT_MESSAGES_PER_SESSION;
+  if (!limit) {
+    return;
+  }
+  const messages = session.messages;
+  if (messages && messages.length > limit) {
+    session.messages = messages.slice(-limit);
+  }
+};
+
+/**
  * Builds a persist-time view of the state with each session's message history
  * capped to the last N. Uses shallow structural copies and Array.slice (which
  * shares the retained message objects), so it adds negligible memory versus the
@@ -4700,6 +4736,7 @@ export const appendMessagesToSession = async (
       const nextMessages = assignMessagesForSession(session, messages);
       persistedMessages = nextMessages;
       session.messages = [...(session.messages ?? []), ...nextMessages];
+      capResidentSessionMessages(session);
       session.preview = preview;
       session.timeLabel = timeLabel;
       session.updatedAt = Date.now();
@@ -4727,6 +4764,7 @@ export const appendTraceMessagesToSession = async (
       const nextMessages = assignMessagesForSession(session, messages);
       persistedMessages = nextMessages;
       session.messages = [...(session.messages ?? []), ...nextMessages];
+      capResidentSessionMessages(session);
       session.updatedAt = Date.now();
     }
   });
@@ -4759,6 +4797,7 @@ export const upsertSessionMessage = async (
       const nextMessage = assignGroupMessageSeq(session, message);
       session.messages = [...(session.messages ?? []), nextMessage];
       persistedMessage = nextMessage;
+      capResidentSessionMessages(session);
     }
     session.updatedAt = Date.now();
   });
@@ -4788,6 +4827,7 @@ export const upsertSessionMessageInMemory = async (
     } else {
       const nextMessage = assignGroupMessageSeq(session, message);
       session.messages = [...(session.messages ?? []), nextMessage];
+      capResidentSessionMessages(session);
     }
     session.updatedAt = Date.now();
   });
