@@ -262,3 +262,140 @@ await run('setSessionRuntime records Claude sessions in native history for resum
     }
   }
 });
+
+await run('backfillNativeClaudeResumeMetadata re-normalizes stale sdk-cli sessions', async () => {
+  const tempBase = path.resolve('.tmp-tests');
+  await mkdir(tempBase, { recursive: true });
+  const tempRoot = await mkdtemp(path.join(tempBase, 'session-store-claude-backfill-'));
+  const userDataPath = path.join(tempRoot, 'userData');
+  const homePath = path.join(tempRoot, 'home');
+  const projectRoot = path.join(tempRoot, 'workspace');
+  const sessionId = '7ce91a02-1d3f-4f9a-9b21-0c4d5e6f7a8b';
+  const nativeDirName = toClaudeProjectDirName(projectRoot);
+  assert.ok(nativeDirName);
+  const nativeSessionPath = path.join(
+    homePath,
+    '.claude',
+    'projects',
+    nativeDirName,
+    `${sessionId}.jsonl`,
+  );
+  // A second copy of the same session left under a different project dir, as
+  // happens when the session was first run under another cwd. Only reachable by
+  // matching the session id (a UUID), not the recorded workspace.
+  const orphanSessionPath = path.join(
+    homePath,
+    '.claude',
+    'projects',
+    `${nativeDirName}-OldCwd`,
+    `${sessionId}.jsonl`,
+  );
+
+  const writeStaleSdkSessionTo = async (filePath: string) => {
+    await mkdir(path.dirname(filePath), { recursive: true });
+    await writeFile(
+      filePath,
+      [
+        JSON.stringify({
+          type: 'user',
+          sessionId,
+          cwd: projectRoot,
+          entrypoint: 'sdk-cli',
+          promptSource: 'sdk',
+          userType: 'external',
+          message: { role: 'user', content: 'first prompt' },
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          sessionId,
+          cwd: projectRoot,
+          entrypoint: 'sdk-cli',
+          userType: 'external',
+          message: { model: 'claude-opus-4-8', role: 'assistant', content: [{ type: 'text', text: 'reply' }] },
+        }),
+      ].join('\n') + '\n',
+      'utf8',
+    );
+  };
+  const writeStaleSdkSession = async () => {
+    await writeStaleSdkSessionTo(nativeSessionPath);
+    await writeStaleSdkSessionTo(orphanSessionPath);
+  };
+
+  await mkdir(userDataPath, { recursive: true });
+  await mkdir(homePath, { recursive: true });
+  await mkdir(projectRoot, { recursive: true });
+
+  const previousUserProfile = process.env.USERPROFILE;
+  process.env.USERPROFILE = homePath;
+  configureRuntimePaths({ mode: 'web', userDataPath, homePath });
+  let sessionStore: Awaited<ReturnType<typeof importFreshSessionStore>> | undefined;
+
+  try {
+    sessionStore = await importFreshSessionStore();
+    const projectResult = await sessionStore.createProject('Smoke', projectRoot);
+    const created = await sessionStore.createSessionInStreamwork(
+      projectResult.session.dreamId,
+      'VSM Clipmap',
+      false,
+      'claude',
+      'standard',
+    );
+    await sessionStore.setSessionRuntime(created.session.id, {
+      claudeSessionId: sessionId,
+      model: 'opus[1m]',
+    });
+
+    // Older stored sessions leave `provider` undefined; the backfill must rescue
+    // them off claudeSessionId alone, so strip it to mirror real data.
+    await sessionStore.updateSessionRecord(created.session.id, (session: { provider?: unknown }) => {
+      session.provider = undefined;
+    });
+
+    // Write the native log only now (after the store has loaded and imported),
+    // so it represents a session created before the resume fix / left idle
+    // across a restart, with the SDK markers /resume hides — and is not picked
+    // up as a separate imported session.
+    await writeStaleSdkSession();
+
+    const state = await sessionStore.loadState();
+    const result = await sessionStore.backfillNativeClaudeResumeMetadata(state);
+    assert.ok(result.scanned >= 1);
+
+    const nativeEntries = (await readFile(nativeSessionPath, 'utf8'))
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line) as {
+        type?: string;
+        aiTitle?: string;
+        entrypoint?: string;
+        promptSource?: string;
+        sessionId?: string;
+      });
+
+    assert.equal(nativeEntries.some((entry) => entry.entrypoint === 'sdk-cli'), false);
+    assert.equal(nativeEntries.some((entry) => entry.promptSource === 'sdk'), false);
+    assert.ok(nativeEntries.some((entry) => entry.entrypoint === 'cli' && entry.promptSource === 'typed'));
+    assert.ok(
+      nativeEntries.some(
+        (entry) =>
+          entry.type === 'ai-title' && entry.aiTitle === 'VSM Clipmap' && entry.sessionId === sessionId,
+      ),
+    );
+
+    // The orphan copy under the other project dir must be rescued too.
+    const orphanEntries = (await readFile(orphanSessionPath, 'utf8'))
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line) as { entrypoint?: string; promptSource?: string });
+    assert.equal(orphanEntries.some((entry) => entry.entrypoint === 'sdk-cli'), false);
+    assert.ok(orphanEntries.some((entry) => entry.entrypoint === 'cli' && entry.promptSource === 'typed'));
+  } finally {
+    await sessionStore?.flushPendingSave();
+    if (previousUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = previousUserProfile;
+    }
+  }
+});

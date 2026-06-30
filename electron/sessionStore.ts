@@ -1382,22 +1382,54 @@ const nativeClaudeSessionFilePath = (rootPath: string, claudeSessionId: string) 
   return path.join(existingDir, `${claudeSessionId}.jsonl`);
 };
 
-const syncNativeClaudeSessionResumeMetadata = async (
-  rootPath: string,
-  claudeSessionId: string,
-  title: string,
-) => {
-  const display = firstNativeClaudeHistoryDisplayLine(title);
+/**
+ * Finds every native Claude session log for `claudeSessionId` across all project
+ * directories. A session re-run under a different cwd (or whose EasyAIFlow
+ * workspace later changed) leaves a `<sessionId>.jsonl` under more than one
+ * `~/.claude/projects/<dir>` — and the workspace-derived path only ever points
+ * at one of them, leaving the others stuck with the SDK markers /resume hides.
+ * Session ids are UUIDs, so matching purely by file name is unambiguous.
+ */
+const getNativeClaudeSessionFilePathsById = async (claudeSessionId: string): Promise<string[]> => {
   const sessionId = claudeSessionId.trim();
-  if (!display || !sessionId) {
-    return;
+  if (!sessionId) {
+    return [];
   }
 
-  const filePath = nativeClaudeSessionFilePath(rootPath, sessionId);
-  if (!filePath) {
-    return;
+  const root = nativeClaudeProjectsRoot();
+  let dirents: import('node:fs').Dirent[];
+  try {
+    dirents = await readdir(root, { withFileTypes: true });
+  } catch {
+    return [];
   }
 
+  const fileName = `${sessionId}.jsonl`;
+  const paths: string[] = [];
+  dirents.forEach((dirent) => {
+    if (!dirent.isDirectory()) {
+      return;
+    }
+    const candidate = path.join(root, dirent.name, fileName);
+    if (existsSync(candidate)) {
+      paths.push(candidate);
+    }
+  });
+
+  return paths;
+};
+
+/**
+ * Rewrites a single native Claude session log so the interactive `/resume`
+ * picker stops hiding it: SDK entrypoint/promptSource markers become the typed
+ * CLI ones, and an `ai-title` line is ensured. Only writes when something
+ * actually changes, so it is cheap to re-run.
+ */
+const rewriteNativeClaudeResumeFile = async (
+  filePath: string,
+  sessionId: string,
+  display: string,
+) => {
   let raw = '';
   try {
     raw = await readFile(filePath, 'utf8');
@@ -1419,7 +1451,8 @@ const syncNativeClaudeSessionResumeMetadata = async (
       try {
         const parsed = JSON.parse(line) as Record<string, unknown>;
         let lineChanged = false;
-        // Claude 2.1.x's interactive resume picker ignores SDK/print sessions.
+        // Claude's interactive resume picker ignores SDK/print sessions
+        // (its hidden-entrypoint set is {sdk-cli,sdk-ts,sdk-py}).
         if (parsed.entrypoint === 'sdk-cli') {
           parsed.entrypoint = 'cli';
           lineChanged = true;
@@ -1454,6 +1487,34 @@ const syncNativeClaudeSessionResumeMetadata = async (
 
   if (changed) {
     await writeFile(filePath, `${lines.join('\n')}\n`, 'utf8');
+  }
+};
+
+const syncNativeClaudeSessionResumeMetadata = async (
+  rootPath: string,
+  claudeSessionId: string,
+  title: string,
+) => {
+  const display = firstNativeClaudeHistoryDisplayLine(title);
+  const sessionId = claudeSessionId.trim();
+  if (!display || !sessionId) {
+    return;
+  }
+
+  // Patch every native log for this session: the workspace-derived path plus any
+  // copy left under a different project dir from an earlier cwd. Deduplicated so
+  // a file matched both ways is only rewritten once.
+  const filePaths = new Set<string>();
+  const workspaceFile = nativeClaudeSessionFilePath(rootPath, sessionId);
+  if (workspaceFile && existsSync(workspaceFile)) {
+    filePaths.add(workspaceFile);
+  }
+  for (const filePath of await getNativeClaudeSessionFilePathsById(sessionId)) {
+    filePaths.add(filePath);
+  }
+
+  for (const filePath of filePaths) {
+    await rewriteNativeClaudeResumeFile(filePath, sessionId, display);
   }
 };
 
@@ -4043,6 +4104,14 @@ const loadStateUncached = async () => {
   console.warn(`[SESSION_STORE] Failed to migrate V1 store to V2: ${describeError(migrationError)}`);
   await saveState(cachedState);
 
+  // Fire-and-forget: make every already-stored Claude session resumable in the
+  // native `/resume` picker without blocking (or being able to crash) load.
+  void backfillNativeClaudeResumeMetadata(cachedState).catch((error) => {
+    console.warn(
+      `[SESSION_STORE] Native Claude resume backfill failed: ${describeError(error)}`,
+    );
+  });
+
   return cachedState;
 };
 
@@ -4593,6 +4662,62 @@ export const findSession = async (sessionId: string): Promise<SessionRecord | nu
   return findSessionInProjects(state.projects, sessionId);
 };
 
+/**
+ * Rewrites the native Claude session log of every Claude session EasyAIFlow
+ * knows about so they reappear in `claude`'s interactive `/resume` picker.
+ *
+ * EasyAIFlow spawns `claude --print`, which the CLI stamps with
+ * `entrypoint: "sdk-cli"` / `promptSource: "sdk"`. The `/resume` picker filters
+ * those out (its hidden-entrypoint set is {sdk-cli,sdk-ts,sdk-py}), so without
+ * normalization every EasyAIFlow session is invisible there.
+ * `setSessionRuntime`/rename already rewrite a session's markers when it next
+ * gets a turn, but that never touches sessions created before that code shipped,
+ * nor ones left idle across a (frequently OOM-triggered) restart. A one-shot
+ * backfill on load makes the whole stored history visible.
+ *
+ * Idempotent: syncNativeClaudeSessionResumeMetadata only writes when a marker
+ * actually changes, so re-running is just a series of reads. Bounded concurrency
+ * keeps the startup FS burst small; per-session failures are swallowed by
+ * safelySync so a backfill can neither block nor crash load.
+ */
+export const backfillNativeClaudeResumeMetadata = async (state: AppState) => {
+  const targets: { workspace: string; claudeSessionId: string; title: string }[] = [];
+  forEachSession(state.projects, (session) => {
+    // A present claudeSessionId is the reliable signal that this is a Claude
+    // session whose native log /resume reads — `provider` is left undefined on
+    // older stored sessions, so keying on it would skip exactly the legacy
+    // sessions this backfill exists to rescue.
+    const claudeSessionId = session.claudeSessionId?.trim();
+    const workspace = session.workspace?.trim();
+    if (!claudeSessionId || !workspace) {
+      return;
+    }
+    targets.push({ workspace, claudeSessionId, title: session.title });
+  });
+
+  if (targets.length === 0) {
+    return { scanned: 0 };
+  }
+
+  const CONCURRENCY = 8;
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < targets.length) {
+      const target = targets[cursor++];
+      await safelySyncNativeClaudeSessionResumeMetadata(
+        target.workspace,
+        target.claudeSessionId,
+        target.title,
+      );
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(CONCURRENCY, targets.length) }, () => worker()),
+  );
+
+  return { scanned: targets.length };
+};
+
 const assignGroupMessageSeq = (
   session: SessionRecord,
   message: ConversationMessage,
@@ -4921,7 +5046,9 @@ export const setSessionRuntime = async (
       session.tokenUsage = values.tokenUsage;
     }
     session.updatedAt = Date.now();
-    if (session.provider === 'claude' && session.claudeSessionId) {
+    // Key off claudeSessionId, not provider: it is the reliable Claude signal and
+    // older stored sessions leave provider undefined (see backfill rationale).
+    if (session.claudeSessionId) {
       const entry = buildNativeClaudeHistoryEntry(session);
       if (entry) {
         nativeClaudeHistoryEntries.push(entry);
