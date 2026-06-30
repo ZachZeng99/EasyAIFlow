@@ -238,9 +238,9 @@ npm run dev
 npm run dev:web
 ```
 
-默认情况下，Vite 前端运行在 `4273` 端口，Web 服务运行在 `8887` 端口。可通过 `EASYAIFLOW_WEB_CLIENT_PORT` 和 `EASYAIFLOW_WEB_SERVER_PORT` 覆盖。
+默认情况下，Vite 前端运行在 `4173` 端口，Web 服务运行在 `8887` 端口。可通过 `EASYAIFLOW_WEB_CLIENT_PORT` 和 `EASYAIFLOW_WEB_SERVER_PORT` 覆盖。
 
-By default, the Vite client runs on port `4273` and the web server runs on port `8887`. Override them with `EASYAIFLOW_WEB_CLIENT_PORT` and `EASYAIFLOW_WEB_SERVER_PORT`.
+By default, the Vite client runs on port `4173` and the web server runs on port `8887`. Override them with `EASYAIFLOW_WEB_CLIENT_PORT` and `EASYAIFLOW_WEB_SERVER_PORT`.
 
 ---
 
@@ -250,7 +250,7 @@ By default, the Vite client runs on port `4273` and the web server runs on port 
 |---|---|
 | `npm run dev` | 启动桌面开发（Vite + Electron）/ Start desktop dev (Vite + Electron) |
 | `npm run dev:web` | 启动 Web 开发（Vite + HTTP 服务）/ Start web dev (Vite + HTTP server) |
-| `npm run dev:web:client` | 仅启动 Vite 前端（默认端口 4273）/ Vite frontend only (default port 4273) |
+| `npm run dev:web:client` | 仅启动 Vite 前端（默认端口 4173）/ Vite frontend only (default port 4173) |
 | `npm run dev:server` | 仅启动 Web 后端（默认端口 8887）/ Web server only (default port 8887) |
 | `npm run check` | TypeScript 类型检查（`tsc -b`）/ Type check all configs |
 | `npm run build` | 完整构建：类型检查 + Vite + Electron / Full build |

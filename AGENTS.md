@@ -12,7 +12,7 @@ EasyAIFlow is a desktop/web client for local AI coding workflows. The current co
 ```bash
 npm run dev              # Start both Vite dev server + Electron app
 npm run dev:web          # Start Vite + web server (no Electron)
-npm run dev:web:client   # Start only the Vite frontend (default port 4273)
+npm run dev:web:client   # Start only the Vite frontend (default port 4173)
 npm run dev:server       # Start only the web server (tsx server/server.ts, default port 8887)
 ```
 
@@ -97,7 +97,7 @@ Each interaction type has a pending-request registry in the backend, a parser in
 ## Conventions
 
 - No ESLint or Prettier is configured; TypeScript strict mode is the primary quality gate.
-- The Vite dev server defaults to port `4273`; the web server defaults to port `8887`.
+- The Vite dev server defaults to port `4173`; the web server defaults to port `8887`.
 - Session persistence path is platform-specific via `electron/sessionStore.ts` (typically `~/.EasyAIFlow/`).
 - Claude Code source reference is available at `D:\AIAgent\claude-code-sourcemap`; all Claude-related changes must be reviewed against that project before implementation.
 - The project expects a working local `claude` CLI for Claude sessions and a working local `codex` CLI for Codex sessions. Group rooms use both when both participants are enabled.
