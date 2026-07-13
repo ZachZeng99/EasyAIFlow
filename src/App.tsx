@@ -19,6 +19,13 @@ import {
 } from './data/projectSnapshots';
 import { getLastGroupResponder } from './data/groupChat';
 import {
+  evictSessionHistories,
+  isStaleSessionHistoryCursorError,
+  mergeOlderSessionMessagePage,
+  replaceSessionHistoryAfterStaleCursor,
+  touchSessionHistory,
+} from './data/sessionHistoryCache';
+import {
   buildAskUserQuestionFollowUpPrompt,
   buildAskUserQuestionResponsePayload,
   type AskUserQuestionDraft,
@@ -338,6 +345,7 @@ export default function App() {
   const [uiError, setUiError] = useState<string | null>(null);
   const [dialogState, setDialogState] = useState<DialogState | null>(null);
   const [sessionInteractions, setSessionInteractions] = useState<Map<string, SessionInteractionState>>(new Map());
+  const [loadingOlderHistoryIds, setLoadingOlderHistoryIds] = useState<string[]>([]);
 
   const updateSessionInteraction = useCallback(
     (sessionId: string, updater: (state: SessionInteractionState) => SessionInteractionState) => {
@@ -358,6 +366,7 @@ export default function App() {
     });
   }, []);
   const loadingSessionRecordIds = useRef(new Set<string>());
+  const loadedSessionRecencyRef = useRef<string[]>([]);
   const lastProjectRefreshAtRef = useRef(0);
   const replaceProjects = useCallback((nextProjects: ProjectRecord[]) => {
     setProjects((current) => mergeProjectSnapshots(current, nextProjects));
@@ -379,6 +388,10 @@ export default function App() {
     return nextProjects;
   }, [replaceProjects]);
   const hydrateSessionRecord = useCallback((sessionRecord: SessionRecord) => {
+    loadedSessionRecencyRef.current = touchSessionHistory(
+      loadedSessionRecencyRef.current,
+      sessionRecord.id,
+    );
     setProjects((current) => hydrateSessionRecordInProjects(current, sessionRecord));
   }, []);
   const [isMobileLayout, setIsMobileLayout] = useState(() =>
@@ -420,7 +433,17 @@ export default function App() {
   }, []);
   const ensureSessionRecordLoaded = useCallback((sessionId: string) => {
     const existing = allSessions.find((session) => session.id === sessionId);
-    if (!existing || existing.messagesLoaded !== false || loadingSessionRecordIds.current.has(sessionId)) {
+    if (!existing) {
+      return;
+    }
+    if (existing.messagesLoaded !== false) {
+      loadedSessionRecencyRef.current = touchSessionHistory(
+        loadedSessionRecencyRef.current,
+        sessionId,
+      );
+      return;
+    }
+    if (loadingSessionRecordIds.current.has(sessionId)) {
       return;
     }
 
@@ -437,6 +460,57 @@ export default function App() {
         loadingSessionRecordIds.current.delete(sessionId);
       });
   }, [allSessions, hydrateSessionRecord]);
+  const loadOlderSessionHistory = useCallback(async (sessionId: string) => {
+    const session = allSessions.find((candidate) => candidate.id === sessionId);
+    const before = session?.historyPage?.nextBefore;
+    if (
+      !session ||
+      !session.historyPage?.hasMoreBefore ||
+      !before ||
+      loadingOlderHistoryIds.includes(sessionId)
+    ) {
+      return;
+    }
+    setLoadingOlderHistoryIds((current) => [...new Set([...current, sessionId])]);
+    try {
+      const page = await bridge.getSessionMessagePage({ sessionId, before });
+      setProjects((current) =>
+        updateSessionInProjects(current, sessionId, (currentSession) =>
+          mergeOlderSessionMessagePage(currentSession, page),
+        ),
+      );
+      loadedSessionRecencyRef.current = touchSessionHistory(
+        loadedSessionRecencyRef.current,
+        sessionId,
+      );
+    } catch (error) {
+      if (isStaleSessionHistoryCursorError(error)) {
+        try {
+          const reloaded = await bridge.getSessionRecord({ sessionId });
+          setProjects((current) =>
+            updateSessionInProjects(current, sessionId, (currentSession) =>
+              replaceSessionHistoryAfterStaleCursor(currentSession, reloaded),
+            ),
+          );
+          loadedSessionRecencyRef.current = touchSessionHistory(
+            loadedSessionRecencyRef.current,
+            sessionId,
+          );
+          return;
+        } catch (reloadError) {
+          setUiError(
+            reloadError instanceof Error
+              ? reloadError.message
+              : 'Failed to reload changed session history.',
+          );
+          return;
+        }
+      }
+      setUiError(error instanceof Error ? error.message : 'Failed to load earlier session history.');
+    } finally {
+      setLoadingOlderHistoryIds((current) => current.filter((id) => id !== sessionId));
+    }
+  }, [allSessions, loadingOlderHistoryIds]);
   const mergedGroupRuntimeCacheRef = useRef(
     new Map<
       string,
@@ -538,6 +612,50 @@ export default function App() {
     () => getEffectiveSessionInteraction(selectedSession),
     [getEffectiveSessionInteraction, selectedSession],
   );
+  const historyPinnedSessionIds = useMemo(() => {
+    const pinned = new Set(sendingSessionIds);
+    sessionInteractions.forEach((interaction, sessionId) => {
+      const phase = interaction.runtime?.phase;
+      const hasPendingInteraction = Boolean(
+        interaction.permission ||
+        interaction.pendingPermissions?.length ||
+        interaction.askUserQuestion ||
+        interaction.planModeRequest ||
+        interaction.backgroundTasks?.some(
+          (task) => task.status === 'pending' || task.status === 'running',
+        ),
+      );
+      if (
+        hasPendingInteraction ||
+        phase === 'running' ||
+        phase === 'background' ||
+        phase === 'awaiting_reply' ||
+        phase === 'terminating'
+      ) {
+        pinned.add(sessionId);
+      }
+    });
+    allSessions.forEach((session) => {
+      if (
+        session.sessionKind === 'group' &&
+        session.group?.kind === 'room' &&
+        session.group.participants.some((participant) => pinned.has(participant.backingSessionId))
+      ) {
+        pinned.add(session.id);
+      }
+    });
+    return pinned;
+  }, [allSessions, sendingSessionIds, sessionInteractions]);
+  useEffect(() => {
+    setProjects((current) =>
+      evictSessionHistories(current, {
+        selectedSessionId: selectedSession?.id,
+        pinnedSessionIds: historyPinnedSessionIds,
+        recency: loadedSessionRecencyRef.current,
+        retainRecentInactive: 2,
+      }),
+    );
+  }, [historyPinnedSessionIds, projects, selectedSession?.id]);
   const activeSelectedSessionId = selectedSession?.id ?? selectedSessionId;
   const activeSelectedSessionIdRef = useRef(activeSelectedSessionId);
   useEffect(() => {
@@ -2175,6 +2293,11 @@ export default function App() {
                 session={selectedSession}
                 messages={selectedSession.messages ?? []}
                 isLoadingHistory={selectedSession.messagesLoaded === false}
+                hasMoreHistory={Boolean(selectedSession.historyPage?.hasMoreBefore)}
+                isLoadingOlderHistory={loadingOlderHistoryIds.includes(selectedSession.id)}
+                onLoadOlderHistory={() => {
+                  void loadOlderSessionHistory(selectedSession.id);
+                }}
                 isCliOnline={canDisconnectSelectedSession}
                 groupCliStatuses={selectedGroupCliStatuses}
                 onDisconnect={() => {

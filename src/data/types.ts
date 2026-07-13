@@ -160,6 +160,7 @@ export type SessionSummary = {
   dreamName: string;
   claudeSessionId?: string;
   codexThreadId?: string;
+  nativeHistoryRevision?: string;
   sessionKind?: SessionKind;
   hidden?: boolean;
   instructionPrompt?: string;
@@ -220,8 +221,21 @@ export type ConversationMessage = {
   steps?: MessageStep[];
 };
 
+export type SessionHistoryPageState = {
+  nextBefore?: string;
+  hasMoreBefore: boolean;
+  sessionRevision: number;
+};
+
+export type SessionMessagePage = SessionHistoryPageState & {
+  sessionId: string;
+  pageId: string;
+  messages: ConversationMessage[];
+};
+
 export type SessionRecord = SessionSummary & {
   messages: ConversationMessage[];
+  historyPage?: SessionHistoryPageState;
 };
 
 export type GitSnapshot = BranchSnapshot & {

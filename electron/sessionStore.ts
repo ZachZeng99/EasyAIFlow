@@ -1,7 +1,8 @@
-import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { createReadStream, existsSync } from 'node:fs';
 import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { createInterface } from 'node:readline';
 import { getRuntimePaths } from '../backend/runtimePaths.js';
 import { allSessions, projectTree } from '../src/data/mockSessions.js';
 import { findImportedSessionTarget } from './importedSessionMatch.js';
@@ -48,6 +49,18 @@ import {
 import { filterVisibleProjects } from './projectVisibility.js';
 import { mergeSessionStoreStates } from './sessionStoreMerge.js';
 import { normalizeProjectsForCache, normalizeProjectsFromPersistence } from './sessionStoreNormalization.js';
+import {
+  recoverStaleGroupRoomMessages,
+  recoverStaleSessionMessagesForProvider,
+} from './sessionRecovery.js';
+import {
+  getSessionStoreV2Paths,
+  migrateSessionStoreV2,
+  openSessionStoreV2,
+  type SessionStoreV2,
+  SessionStoreV2LockError,
+  type SessionStoreV2SessionMutation,
+} from './sessionStoreV2.js';
 import type {
   BranchSnapshot,
   CloseProjectResult,
@@ -63,6 +76,7 @@ import type {
   SessionProvider,
   SessionContextUpdateResult,
   SessionKind,
+  SessionMessagePage,
   SessionCreateResult,
   SessionRecord,
   SessionSummary,
@@ -91,9 +105,39 @@ type NativeImportCache = {
   parsedClaudeSessionsByFile?: Map<string, ParsedNativeClaudeSession | null>;
 };
 
+type NativeSessionCatalogEntry = {
+  nativeSessionId: string;
+  workspace: string;
+  model: string;
+  title: string;
+  preview: string;
+  timeLabel: string;
+  updatedAt?: number;
+  tokenUsage?: TokenUsage;
+  filePath: string;
+  provider: SessionProvider;
+  sourceRevision: string;
+};
+
+type NativeSessionSource = Pick<NativeSessionCatalogEntry, 'filePath' | 'provider' | 'sourceRevision'>;
+
+type NativeCatalogFileCacheEntry = {
+  mtimeMs: number;
+  size: number;
+  auxiliaryRevision: string;
+  entry: NativeSessionCatalogEntry | null;
+};
+
 let cachedState: AppState | null = null;
 let cachedStateMtimeMs: number | null = null;
 let loadingStatePromise: Promise<AppState> | null = null;
+let v2Store: SessionStoreV2 | null = null;
+const nativeSessionSources = new Map<string, NativeSessionSource>();
+const nativeSessionHydrationPromises = new Map<string, Promise<void>>();
+const nativeSessionsNeedingHydration = new Set<string>();
+const repairedGroupRoomSessionIds = new Set<string>();
+const nativeCatalogFileCache = new Map<string, NativeCatalogFileCacheEntry>();
+let nativeCatalogLastRefreshAt = 0;
 const storePath = () => path.join(getRuntimePaths().userDataPath, 'easyaiflow-sessions.json');
 const nativeClaudeProjectsRoot = () =>
   path.join(process.env.USERPROFILE ?? getRuntimePaths().homePath, '.claude', 'projects');
@@ -2258,6 +2302,320 @@ const readCodexThreadNameIndex = async () => {
   return result;
 };
 
+const boundedCatalogText = (value: string) => value.trim().slice(0, 1024);
+
+const forEachJsonlRecord = async (
+  filePath: string,
+  visitor: (record: Record<string, unknown>) => boolean | void,
+) => {
+  const input = createReadStream(filePath, { encoding: 'utf8' });
+  const lines = createInterface({ input, crlfDelay: Infinity });
+  try {
+    for await (const line of lines) {
+      if (!line.trim()) {
+        continue;
+      }
+      try {
+        if (visitor(JSON.parse(line) as Record<string, unknown>) === false) {
+          break;
+        }
+      } catch {
+        // Native histories may contain a partial final line after a crash.
+      }
+    }
+  } finally {
+    lines.close();
+    input.destroy();
+  }
+};
+
+const parseNativeClaudeSessionCatalogFile = async (
+  filePath: string,
+): Promise<NativeSessionCatalogEntry | null> => {
+  let workspace = '';
+  let model = '';
+  let firstUserText = '';
+  let lastAssistantText = '';
+  let lastErrorText = '';
+  let lastTimestamp: string | number | undefined;
+  let nativeSessionId = path.basename(filePath, '.jsonl');
+  let customTitle = '';
+  let interrupted = false;
+  let hasMeaningfulContent = false;
+
+  await forEachJsonlRecord(filePath, (parsed) => {
+    if (typeof parsed.cwd === 'string') {
+      workspace = parsed.cwd;
+    }
+    if (typeof parsed.sessionId === 'string') {
+      nativeSessionId = parsed.sessionId;
+    }
+    if (
+      (parsed.type === 'custom-title' || parsed.type === 'ai-title') &&
+      typeof (parsed.customTitle ?? parsed.aiTitle) === 'string'
+    ) {
+      customTitle = boundedCatalogText((parsed.customTitle ?? parsed.aiTitle) as string);
+    }
+    if (parsed.timestamp) {
+      lastTimestamp = parsed.timestamp as string | number;
+    }
+
+    if (parsed.type === 'user' && parsed.isMeta !== true) {
+      if (customTitle && workspace) {
+        hasMeaningfulContent = true;
+        return false;
+      }
+      const contentValue = (parsed.message as { content?: unknown } | undefined)?.content;
+      const blocks = Array.isArray(contentValue) ? contentValue : [contentValue];
+      for (const block of blocks) {
+        if (
+          block &&
+          typeof block === 'object' &&
+          (block as { type?: string }).type === 'tool_result'
+        ) {
+          continue;
+        }
+        const text = boundedCatalogText(firstMeaningfulLine(extractTextFromMessageBlock(block)));
+        if (!text) {
+          continue;
+        }
+        hasMeaningfulContent = true;
+        firstUserText ||= text;
+        interrupted ||= text.includes('[Request interrupted by user]');
+      }
+      return workspace && Boolean(firstUserText) ? false : undefined;
+    }
+
+    if (parsed.type === 'assistant') {
+      const message = parsed.message as { model?: unknown; content?: unknown } | undefined;
+      if (typeof message?.model === 'string' && !isClaudeSyntheticModel(message.model)) {
+        model = message.model;
+      }
+      const blocks = Array.isArray(message?.content) ? message.content : [message?.content];
+      for (const block of blocks) {
+        if (
+          block &&
+          typeof block === 'object' &&
+          (block as { type?: string }).type !== 'text'
+        ) {
+          continue;
+        }
+        const text = boundedCatalogText(firstMeaningfulLine(extractTextFromMessageBlock(block)));
+        if (!text || shouldSkipSyntheticAssistantPlaceholder(message?.model as string | undefined, text)) {
+          continue;
+        }
+        hasMeaningfulContent = true;
+        lastAssistantText = text;
+      }
+      return workspace && Boolean(customTitle || firstUserText || lastAssistantText)
+        ? false
+        : undefined;
+    }
+
+    if (parsed.type === 'system' && parsed.subtype === 'api_error') {
+      const error = parsed.error as
+        | { error?: { message?: string; error?: string }; message?: string }
+        | undefined;
+      lastErrorText = boundedCatalogText(
+        error?.error?.error?.trim?.() ||
+          error?.error?.message?.trim?.() ||
+          error?.message?.trim?.() ||
+          'API error',
+      );
+      hasMeaningfulContent = true;
+      return workspace ? false : undefined;
+    }
+    return undefined;
+  });
+
+  if (!hasMeaningfulContent && !customTitle && !interrupted) {
+    return null;
+  }
+  const summary = deriveImportedSessionSummary({
+    customTitle,
+    firstUserText,
+    lastAssistantText,
+    lastErrorText,
+    interrupted,
+    nativeSessionId,
+    providerName: 'Claude',
+  });
+  return {
+    nativeSessionId,
+    workspace,
+    model,
+    title: summary.title,
+    preview: summary.preview,
+    timeLabel: toTimeLabel(lastTimestamp),
+    updatedAt: toUpdatedAt(lastTimestamp),
+    filePath,
+    provider: 'claude',
+    sourceRevision: '',
+  };
+};
+
+const parseCodexSessionCatalogFile = async (
+  filePath: string,
+  threadNameIndex: Map<string, string>,
+): Promise<NativeSessionCatalogEntry | null> => {
+  let workspace = '';
+  let model = '';
+  let firstUserText = '';
+  let lastAssistantText = '';
+  let lastTimestamp: string | number | undefined;
+  let nativeSessionId = path.basename(filePath, '.jsonl');
+  let hasCatalogIdentity = false;
+  let tokenUsage: TokenUsage = {
+    contextWindow: 0,
+    used: 0,
+    input: 0,
+    output: 0,
+    cached: 0,
+    windowSource: 'unknown',
+  };
+
+  await forEachJsonlRecord(filePath, (parsed) => {
+    if (parsed.timestamp) {
+      lastTimestamp = parsed.timestamp as string | number;
+    }
+    if (parsed.type === 'session_meta') {
+      const payload = parsed.payload as { id?: unknown; cwd?: unknown } | undefined;
+      if (typeof payload?.id === 'string' && payload.id.trim()) {
+        nativeSessionId = payload.id.trim();
+      }
+      if (typeof payload?.cwd === 'string' && payload.cwd.trim()) {
+        workspace = payload.cwd.trim();
+      }
+      if (threadNameIndex.has(nativeSessionId) && workspace) {
+        hasCatalogIdentity = true;
+        return false;
+      }
+      return undefined;
+    }
+    if (parsed.type === 'turn_context') {
+      const payload = parsed.payload as { cwd?: unknown; model?: unknown } | undefined;
+      if (typeof payload?.cwd === 'string' && payload.cwd.trim()) {
+        workspace = payload.cwd.trim();
+      }
+      if (typeof payload?.model === 'string' && payload.model.trim()) {
+        model = payload.model.trim();
+      }
+      return workspace && Boolean(threadNameIndex.get(nativeSessionId) || firstUserText)
+        ? false
+        : undefined;
+    }
+    if (parsed.type === 'event_msg') {
+      const payload = parsed.payload as {
+        type?: unknown;
+        info?: {
+          total_token_usage?: {
+            input_tokens?: number;
+            cached_input_tokens?: number;
+            output_tokens?: number;
+          };
+          model_context_window?: number;
+        };
+      } | undefined;
+      if (payload?.type === 'token_count' && payload.info?.total_token_usage) {
+        const usage = payload.info.total_token_usage;
+        const input = usage.input_tokens ?? 0;
+        const cached = usage.cached_input_tokens ?? 0;
+        const output = usage.output_tokens ?? 0;
+        tokenUsage = {
+          contextWindow: payload.info.model_context_window ?? 0,
+          used: input + cached + output,
+          input,
+          output,
+          cached,
+          windowSource: payload.info.model_context_window ? 'runtime' : 'unknown',
+        };
+      }
+      return undefined;
+    }
+    if (parsed.type !== 'response_item') {
+      return undefined;
+    }
+    const payload = parsed.payload as { type?: unknown; role?: unknown; content?: unknown } | undefined;
+    if (payload?.type !== 'message' || (payload.role !== 'user' && payload.role !== 'assistant')) {
+      return undefined;
+    }
+    const text = boundedCatalogText(firstMeaningfulLine(extractCodexMessageText(payload.content)));
+    if (!text || isCodexImportedContextMessage(text)) {
+      return;
+    }
+    if (payload.role === 'user') {
+      firstUserText ||= text;
+      hasCatalogIdentity = true;
+      return workspace ? false : undefined;
+    } else if (hasCatalogIdentity) {
+      lastAssistantText = text;
+    }
+    return undefined;
+  });
+
+  if (!hasCatalogIdentity && !threadNameIndex.has(nativeSessionId)) {
+    return null;
+  }
+  const summary = deriveImportedSessionSummary({
+    customTitle: threadNameIndex.get(nativeSessionId),
+    firstUserText,
+    lastAssistantText,
+    nativeSessionId,
+    providerName: 'Codex',
+  });
+  return {
+    nativeSessionId,
+    workspace,
+    model,
+    title: summary.title,
+    preview: summary.preview,
+    timeLabel: toTimeLabel(lastTimestamp),
+    updatedAt: toUpdatedAt(lastTimestamp),
+    tokenUsage,
+    filePath,
+    provider: 'codex',
+    sourceRevision: '',
+  };
+};
+
+const readNativeCatalogEntryCached = async (
+  filePath: string,
+  provider: SessionProvider,
+  threadNameIndex = new Map<string, string>(),
+  auxiliaryRevision = '',
+) => {
+  const fileStat = await stat(filePath);
+  const cached = nativeCatalogFileCache.get(filePath);
+  if (
+    cached &&
+    cached.mtimeMs === fileStat.mtimeMs &&
+    cached.size === fileStat.size &&
+    cached.auxiliaryRevision === auxiliaryRevision
+  ) {
+    return cached.entry;
+  }
+  const parsedEntry = provider === 'claude'
+    ? await parseNativeClaudeSessionCatalogFile(filePath)
+    : await parseCodexSessionCatalogFile(filePath, threadNameIndex);
+  const entry = parsedEntry
+    ? {
+        ...parsedEntry,
+        sourceRevision: `${fileStat.mtimeMs}:${fileStat.size}`,
+        updatedAt: parsedEntry.updatedAt ?? fileStat.mtimeMs,
+        timeLabel: parsedEntry.updatedAt
+          ? parsedEntry.timeLabel
+          : toTimeLabel(fileStat.mtimeMs),
+      }
+    : null;
+  nativeCatalogFileCache.set(filePath, {
+    mtimeMs: fileStat.mtimeMs,
+    size: fileStat.size,
+    auxiliaryRevision,
+    entry,
+  });
+  return entry;
+};
+
 const loadParsedCodexImportedSessions = async (cache?: NativeImportCache): Promise<ParsedCodexImportedSession[]> => {
   if (cache?.parsedCodexSessions) {
     return cache.parsedCodexSessions;
@@ -2754,6 +3112,216 @@ const applySessionTitleRename = (
   }
 };
 
+const latestNativeCatalogEntries = (entries: NativeSessionCatalogEntry[]) => {
+  const latest = new Map<string, NativeSessionCatalogEntry>();
+  for (const entry of entries) {
+    const current = latest.get(entry.nativeSessionId);
+    if (!current || (entry.updatedAt ?? 0) >= (current.updatedAt ?? 0)) {
+      latest.set(entry.nativeSessionId, entry);
+    }
+  }
+  return [...latest.values()];
+};
+
+const applyNativeCatalogEntries = (
+  project: ProjectRecord,
+  entries: NativeSessionCatalogEntry[],
+  deletedImports: AppState['deletedImports'],
+) => {
+  const temporary = project.dreams.find((dream) => dream.isTemporary);
+  if (!temporary) {
+    return;
+  }
+  const existingSessions = [...temporary.sessions] as SessionRecord[];
+  const projectSessions = project.dreams.flatMap((dream) => dream.sessions) as SessionRecord[];
+  const existingDreamBySessionId = mapSessionDreams(project);
+  const importedSessions: SessionRecord[] = [];
+  const seenNativeIds = new Set<string>();
+  const provider = entries[0]?.provider;
+  if (!provider) {
+    return;
+  }
+  const sessionIdKey = provider === 'claude' ? 'claudeSessionId' : 'codexThreadId';
+  const deletedIds = provider === 'claude'
+    ? deletedImports.claudeSessionIds
+    : deletedImports.codexThreadIds;
+
+  for (const parsed of latestNativeCatalogEntries(entries).sort(
+    (left, right) => (left.updatedAt ?? 0) - (right.updatedAt ?? 0),
+  )) {
+    if (deletedIds.includes(parsed.nativeSessionId)) {
+      continue;
+    }
+    const workspace = parsed.workspace || project.rootPath;
+    if (!isWorkspaceWithinProjectTree(project.rootPath, workspace)) {
+      continue;
+    }
+    seenNativeIds.add(parsed.nativeSessionId);
+    const existing = findImportedSessionTarget(
+      projectSessions,
+      parsed.nativeSessionId,
+      parsed.title,
+      workspace,
+      sessionIdKey,
+      provider,
+    );
+    const display = resolveImportedSessionDisplay(existing, parsed);
+    const existingDream = existing ? existingDreamBySessionId.get(existing.id) : undefined;
+    const targetDreamId = existingDream?.id ?? existing?.dreamId ?? temporary.id;
+    const targetDreamName = existingDream?.name ?? existing?.dreamName ?? temporary.name;
+    const record: SessionRecord = {
+      id: existing?.id ?? randomUUID(),
+      title: display.title,
+      preview: existing?.preview || display.preview,
+      timeLabel: existing?.timeLabel || display.timeLabel,
+      provider,
+      model: parsed.model
+        ? normalizeSessionModel(parsed.model, provider)
+        : existing?.model ?? getDefaultModelForProvider(provider),
+      workspace,
+      projectId: project.id,
+      projectName: project.name,
+      dreamId: targetDreamId,
+      dreamName: targetDreamName,
+      claudeSessionId: provider === 'claude' ? parsed.nativeSessionId : existing?.claudeSessionId,
+      codexThreadId: provider === 'codex' ? parsed.nativeSessionId : existing?.codexThreadId,
+      nativeHistoryRevision: existing?.nativeHistoryRevision,
+      updatedAt: display.updatedAt,
+      sessionKind: existing?.sessionKind ?? 'standard',
+      hidden: existing?.hidden ?? false,
+      instructionPrompt: existing?.instructionPrompt,
+      group: existing?.group,
+      groups: existing?.groups ?? [],
+      contextReferences: normalizeContextReferences(existing?.contextReferences),
+      tokenUsage: (parsed.tokenUsage?.used ?? 0) > 0
+        ? parsed.tokenUsage!
+        : existing?.tokenUsage ?? {
+        contextWindow: 0,
+        used: 0,
+        input: 0,
+        output: 0,
+        cached: 0,
+        windowSource: 'unknown',
+      },
+      branchSnapshot: existing?.branchSnapshot ?? makeEmptyBranchSnapshot(project.rootPath),
+      messages: existing?.messages ?? [],
+      messagesLoaded: existing?.messagesLoaded ?? false,
+    };
+    const previousNativeId = existing?.[sessionIdKey];
+    if (
+      !existing ||
+      previousNativeId !== parsed.nativeSessionId ||
+      existing.nativeHistoryRevision !== parsed.sourceRevision
+    ) {
+      nativeSessionsNeedingHydration.add(record.id);
+      if (existing?.group?.kind === 'member') {
+        repairedGroupRoomSessionIds.delete(existing.group.roomSessionId);
+      }
+    }
+    nativeSessionSources.set(record.id, {
+      filePath: parsed.filePath,
+      provider,
+      sourceRevision: parsed.sourceRevision,
+    });
+    if (existing) {
+      Object.assign(existing, record);
+      if (existing.dreamId === temporary.id) {
+        importedSessions.push(existing);
+      }
+    } else {
+      importedSessions.push(record);
+    }
+  }
+
+  temporary.sessions = pruneTemporaryImportedDuplicates(
+    provider === 'claude'
+      ? mergeNativeImportedSessions(existingSessions, importedSessions, seenNativeIds)
+      : mergeImportedCodexSessions(existingSessions, importedSessions, seenNativeIds),
+  );
+};
+
+const loadNativeClaudeCatalogEntries = async (project: ProjectRecord) => {
+  const entries: NativeSessionCatalogEntry[] = [];
+  for (const nativeDir of await getExistingNativeClaudeProjectTreeDirPaths(project.rootPath)) {
+    let files: string[] = [];
+    try {
+      files = (await readdir(nativeDir))
+        .filter((file) => file.endsWith('.jsonl'))
+        .map((file) => path.join(nativeDir, file));
+    } catch {
+      continue;
+    }
+    for (const file of files) {
+      try {
+        const parsed = await readNativeCatalogEntryCached(file, 'claude');
+        if (parsed) {
+          entries.push(parsed);
+        }
+      } catch {
+        // Preserve the persisted catalog when one native history is unreadable.
+      }
+    }
+  }
+  return entries;
+};
+
+const loadNativeCodexCatalogEntries = async () => {
+  const files = [
+    ...(await listJsonlFilesRecursively(codexSessionsRoot())),
+    ...(await listJsonlFilesRecursively(codexArchivedSessionsRoot())),
+  ];
+  const threadNameIndex = await readCodexThreadNameIndex();
+  let indexRevision = '';
+  try {
+    const indexStat = await stat(codexSessionIndexPath());
+    indexRevision = `${indexStat.mtimeMs}:${indexStat.size}`;
+  } catch {
+    // Missing index means native thread titles fall back to prompt-derived titles.
+  }
+  const entries: NativeSessionCatalogEntry[] = [];
+  for (const file of files) {
+    try {
+      const parsed = await readNativeCatalogEntryCached(
+        file,
+        'codex',
+        threadNameIndex,
+        indexRevision,
+      );
+      if (parsed) {
+        entries.push(parsed);
+      }
+    } catch {
+      // Continue catalog discovery when one native history is unreadable.
+    }
+  }
+  return entries;
+};
+
+const importNativeSessionCatalogIntoState = async (state: AppState) => {
+  const codexEntries = await loadNativeCodexCatalogEntries();
+  for (const project of state.projects) {
+    const claudeEntries = await loadNativeClaudeCatalogEntries(project);
+    applyNativeCatalogEntries(project, claudeEntries, state.deletedImports);
+    applyNativeCatalogEntries(project, codexEntries, state.deletedImports);
+  }
+  // Catalog refresh can run while other sessions are live. Normalize metadata
+  // and topology, but never apply crash-recovery status rewrites to active
+  // in-memory messages.
+  state.projects = normalizeProjectsForCache(normalizeProjects(state.projects));
+};
+
+const hydrateProjectCatalogForOpen = async (
+  project: ProjectRecord,
+  deletedImports: AppState['deletedImports'],
+) => {
+  const [claudeEntries, codexEntries] = await Promise.all([
+    loadNativeClaudeCatalogEntries(project),
+    loadNativeCodexCatalogEntries(),
+  ]);
+  applyNativeCatalogEntries(project, claudeEntries, deletedImports);
+  applyNativeCatalogEntries(project, codexEntries, deletedImports);
+};
+
 const importNativeClaudeSessions = async (
   project: ProjectRecord,
   deletedImports: AppState['deletedImports'],
@@ -3081,7 +3649,10 @@ export const recoverSessionFromNativeHistory = async (sessionId: string) => {
   }
 
   Object.assign(target, mergeNativeSessionIntoExisting(target, parsed));
-  await saveState(state);
+  await saveState(state, {
+    replaceSessionIds: [sessionId],
+    immediateIndex: true,
+  });
   return target;
 };
 
@@ -3221,8 +3792,7 @@ const cacheState = (state: AppState) => {
     deletedImports: normalizeDeletedImports(state.deletedImports),
   };
 };
-const cloneVisibleProjects = (projects: ProjectRecord[]) => cloneProjects(filterVisibleProjects(projects));
-const summarizeProjectsForBootstrap = (projects: ProjectRecord[]) =>
+const buildProjectSummaries = (projects: ProjectRecord[]) =>
   filterVisibleProjects(projects).map((project) => ({
     ...project,
     dreams: project.dreams.map((dream) => ({
@@ -3234,6 +3804,8 @@ const summarizeProjectsForBootstrap = (projects: ProjectRecord[]) =>
       })),
     })),
   })) as ProjectRecord[];
+const cloneVisibleProjects = (projects: ProjectRecord[]) => cloneProjects(buildProjectSummaries(projects));
+const summarizeProjectsForBootstrap = (projects: ProjectRecord[]) => cloneVisibleProjects(projects);
 
 const findSessionInProjects = (projects: ProjectRecord[], sessionId: string): SessionRecord | null => {
   for (const project of projects) {
@@ -3248,13 +3820,61 @@ const findSessionInProjects = (projects: ProjectRecord[], sessionId: string): Se
   return null;
 };
 
+const getAllSessionRecords = (projects: ProjectRecord[]) =>
+  projects.flatMap((project) =>
+    project.dreams.flatMap((dream) => dream.sessions as SessionRecord[]),
+  );
+
+const fingerprintConversationMessage = (message: ConversationMessage) =>
+  createHash('sha256').update(JSON.stringify(message)).digest('hex');
+
+const fingerprintSessionForPersistence = (session: SessionRecord) => {
+  const hash = createHash('sha256');
+  hash.update(session.id);
+  hash.update('\0');
+  hash.update(session.title);
+  hash.update('\0');
+  hash.update(session.preview);
+  hash.update('\0');
+  hash.update(String(session.updatedAt ?? 0));
+  hash.update('\0');
+  hash.update(session.claudeSessionId ?? '');
+  hash.update('\0');
+  hash.update(session.codexThreadId ?? '');
+  for (const message of session.messages ?? []) {
+    hash.update('\0');
+    // Hash one message at a time so trace metadata/attachments are covered
+    // without constructing a serialized copy of the complete store.
+    hash.update(JSON.stringify(message));
+  }
+  return hash.digest('hex');
+};
+
+const captureSessionPersistenceFingerprints = (projects: ProjectRecord[]) =>
+  new Map(
+    getAllSessionRecords(projects).map((session) => [
+      session.id,
+      fingerprintSessionForPersistence(session),
+    ]),
+  );
+
+const findChangedSessionIds = (
+  projects: ProjectRecord[],
+  before: Map<string, string>,
+) =>
+  getAllSessionRecords(projects)
+    .filter((session) => before.get(session.id) !== fingerprintSessionForPersistence(session))
+    .map((session) => session.id);
+
 const ensureStateShape = (value: unknown): AppState => {
   if (!value || typeof value !== 'object' || !Array.isArray((value as { projects?: unknown }).projects)) {
     return { projects: buildInitialProjects(), deletedImports: createEmptyDeletedImports() };
   }
 
   const typed = value as { projects: ProjectRecord[]; deletedImports?: unknown };
-  const projects = cloneProjects(typed.projects);
+  // JSON.parse already produced an unshared object graph. Re-cloning the full
+  // legacy store here doubles migration-time memory for no isolation benefit.
+  const projects = typed.projects;
   projects.forEach((project) => ensureTemporaryStreamwork(project));
 
   return {
@@ -3301,7 +3921,17 @@ const listStateRecoveryFiles = async () => {
         }),
     );
 
-    return candidates
+    let activeCandidate: { filePath: string; mtimeMs: number } | null = null;
+    try {
+      activeCandidate = {
+        filePath: storePath(),
+        mtimeMs: (await stat(storePath())).mtimeMs,
+      };
+    } catch {
+      // The active file may be missing; recovery files are still usable.
+    }
+
+    return [...candidates, activeCandidate]
       .filter((candidate): candidate is { filePath: string; mtimeMs: number } => Boolean(candidate))
       .sort((left, right) => right.mtimeMs - left.mtimeMs)
       .map((candidate) => candidate.filePath);
@@ -3311,44 +3941,106 @@ const listStateRecoveryFiles = async () => {
 };
 
 const readStateFromDisk = async () => {
-  try {
-    return await readStateFile(storePath());
-  } catch {
-    for (const filePath of await listStateRecoveryFiles()) {
-      try {
-        return await readStateFile(filePath);
-      } catch {
-        // Try the next recovery file.
-      }
+  for (const filePath of await listStateRecoveryFiles()) {
+    try {
+      return await readStateFile(filePath);
+    } catch {
+      // Try the next newest valid active/recovery file.
     }
-
-    return {
-      state: null,
-      mtimeMs: null,
-    };
   }
+
+  return {
+    state: null,
+    mtimeMs: null,
+  };
 };
 
 const hydrateLoadedState = async (state: AppState) => {
   await importNativeSessionsIntoState(state);
 };
 
+const getSessionStoreV2Options = () => ({
+  // V2 writes and compacts one session at a time, so the legacy global-save
+  // message cap is no longer needed. Preserve every migrated message.
+  maxMessages: 0,
+  compactionEventCount: 64,
+  compactionBytes: 1024 * 1024,
+  indexDebounceMs: SAVE_DEBOUNCE_MS,
+});
+
 const loadStateUncached = async () => {
+  const v2Paths = getSessionStoreV2Paths(getRuntimePaths().userDataPath);
   try {
-    const loaded = await readStateFromDisk();
-    if (loaded.state) {
-      cachedState = loaded.state;
-      cachedStateMtimeMs = loaded.mtimeMs;
-    } else {
-      cachedState = { projects: buildInitialProjects(), deletedImports: createEmptyDeletedImports() };
-      cachedStateMtimeMs = null;
+    try {
+      const loadedV2 = await openSessionStoreV2(
+        getRuntimePaths().userDataPath,
+        getSessionStoreV2Options(),
+      );
+      if (loadedV2) {
+        cachedState = loadedV2.state;
+        v2Store = loadedV2.store;
+        cachedStateMtimeMs = null;
+      }
+    } catch (error) {
+      if (error instanceof SessionStoreV2LockError || existsSync(v2Paths.manifestPath)) {
+        throw new Error(
+          `Activated V2 session store could not be loaded: ${describeError(error)}`,
+          { cause: error },
+        );
+      }
+      console.warn(`[SESSION_STORE] Failed to load V2 store; falling back to V1: ${describeError(error)}`);
+      v2Store = null;
     }
-  } catch {
+
+    if (!cachedState) {
+      const loaded = await readStateFromDisk();
+      if (loaded.state) {
+        cachedState = loaded.state;
+        cachedStateMtimeMs = loaded.mtimeMs;
+      } else {
+        cachedState = { projects: buildInitialProjects(), deletedImports: createEmptyDeletedImports() };
+        cachedStateMtimeMs = null;
+      }
+    }
+  } catch (error) {
+    if (error instanceof SessionStoreV2LockError || existsSync(v2Paths.manifestPath)) {
+      throw error;
+    }
     cachedState = { projects: buildInitialProjects(), deletedImports: createEmptyDeletedImports() };
     cachedStateMtimeMs = null;
   }
 
+  let migrationError: unknown = null;
+  if (!v2Store) {
+    try {
+      // Activate an exact V2 copy before native-history normalization. This
+      // keeps one-time migration memory bounded and leaves V1 untouched.
+      v2Store = await migrateSessionStoreV2(
+        getRuntimePaths().userDataPath,
+        cachedState,
+        getSessionStoreV2Options(),
+      );
+      const catalog = await openSessionStoreV2(
+        getRuntimePaths().userDataPath,
+        getSessionStoreV2Options(),
+      );
+      if (!catalog) {
+        throw new Error('Activated V2 session store could not be reopened.');
+      }
+      cachedState = catalog.state;
+      v2Store = catalog.store;
+      cachedStateMtimeMs = null;
+    } catch (error) {
+      migrationError = error;
+    }
+  }
+
+  if (v2Store) {
+    return cachedState;
+  }
+
   await hydrateLoadedState(cachedState);
+  console.warn(`[SESSION_STORE] Failed to migrate V1 store to V2: ${describeError(migrationError)}`);
   await saveState(cachedState);
 
   return cachedState;
@@ -3373,15 +4065,28 @@ const getMutableState = async () => cachedState ?? await loadState();
 
 let nativeImportRefreshPromise: Promise<void> | null = null;
 
-const refreshNativeImports = async (state: AppState) => {
+const refreshNativeImports = async (state: AppState, force = false) => {
+  if (v2Store && !force && Date.now() - nativeCatalogLastRefreshAt < 1_000) {
+    return;
+  }
   if (nativeImportRefreshPromise) {
     await nativeImportRefreshPromise;
     return;
   }
 
   nativeImportRefreshPromise = (async () => {
+    if (v2Store) {
+      await importNativeSessionCatalogIntoState(state);
+      await saveState(state, { immediateIndex: true });
+      nativeCatalogLastRefreshAt = Date.now();
+      return;
+    }
+    const before = captureSessionPersistenceFingerprints(state.projects);
     await importNativeSessionsIntoState(state);
-    await saveState(state);
+    await saveState(state, {
+      replaceSessionIds: findChangedSessionIds(state.projects, before),
+      immediateIndex: true,
+    });
   })().finally(() => {
     nativeImportRefreshPromise = null;
   });
@@ -3437,7 +4142,7 @@ export const buildPersistableState = (state: AppState): AppState => {
   return trimmedAny ? { ...state, projects } : state;
 };
 
-const writeToDisk = async () => {
+const writeLegacyToDisk = async () => {
   if (!cachedState) {
     return;
   }
@@ -3482,25 +4187,71 @@ const writeToDisk = async () => {
   }
 };
 
-export const saveState = async (state: AppState) => {
+type SaveStateOptions = {
+  sessionMutations?: SessionStoreV2SessionMutation[];
+  replaceSessionIds?: string[];
+  replaceAllSessions?: boolean;
+  deletedSessionIds?: string[];
+  immediateIndex?: boolean;
+};
+
+const messagesForV2Persistence = (messages: ConversationMessage[]) => messages;
+
+const buildV2SessionMutations = (
+  state: AppState,
+  options: SaveStateOptions,
+): SessionStoreV2SessionMutation[] => {
+  const mutations = [...(options.sessionMutations ?? [])];
+  const replaceIds = new Set(options.replaceSessionIds ?? []);
+  if (options.replaceAllSessions) {
+    getAllSessionRecords(state.projects).forEach((session) => replaceIds.add(session.id));
+  }
+  replaceIds.forEach((sessionId) => {
+    const session = findSessionInProjects(state.projects, sessionId);
+    if (!session) {
+      return;
+    }
+    mutations.push({
+      type: 'replace-messages',
+      sessionId,
+      messages: messagesForV2Persistence(session.messages ?? []),
+    });
+  });
+  return mutations;
+};
+
+export const saveState = async (state: AppState, options: SaveStateOptions = {}) => {
   cacheState(state);
+
+  if (v2Store && cachedState) {
+    await v2Store.persist(cachedState, {
+      sessionMutations: buildV2SessionMutations(cachedState, options),
+      deletedSessionIds: options.deletedSessionIds,
+      immediateIndex: options.immediateIndex ?? true,
+    });
+    return;
+  }
 
   if (pendingSaveTimer) {
     clearTimeout(pendingSaveTimer);
   }
   pendingSaveTimer = setTimeout(() => {
     pendingSaveTimer = null;
-    void writeToDisk();
+    void writeLegacyToDisk();
   }, SAVE_DEBOUNCE_MS);
 };
 
 /** Flush any pending debounced write immediately. Call before app exit. */
 export const flushPendingSave = async () => {
+  if (v2Store && cachedState) {
+    await v2Store.flush(cachedState);
+    return;
+  }
   if (pendingSaveTimer) {
     clearTimeout(pendingSaveTimer);
     pendingSaveTimer = null;
   }
-  await writeToDisk();
+  await writeLegacyToDisk();
 };
 
 export const getProjects = async () => {
@@ -3511,21 +4262,284 @@ export const getProjects = async () => {
 
 export const getProjectsForBootstrap = async () => {
   const state = await loadState();
-  await refreshNativeImports(state);
+  await refreshNativeImports(state, true);
   return summarizeProjectsForBootstrap(state.projects);
 };
 
-export const getSessionRecordForBootstrap = async (sessionId: string) => {
-  if (cachedState) {
-    const session = findSessionInProjects(cachedState.projects, sessionId);
-    return session ? cloneSessionRecord(session) : null;
+const hydrateNativeSessionMessages = async (session: SessionRecord) => {
+  if (!v2Store || !cachedState) {
+    return;
+  }
+  const source = nativeSessionSources.get(session.id);
+  if (!source) {
+    return;
+  }
+  const existing = nativeSessionHydrationPromises.get(session.id);
+  if (existing) {
+    await existing;
+    return;
   }
 
-  const loaded = await readStateFromDisk();
-  const session = loaded.state
-    ? findSessionInProjects(loaded.state.projects, sessionId)
-    : findSessionInProjects(buildInitialProjects(), sessionId);
-  return session ? cloneSessionRecord(session) : null;
+  const hydration = (async () => {
+    const parsed = source.provider === 'claude'
+      ? await parseNativeClaudeSessionFile(source.filePath)
+      : await parseCodexSessionFile(source.filePath, await readCodexThreadNameIndex());
+    if (!parsed) {
+      return;
+    }
+    session.title = parsed.title || session.title;
+    session.preview = parsed.preview || session.preview;
+    session.timeLabel = parsed.timeLabel || session.timeLabel;
+    session.updatedAt = parsed.updatedAt ?? session.updatedAt;
+    session.model = normalizeSessionModel(parsed.model, source.provider);
+    const parsedTokenUsage = (parsed as { tokenUsage?: TokenUsage }).tokenUsage;
+    if (parsedTokenUsage) {
+      session.tokenUsage = parsedTokenUsage;
+    }
+    session.nativeHistoryRevision = source.sourceRevision;
+    await v2Store!.persist(cachedState!, {
+      sessionMutations: [{
+        type: 'replace-messages',
+        sessionId: session.id,
+        messages: parsed.messages,
+      }],
+      immediateIndex: true,
+    });
+    nativeSessionsNeedingHydration.delete(session.id);
+  })().finally(() => {
+    nativeSessionHydrationPromises.delete(session.id);
+  });
+  nativeSessionHydrationPromises.set(session.id, hydration);
+  await hydration;
+};
+
+const readAllV2SessionMessages = async (sessionId: string) => {
+  if (!v2Store) {
+    return [] as ConversationMessage[];
+  }
+  const pages: ConversationMessage[][] = [];
+  let page = await v2Store.readMessagePage(sessionId);
+  pages.push(page.messages);
+  while (page.hasMoreBefore && page.nextBefore) {
+    page = await v2Store.readMessagePage(sessionId, page.nextBefore);
+    pages.push(page.messages);
+  }
+  return pages.reverse().flat();
+};
+
+const recoverLoadedMessagesAfterCrash = async (
+  session: SessionRecord,
+  messages: ConversationMessage[],
+) => {
+  if (!v2Store || !cachedState) {
+    return messages;
+  }
+  const hasLiveBuffer = (session.messages ?? []).some((message) =>
+    message.status === 'queued' ||
+    message.status === 'streaming' ||
+    message.status === 'running' ||
+    message.status === 'background'
+  );
+  if (hasLiveBuffer) {
+    return messages;
+  }
+  const recovered = session.sessionKind === 'group'
+    ? recoverStaleGroupRoomMessages(messages)
+    : recoverStaleSessionMessagesForProvider(messages, normalizeSessionProvider(session.provider));
+  const changed = recovered.filter(
+    (message, index) =>
+      fingerprintConversationMessage(message) !==
+      fingerprintConversationMessage(messages[index] ?? message),
+  );
+  if (changed.length > 0) {
+    await v2Store.persist(cachedState, {
+      sessionMutations: changed.map((message) => ({
+        type: 'upsert-message' as const,
+        sessionId: session.id,
+        message,
+      })),
+      immediateIndex: false,
+    });
+  }
+  return recovered;
+};
+
+const repairGroupRoomFromNativeHistory = async (roomSession: SessionRecord) => {
+  if (!v2Store || !cachedState || roomSession.group?.kind !== 'room') {
+    return;
+  }
+  if (repairedGroupRoomSessionIds.has(roomSession.id)) {
+    return;
+  }
+  const backingSessions = roomSession.group.participants
+    .map((participant) => findSessionInProjects(cachedState!.projects, participant.backingSessionId))
+    .filter((session): session is SessionRecord => Boolean(session));
+  const participantBackings = new Map<GroupParticipantId, SessionRecord>();
+  for (const participant of roomSession.group.participants) {
+    const backing = backingSessions.find((session) => session.id === participant.backingSessionId);
+    if (!backing) {
+      continue;
+    }
+    if (nativeSessionsNeedingHydration.has(backing.id)) {
+      await hydrateNativeSessionMessages(backing);
+    }
+    participantBackings.set(participant.id, {
+      ...cloneSessionRecord(backing),
+      messages: await readAllV2SessionMessages(backing.id),
+    });
+  }
+
+  const recoveredRoom: SessionRecord = {
+    ...cloneSessionRecord(roomSession),
+    group: roomSession.group.kind === 'room'
+      ? {
+          ...roomSession.group,
+          participants: roomSession.group.participants.map((participant) => ({ ...participant })),
+        }
+      : roomSession.group,
+    messages: await readAllV2SessionMessages(roomSession.id),
+  };
+  const reconstructedMessages = reconstructRecoveredRoomMessages(
+    recoveredRoom,
+    participantBackings,
+  );
+  if (!shouldApplyRecoveredRoomMessages(recoveredRoom.messages, reconstructedMessages)) {
+    repairedGroupRoomSessionIds.add(roomSession.id);
+    return;
+  }
+  applyRecoveredRoomMessages(
+    recoveredRoom,
+    reconstructedMessages,
+    getRecoveredParticipantLastAppliedRoomSeqs(recoveredRoom, participantBackings),
+  );
+  await v2Store.persist(cachedState, {
+    sessionMutations: [{
+      type: 'replace-messages',
+      sessionId: roomSession.id,
+      messages: recoveredRoom.messages,
+    }],
+    immediateIndex: true,
+  });
+  roomSession.preview = recoveredRoom.preview;
+  roomSession.timeLabel = recoveredRoom.timeLabel;
+  roomSession.group = recoveredRoom.group;
+  await saveState(cachedState, { immediateIndex: true });
+  repairedGroupRoomSessionIds.add(roomSession.id);
+};
+
+export const materializeSessionHistoryForRuntime = async (sessionId: string) => {
+  const state = await loadState();
+  const session = findSessionInProjects(state.projects, sessionId);
+  if (
+    !session ||
+    !v2Store ||
+    (session.messagesLoaded === true && !nativeSessionsNeedingHydration.has(sessionId))
+  ) {
+    return session;
+  }
+  await repairGroupRoomFromNativeHistory(session);
+  let newest = await v2Store.readMessagePage(sessionId);
+  if (
+    nativeSessionSources.has(sessionId) &&
+    (newest.messages.length === 0 || nativeSessionsNeedingHydration.has(sessionId))
+  ) {
+    await hydrateNativeSessionMessages(session);
+    newest = await v2Store.readMessagePage(sessionId);
+  }
+  const messages = newest.hasMoreBefore
+    ? await readAllV2SessionMessages(sessionId)
+    : newest.messages;
+  session.messages = await recoverLoadedMessagesAfterCrash(session, messages);
+  session.messagesLoaded = true;
+  return session;
+};
+
+export const getSessionRecordForBootstrap = async (sessionId: string) => {
+  const state = await loadState();
+  await refreshNativeImports(state);
+  const session = findSessionInProjects(state.projects, sessionId);
+  if (!session) {
+    return null;
+  }
+  if (!v2Store) {
+    return cloneSessionRecord(session);
+  }
+
+  const hasChangedNativeGroupBacking =
+    session.sessionKind === 'group' &&
+    session.group?.kind === 'room' &&
+    session.group.participants.some((participant) =>
+      nativeSessionsNeedingHydration.has(participant.backingSessionId),
+    );
+  if (hasChangedNativeGroupBacking) {
+    await repairGroupRoomFromNativeHistory(session);
+  }
+  let page = await v2Store.readMessagePage(sessionId);
+  if (
+    nativeSessionSources.has(sessionId) &&
+    (page.messages.length === 0 || nativeSessionsNeedingHydration.has(sessionId))
+  ) {
+    await hydrateNativeSessionMessages(session);
+    page = await v2Store.readMessagePage(sessionId);
+  }
+  page = {
+    ...page,
+    messages: await recoverLoadedMessagesAfterCrash(session, page.messages),
+  };
+  return {
+    ...cloneSessionRecord(session),
+    messages: page.messages,
+    messagesLoaded: true,
+    historyPage: {
+      nextBefore: page.nextBefore,
+      hasMoreBefore: page.hasMoreBefore,
+      sessionRevision: page.sessionRevision,
+    },
+  };
+};
+
+export const getSessionMessagePage = async (
+  sessionId: string,
+  before?: string,
+): Promise<SessionMessagePage> => {
+  const state = await loadState();
+  if (!findSessionInProjects(state.projects, sessionId)) {
+    throw new Error('Session not found.');
+  }
+  if (!v2Store) {
+    const session = findSessionInProjects(state.projects, sessionId) as SessionRecord;
+    return {
+      sessionId,
+      pageId: '',
+      messages: cloneSessionRecord(session).messages,
+      hasMoreBefore: false,
+      sessionRevision: 0,
+    };
+  }
+  return v2Store.readMessagePage(sessionId, before);
+};
+
+export const releaseMaterializedSessionHistory = async (sessionId: string) => {
+  if (!v2Store) {
+    return false;
+  }
+  const state = await loadState();
+  const session = findSessionInProjects(state.projects, sessionId);
+  if (!session) {
+    return false;
+  }
+  const hasInFlightMessages = (session.messages ?? []).some((message) =>
+    message.status === 'queued' ||
+    message.status === 'streaming' ||
+    message.status === 'running' ||
+    message.status === 'background'
+  );
+  if (hasInFlightMessages) {
+    return false;
+  }
+  session.messages = [];
+  session.messagesLoaded = false;
+  return true;
 };
 
 const forEachSession = (projects: ProjectRecord[], visitor: (session: SessionRecord, dreamName: string, projectName: string) => void) => {
@@ -3602,7 +4616,10 @@ export const ensureSessionRecord = async (session: SessionSummary): Promise<Sess
   };
 
   dream.sessions.unshift(record);
-  await saveState(state);
+  await saveState(state, {
+    replaceSessionIds: [record.id],
+    immediateIndex: true,
+  });
   return record;
 };
 
@@ -3612,22 +4629,56 @@ export const updateSessionRecord = async (
 ) => {
   const state = await loadState();
   let updatedSession: SessionRecord | null = null;
+  let sessionMutations: SessionStoreV2SessionMutation[] = [];
 
   forEachSession(state.projects, (session) => {
     if (session.id !== sessionId) {
       return;
     }
 
+    const beforeIds = (session.messages ?? []).map((message) => message.id);
+    const beforeDigests = new Map(
+      (session.messages ?? []).map((message) => [message.id, fingerprintConversationMessage(message)]),
+    );
     updater(session);
     session.updatedAt = Date.now();
-    updatedSession = JSON.parse(JSON.stringify(session)) as SessionRecord;
+    const afterMessages = session.messages ?? [];
+    const preservesExistingOrder = beforeIds.every(
+      (id, index) => afterMessages[index]?.id === id,
+    );
+    if (afterMessages.length >= beforeIds.length && preservesExistingOrder) {
+      const changed = afterMessages
+        .slice(0, beforeIds.length)
+        .filter((message) => beforeDigests.get(message.id) !== fingerprintConversationMessage(message))
+        .map((message): SessionStoreV2SessionMutation => ({
+          type: 'upsert-message',
+          sessionId,
+          message,
+        }));
+      const appended = afterMessages.slice(beforeIds.length);
+      sessionMutations = [
+        ...changed,
+        ...(appended.length > 0
+          ? [{ type: 'append-messages' as const, sessionId, messages: appended }]
+          : []),
+      ];
+    } else {
+      sessionMutations = [{ type: 'replace-messages', sessionId, messages: afterMessages }];
+    }
+    updatedSession = {
+      ...session,
+      messages: [...(session.messages ?? [])],
+    };
   });
 
   if (!updatedSession) {
     throw new Error('Session not found.');
   }
 
-  await saveState(state);
+  await saveState(state, {
+    sessionMutations,
+    immediateIndex: false,
+  });
 
   return {
     projects: cloneVisibleProjects(state.projects),
@@ -3642,10 +4693,12 @@ export const appendMessagesToSession = async (
   timeLabel: string,
 ) => {
   const state = await loadState();
+  let persistedMessages: ConversationMessage[] = [];
 
   forEachSession(state.projects, (session) => {
     if (session.id === sessionId) {
       const nextMessages = assignMessagesForSession(session, messages);
+      persistedMessages = nextMessages;
       session.messages = [...(session.messages ?? []), ...nextMessages];
       session.preview = preview;
       session.timeLabel = timeLabel;
@@ -3653,7 +4706,12 @@ export const appendMessagesToSession = async (
     }
   });
 
-  await saveState(state);
+  await saveState(state, {
+    sessionMutations: persistedMessages.length > 0
+      ? [{ type: 'append-messages', sessionId, messages: persistedMessages }]
+      : [],
+    immediateIndex: false,
+  });
   return cloneVisibleProjects(state.projects);
 };
 
@@ -3662,16 +4720,23 @@ export const appendTraceMessagesToSession = async (
   messages: ConversationMessage[],
 ) => {
   const state = await loadState();
+  let persistedMessages: ConversationMessage[] = [];
 
   forEachSession(state.projects, (session) => {
     if (session.id === sessionId) {
       const nextMessages = assignMessagesForSession(session, messages);
+      persistedMessages = nextMessages;
       session.messages = [...(session.messages ?? []), ...nextMessages];
       session.updatedAt = Date.now();
     }
   });
 
-  await saveState(state);
+  await saveState(state, {
+    sessionMutations: persistedMessages.length > 0
+      ? [{ type: 'append-messages', sessionId, messages: persistedMessages }]
+      : [],
+    immediateIndex: false,
+  });
 };
 
 export const upsertSessionMessage = async (
@@ -3679,6 +4744,7 @@ export const upsertSessionMessage = async (
   message: ConversationMessage,
 ) => {
   const state = await loadState();
+  let persistedMessage: ConversationMessage | null = null;
 
   forEachSession(state.projects, (session) => {
     if (session.id !== sessionId) {
@@ -3688,14 +4754,21 @@ export const upsertSessionMessage = async (
     const index = session.messages?.findIndex((item) => item.id === message.id) ?? -1;
     if (index >= 0) {
       session.messages[index] = message;
+      persistedMessage = message;
     } else {
       const nextMessage = assignGroupMessageSeq(session, message);
       session.messages = [...(session.messages ?? []), nextMessage];
+      persistedMessage = nextMessage;
     }
     session.updatedAt = Date.now();
   });
 
-  await saveState(state);
+  await saveState(state, {
+    sessionMutations: persistedMessage
+      ? [{ type: 'upsert-message', sessionId, message: persistedMessage }]
+      : [],
+    immediateIndex: false,
+  });
 };
 
 export const upsertSessionMessageInMemory = async (
@@ -3726,6 +4799,7 @@ export const updateAssistantMessage = async (
   updater: (message: ConversationMessage, session: SessionSummary) => void,
 ) => {
   const state = await loadState();
+  let persistedMessage: ConversationMessage | null = null;
 
   forEachSession(state.projects, (session) => {
     if (session.id !== sessionId) {
@@ -3736,10 +4810,16 @@ export const updateAssistantMessage = async (
     if (target) {
       updater(target, session);
       session.updatedAt = Date.now();
+      persistedMessage = target;
     }
   });
 
-  await saveState(state);
+  await saveState(state, {
+    sessionMutations: persistedMessage
+      ? [{ type: 'upsert-message', sessionId, message: persistedMessage }]
+      : [],
+    immediateIndex: false,
+  });
 };
 
 export const updateAssistantMessageInMemory = async (
@@ -4107,6 +5187,7 @@ const createGroupSessionInStreamwork = (
 };
 
 export const ensureGroupRoomBackingSessions = async (sessionId: string): Promise<SessionRecord> => {
+  await materializeSessionHistoryForRuntime(sessionId);
   const state = await loadState();
   let targetProject: ProjectRecord | undefined;
   let targetDream: DreamRecord | undefined;
@@ -4215,6 +5296,7 @@ export const ensureGroupRoomBackingSessions = async (sessionId: string): Promise
 };
 
 export const ensureGroupRoomSession = async (sessionId: string): Promise<SessionRecord> => {
+  await materializeSessionHistoryForRuntime(sessionId);
   const state = await loadState();
   let targetProject: ProjectRecord | undefined;
   let targetDream: DreamRecord | undefined;
@@ -4331,7 +5413,10 @@ export const ensureGroupRoomSession = async (sessionId: string): Promise<Session
 
   targetDream.sessions.splice(insertionIndex + 1, 0, primaryMemberSession, secondaryMemberSession);
   await Promise.allSettled(nativeRenameTasks);
-  await saveState(state);
+  await saveState(state, {
+    replaceSessionIds: [targetSession.id],
+    immediateIndex: true,
+  });
 
   return JSON.parse(JSON.stringify(targetSession)) as SessionRecord;
 };
@@ -4344,18 +5429,22 @@ export const createProject = async (name: string, rootPath: string): Promise<Pro
     existingProject.name = name;
     existingProject.isClosed = false;
     ensureTemporaryStreamwork(existingProject);
-    await hydrateProjectForOpen(
-      existingProject,
-      (project) => importNativeProjectSessions(project, state.deletedImports),
-      ensureProjectHasSession,
-    );
+    if (v2Store) {
+      await hydrateProjectCatalogForOpen(existingProject, state.deletedImports);
+    } else {
+      await hydrateProjectForOpen(
+        existingProject,
+        (project) => importNativeProjectSessions(project, state.deletedImports),
+        ensureProjectHasSession,
+      );
+    }
     const normalizedExistingProject = normalizeProjects([existingProject])[0] as ProjectRecord | undefined;
     if (!normalizedExistingProject) {
       throw new Error('Failed to normalize the reopened project.');
     }
     Object.assign(existingProject, normalizedExistingProject);
     const existingSession = ensureProjectHasSession(existingProject);
-    await saveState(state);
+    await saveState(state, { immediateIndex: true });
 
     return {
       projects: cloneVisibleProjects(state.projects),
@@ -4386,7 +5475,15 @@ export const createProject = async (name: string, rootPath: string): Promise<Pro
   };
 
   project.dreams.push(temporaryStreamwork, streamwork);
-  await hydrateProjectForOpen(project, (targetProject) => importNativeProjectSessions(targetProject, state.deletedImports), ensureProjectHasSession);
+  if (v2Store) {
+    await hydrateProjectCatalogForOpen(project, state.deletedImports);
+  } else {
+    await hydrateProjectForOpen(
+      project,
+      (targetProject) => importNativeProjectSessions(targetProject, state.deletedImports),
+      ensureProjectHasSession,
+    );
+  }
   const normalizedProject = normalizeProjects([project])[0] as ProjectRecord | undefined;
   if (!normalizedProject) {
     throw new Error('Failed to normalize the created project.');
@@ -4395,7 +5492,7 @@ export const createProject = async (name: string, rootPath: string): Promise<Pro
   const session = ensureProjectHasSession(project);
   state.projects.unshift(project);
 
-  await saveState(state);
+  await saveState(state, { immediateIndex: true });
 
   return {
     projects: cloneVisibleProjects(state.projects),
@@ -4646,7 +5743,10 @@ export const deleteStreamwork = async (streamworkId: string): Promise<DeleteEnti
   ]);
   const warnings = [...claudeCleanup.warnings, ...codexCleanup.warnings];
   logNativeCleanupWarnings(warnings);
-  await saveState(state);
+  await saveState(state, {
+    deletedSessionIds,
+    immediateIndex: true,
+  });
   return {
     projects: cloneVisibleProjects(state.projects),
     deletedSessionIds,
@@ -4691,7 +5791,10 @@ export const deleteSession = async (sessionId: string): Promise<DeleteEntityResu
   ]);
   const warnings = [...claudeCleanup.warnings, ...codexCleanup.warnings];
   logNativeCleanupWarnings(warnings);
-  await saveState(state);
+  await saveState(state, {
+    deletedSessionIds: [...deletedSessionIds],
+    immediateIndex: true,
+  });
   return {
     projects: cloneVisibleProjects(state.projects),
     deletedSessionIds: [...deletedSessionIds],

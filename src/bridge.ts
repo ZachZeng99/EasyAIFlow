@@ -14,6 +14,7 @@ import type {
   SessionContextUpdateResult,
   SessionCreateResult,
   SessionKind,
+  SessionMessagePage,
   SessionProvider,
   SessionRecord,
   SessionSummary,
@@ -69,6 +70,10 @@ export type EasyAIFlowBridge = {
     interactions?: Record<string, SessionInteractionState>;
   }>;
   getSessionRecord: (payload: { sessionId: string }) => Promise<SessionRecord>;
+  getSessionMessagePage: (payload: {
+    sessionId: string;
+    before?: string;
+  }) => Promise<SessionMessagePage>;
   grantPathPermission: (payload: { projectRoot: string; targetPath: string }) => Promise<void>;
   respondToPermissionRequest: (payload: {
     requestId: string;
@@ -221,6 +226,7 @@ const webBridge: EasyAIFlowBridge = {
   getPathForFile: () => '',
   getProjects: () => callWebRpc('getProjects'),
   getSessionRecord: (payload) => callWebRpc('getSessionRecord', payload),
+  getSessionMessagePage: (payload) => callWebRpc('getSessionMessagePage', payload),
   grantPathPermission: (payload) => callWebRpc('grantPathPermission', payload),
   respondToPermissionRequest: (payload) => callWebRpc('respondToPermissionRequest', payload),
   respondToPlanModeRequest: (payload) => callWebRpc('respondToPlanModeRequest', payload),

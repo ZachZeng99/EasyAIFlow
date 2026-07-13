@@ -249,7 +249,7 @@ await run('group room recovery keeps per-participant lastAppliedRoomSeq at the l
 
   try {
     const sessionStore = await importFreshSessionStore();
-    const room = await sessionStore.findSession('room-1');
+    const room = await sessionStore.materializeSessionHistoryForRuntime('room-1');
     if (!room || room.group?.kind !== 'room') {
       throw new Error('Recovered room was not loaded.');
     }
