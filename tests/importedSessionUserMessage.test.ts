@@ -78,9 +78,13 @@ await run('createProject imports native user text blocks and skips synthetic no-
     'utf8',
   );
 
-  const { createProject } = await import('../electron/sessionStore.ts');
+  const { createProject, getSessionRecordForBootstrap } = await import('../electron/sessionStore.ts');
   const result = await createProject('Imported User Project', rootPath);
-  const messages = result.session.messages.map((message) => ({
+  assert.equal(result.session.messages.length, 0);
+  assert.equal(result.session.messagesLoaded, false);
+
+  const opened = await getSessionRecordForBootstrap(result.session.id);
+  const messages = opened.messages.map((message) => ({
     role: message.role,
     content: message.content,
   }));
@@ -172,9 +176,13 @@ await run('createProject ignores background task cleanup follow-ups after queue 
     'utf8',
   );
 
-  const { createProject } = await import('../electron/sessionStore.ts');
+  const { createProject, getSessionRecordForBootstrap } = await import('../electron/sessionStore.ts');
   const result = await createProject('Imported Background Task Project', rootPath);
-  const messages = result.session.messages.map((message) => ({
+  assert.equal(result.session.messages.length, 0);
+  assert.equal(result.session.messagesLoaded, false);
+
+  const opened = await getSessionRecordForBootstrap(result.session.id);
+  const messages = opened.messages.map((message) => ({
     role: message.role,
     content: message.content,
   }));

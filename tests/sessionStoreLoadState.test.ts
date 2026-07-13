@@ -99,7 +99,7 @@ await run('loadState preserves persisted projects when native session import hit
   }
 });
 
-await run('bootstrap reads persisted projects and sessions without native import', async () => {
+await run('bootstrap preserves persisted sessions while refreshing native imports', async () => {
   const tempRoot = await mkdtemp(path.join(path.resolve('.tmp-tests'), 'session-store-bootstrap-'));
   const userDataPath = path.join(tempRoot, 'userData');
   const homePath = path.join(tempRoot, 'home');
@@ -225,10 +225,10 @@ await run('bootstrap reads persisted projects and sessions without native import
     );
 
     assert.equal(projects.length, 1);
-    assert.equal(bootstrapSessions.length, 1);
-    assert.equal(bootstrapSessions[0]?.id, 'session-1');
-    assert.equal(bootstrapSessions[0]?.messagesLoaded, false);
-    assert.deepEqual(bootstrapSessions[0]?.messages, []);
+    assert.equal(bootstrapSessions.length, 2);
+    const persistedSummary = bootstrapSessions.find((session) => session.id === 'session-1');
+    assert.equal(persistedSummary?.messagesLoaded, false);
+    assert.deepEqual(persistedSummary?.messages, []);
     assert.equal(session?.id, 'session-1');
     assert.equal(session?.messages[0]?.content, 'persisted reply');
   } finally {

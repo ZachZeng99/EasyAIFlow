@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { configureRuntimePaths } from '../backend/runtimePaths.ts';
+import { getSessionStoreV2Paths } from '../electron/sessionStoreV2.ts';
 import { toClaudeProjectDirName } from '../electron/workspacePaths.ts';
 
 const run = async (name: string, fn: () => Promise<void>) => {
@@ -131,6 +132,7 @@ await run('createProject imports Codex CLI sessions under the opened project tre
       (session: { codexThreadId?: string }) => session.codexThreadId === 'imported-thread',
     ) as
       | {
+          id: string;
           provider?: string;
           workspace?: string;
           dreamName?: string;
@@ -140,15 +142,18 @@ await run('createProject imports Codex CLI sessions under the opened project tre
           messages?: Array<{ role?: string; content?: string }>;
         }
       | undefined;
+    const fullSession = imported
+      ? await sessionStore.getSessionRecordForBootstrap(imported.id)
+      : null;
 
     assert.equal(imported?.provider, 'codex');
     assert.equal(imported?.workspace, childWorkspace);
     assert.equal(imported?.dreamName, 'Temporary');
     assert.equal(imported?.title, 'PBZ Codex imported thread');
-    assert.equal(imported?.preview, '已记录，后续继续处理。');
-    assert.equal(imported?.tokenUsage?.used, 20);
+    assert.equal(fullSession?.preview, '已记录，后续继续处理。');
+    assert.equal(fullSession?.tokenUsage?.used, 20);
     assert.deepEqual(
-      imported?.messages?.map((message) => ({
+      fullSession?.messages?.map((message) => ({
         role: message.role,
         content: message.content,
       })),
@@ -233,8 +238,12 @@ await run('getProjectsForBootstrap refreshes Codex CLI sessions added after stat
       })}\n`,
       'utf8',
     );
+    const codexSessionPath = path.join(
+      codexSessionsDir,
+      'rollout-2026-06-04T02-00-00-cached-thread.jsonl',
+    );
     await writeFile(
-      path.join(codexSessionsDir, 'rollout-2026-06-04T02-00-00-cached-thread.jsonl'),
+      codexSessionPath,
       [
         JSON.stringify({
           timestamp: '2026-06-04T02:00:00.000Z',
@@ -293,6 +302,37 @@ await run('getProjectsForBootstrap refreshes Codex CLI sessions added after stat
 
     const fullSession = imported ? await sessionStore.getSessionRecordForBootstrap(imported.id) : null;
     assert.equal(fullSession?.messages?.at(-1)?.content, 'cached import visible');
+
+    await appendFile(
+      codexSessionPath,
+      [
+        JSON.stringify({
+          timestamp: '2026-06-04T02:01:00.000Z',
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'show changed codex' }],
+          },
+        }),
+        JSON.stringify({
+          timestamp: '2026-06-04T02:01:01.000Z',
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'changed import visible' }],
+          },
+        }),
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    await sessionStore.getProjectsForBootstrap();
+    const changedSession = imported
+      ? await sessionStore.getSessionRecordForBootstrap(imported.id)
+      : null;
+    assert.equal(changedSession?.messages?.at(-1)?.content, 'changed import visible');
   } finally {
     if (previousUserProfile === undefined) {
       delete process.env.USERPROFILE;
@@ -489,10 +529,15 @@ await run('native Claude import reconnects a model-switched session whose cwd mo
     const crash = projects[0]?.dreams.find((dream) => dream.id === 'crash');
     const temporary = projects[0]?.dreams.find((dream) => dream.isTemporary);
     const session = crash?.sessions.find((candidate) => candidate.id === 'bindless-session');
+    const fullSession = session
+      ? await sessionStore.getSessionRecordForBootstrap(session.id)
+      : null;
 
     assert.equal(session?.claudeSessionId, 'new-native');
-    assert.equal(session?.model, 'fable');
-    assert.equal(session?.messages.at(-1)?.content, '下午 fable 分析完成。');
+    assert.equal(fullSession?.model, 'fable');
+    assert.equal(session?.messagesLoaded, false);
+    assert.deepEqual(session?.messages, []);
+    assert.equal(fullSession?.messages.at(-1)?.content, '下午 fable 分析完成。');
     assert.equal(
       temporary?.sessions.some((candidate) => candidate.claudeSessionId === 'new-native'),
       false,
@@ -652,11 +697,16 @@ await run('native Claude import scans nested cwd project directories for matchin
     const renderBug = projects[0]?.dreams.find((dream) => dream.id === 'render-bug');
     const temporary = projects[0]?.dreams.find((dream) => dream.isTemporary);
     const session = renderBug?.sessions.find((candidate) => candidate.id === 'fogblink-session');
+    const fullSession = session
+      ? await sessionStore.getSessionRecordForBootstrap(session.id)
+      : null;
 
     assert.equal(session?.claudeSessionId, 'new-native');
     assert.equal(session?.title, 'FogBlink');
-    assert.equal(session?.model, 'fable');
-    assert.equal(session?.messages.at(-1)?.content, '还缺一次完整构建验证。');
+    assert.equal(fullSession?.model, 'fable');
+    assert.equal(session?.messagesLoaded, false);
+    assert.deepEqual(session?.messages, []);
+    assert.equal(fullSession?.messages.at(-1)?.content, '还缺一次完整构建验证。');
     assert.equal(
       temporary?.sessions.some((candidate) => candidate.claudeSessionId === 'new-native'),
       false,
@@ -808,15 +858,20 @@ await run('loadState keeps an existing Codex session in its non-temporary stream
   try {
     const sessionStore = await importFreshSessionStore();
     const projects = await sessionStore.getProjects();
-    const project = projects[0] as { dreams: Array<{ id: string; name: string; sessions: Array<{ codexThreadId?: string; dreamId?: string; dreamName?: string; messages?: Array<{ content?: string }> }> }> };
+    const project = projects[0] as { dreams: Array<{ id: string; name: string; sessions: Array<{ id: string; codexThreadId?: string; dreamId?: string; dreamName?: string; messagesLoaded?: boolean; messages?: Array<{ content?: string }> }> }> };
     const temporary = project.dreams.find((dream) => dream.id === 'temporary');
     const render = project.dreams.find((dream) => dream.id === 'render');
     const renderSession = render?.sessions.find((session) => session.codexThreadId === 'render-thread');
+    const fullSession = renderSession
+      ? await sessionStore.getSessionRecordForBootstrap(renderSession.id)
+      : null;
 
     assert.equal(temporary?.sessions.some((session) => session.codexThreadId === 'render-thread'), false);
     assert.equal(renderSession?.dreamId, 'render');
     assert.equal(renderSession?.dreamName, 'Render');
-    assert.equal(renderSession?.messages?.at(-1)?.content, 'render path checked');
+    assert.equal(renderSession?.messagesLoaded, false);
+    assert.deepEqual(renderSession?.messages, []);
+    assert.equal(fullSession?.messages?.at(-1)?.content, 'render path checked');
   } finally {
     if (previousUserProfile === undefined) {
       delete process.env.USERPROFILE;
@@ -930,11 +985,15 @@ await run('createProject imports Codex CLI tool traces from native session logs'
       (session: { codexThreadId?: string }) => session.codexThreadId === 'trace-thread',
     ) as
       | {
+          id: string;
           messages?: Array<{ role?: string; kind?: string; title?: string; status?: string; content?: string }>;
         }
       | undefined;
+    const fullSession = imported
+      ? await sessionStore.getSessionRecordForBootstrap(imported.id)
+      : null;
 
-    const toolMessages = imported?.messages?.filter((message) => message.role === 'system' && message.kind === 'tool_use') ?? [];
+    const toolMessages = fullSession?.messages?.filter((message) => message.role === 'system' && message.kind === 'tool_use') ?? [];
     assert.equal(toolMessages.length, 2);
     assert.equal(toolMessages[0]?.status, 'success');
     assert.match(toolMessages[0]?.content ?? '', /src\/App\.tsx/);
@@ -959,7 +1018,7 @@ await run('native Codex import does not surface visible duplicates when persiste
   const projectRoot = path.join(tempRoot, 'PBZ');
   const codexSessionsDir = path.join(homePath, '.codex', 'sessions', '2026', '04', '12');
   const codexIndexPath = path.join(homePath, '.codex', 'session_index.jsonl');
-  const storePath = path.join(userDataPath, 'easyaiflow-sessions.json');
+  const storePath = getSessionStoreV2Paths(userDataPath).indexPath;
 
   await mkdir(userDataPath, { recursive: true });
   await mkdir(projectRoot, { recursive: true });
@@ -1472,15 +1531,19 @@ await run('loading a partially recovered group room backfills richer Claude hist
     const temporary = projects[0]?.dreams.find((dream: { isTemporary?: boolean }) => dream.isTemporary);
     const room = temporary?.sessions.find((session: { id?: string }) => session.id === 'room-1') as
       | {
+          id: string;
           messages?: Array<{ role?: string; speakerLabel?: string; content?: string }>;
           preview?: string;
         }
       | undefined;
+    const fullRoom = room
+      ? await sessionStore.getSessionRecordForBootstrap(room.id)
+      : null;
     const hiddenClaude = await sessionStore.findSession('member-claude');
 
     assert.equal(hiddenClaude?.claudeSessionId, claudeSessionId);
     assert.deepEqual(
-      room?.messages?.map((message) => ({
+      fullRoom?.messages?.map((message) => ({
         role: message.role,
         speakerLabel: message.speakerLabel,
         content: message.content,
@@ -1503,7 +1566,7 @@ await run('loading a partially recovered group room backfills richer Claude hist
         },
       ],
     );
-    assert.equal(room?.preview, 'Claude 完整回答。');
+    assert.equal(fullRoom?.preview, 'Claude 完整回答。');
   } finally {
     if (previousUserProfile === undefined) {
       delete process.env.USERPROFILE;

@@ -141,6 +141,7 @@ const mergeStaleGroupSnapshot = (
     group: incomingSession.group,
     contextReferences: incomingSession.contextReferences,
     messagesLoaded: incomingSession.messagesLoaded ?? existingSession.messagesLoaded,
+    historyPage: incomingSession.historyPage ?? existingSession.historyPage,
     preview: existingSession.preview || incomingSession.preview,
     timeLabel: existingSession.timeLabel || incomingSession.timeLabel,
     messages,
@@ -164,11 +165,21 @@ export const mergeSessionSnapshot = (
       ...incomingSession,
       messages: existingSession.messages ?? [],
       messagesLoaded: existingSession.messagesLoaded,
+      historyPage: existingSession.historyPage,
     };
   }
 
   if (existingSession.messagesLoaded === false) {
-    return incomingSession;
+    const messages = new Map(
+      (incomingSession.messages ?? []).map((message) => [message.id, message] as const),
+    );
+    for (const message of existingSession.messages ?? []) {
+      messages.set(message.id, message);
+    }
+    return {
+      ...incomingSession,
+      messages: [...messages.values()],
+    };
   }
 
   const existingUpdatedAt = existingSession.updatedAt ?? 0;

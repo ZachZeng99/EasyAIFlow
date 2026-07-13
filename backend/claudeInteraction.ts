@@ -46,6 +46,7 @@ import {
   ensureSessionRecord,
   findSession,
   getProjects,
+  getSessionRecordForBootstrap,
   recoverSessionFromNativeHistory,
   setSessionRuntime,
   updateAssistantMessage,
@@ -282,7 +283,30 @@ export const buildContextReferencePrompt = async (sessionId: string, overrideRef
   const storedSessions = projects.flatMap((project) =>
     project.dreams.flatMap((dream) => dream.sessions.map((session) => session as SessionRecord)),
   );
+  const referencedSessionIds = new Set<string>();
+  for (const reference of references) {
+    if (reference.kind === 'session' && reference.sessionId && reference.sessionId !== currentSession.id) {
+      referencedSessionIds.add(reference.sessionId);
+    } else if (reference.kind === 'streamwork' && reference.streamworkId) {
+      storedSessions
+        .filter(
+          (session) =>
+            session.dreamId === reference.streamworkId &&
+            session.id !== currentSession.id,
+        )
+        .forEach((session) => referencedSessionIds.add(session.id));
+    }
+  }
+  const hydratedReferences = await Promise.all(
+    [...referencedSessionIds].map((id) => getSessionRecordForBootstrap(id)),
+  );
   const sessionById = new Map(storedSessions.map((session) => [session.id, session]));
+  hydratedReferences.forEach((session) => {
+    if (session) {
+      sessionById.set(session.id, session);
+    }
+  });
+  const resolvedStoredSessions = storedSessions.map((session) => sessionById.get(session.id) ?? session);
 
   const blocks = references
     .map((reference) => {
@@ -291,7 +315,7 @@ export const buildContextReferencePrompt = async (sessionId: string, overrideRef
           ? reference.sessionId && reference.sessionId !== currentSession.id
             ? [sessionById.get(reference.sessionId)].filter((session): session is SessionRecord => Boolean(session))
             : []
-          : storedSessions
+          : resolvedStoredSessions
               .filter(
                 (session) =>
                   session.dreamId === reference.streamworkId &&

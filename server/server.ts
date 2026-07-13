@@ -42,6 +42,7 @@ import {
   createSession,
   createSessionInStreamwork,
   createStreamwork,
+  getSessionMessagePage,
   getSessionRecordForBootstrap,
   renameEntity,
   reorderStreamworks,
@@ -226,6 +227,8 @@ const rpcHandlers = {
       messagesLoaded: true,
     };
   },
+  getSessionMessagePage: async (payload: { sessionId: string; before?: string }) =>
+    getSessionMessagePage(payload.sessionId, payload.before),
   getGitSnapshot: async (payload: { cwd: string }) => getGitSnapshot(payload.cwd),
   getSlashCommands: async (payload: { cwd: string; model?: string }) =>
     handleGetSlashCommands(ctx, state, payload),

@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -55,6 +55,9 @@ type ChatThreadProps = {
   session: SessionSummary;
   messages: ConversationMessage[];
   isLoadingHistory?: boolean;
+  hasMoreHistory?: boolean;
+  isLoadingOlderHistory?: boolean;
+  onLoadOlderHistory?: () => void;
   isCliOnline?: boolean;
   groupCliStatuses?: Array<{
     participantId: string;
@@ -169,6 +172,9 @@ function ChatThreadComponent({
   session,
   messages,
   isLoadingHistory = false,
+  hasMoreHistory = false,
+  isLoadingOlderHistory = false,
+  onLoadOlderHistory,
   isCliOnline = false,
   groupCliStatuses,
   onDisconnect,
@@ -199,6 +205,12 @@ function ChatThreadComponent({
   const [codeChangeDiffs, setCodeChangeDiffs] = useState<Record<string, DiffPayload | null>>({});
   const [loadingCodeChangeDiffIds, setLoadingCodeChangeDiffIds] = useState<Record<string, boolean>>({});
   const streamRef = useRef<HTMLDivElement | null>(null);
+  const prependScrollSnapshotRef = useRef<{
+    sessionId: string;
+    messageCount: number;
+    scrollHeight: number;
+    scrollTop: number;
+  } | null>(null);
   const autoScrollKey = useMemo(
     () => buildChatThreadAutoScrollKey(session.id, messages, interaction),
     [session.id, messages, interaction],
@@ -213,14 +225,32 @@ function ChatThreadComponent({
     };
   }, [displayItems]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = streamRef.current;
     if (!element) {
       return;
     }
 
+    const prependSnapshot = prependScrollSnapshotRef.current;
+    if (
+      prependSnapshot &&
+      prependSnapshot.sessionId === session.id &&
+      messages.length > prependSnapshot.messageCount
+    ) {
+      element.scrollTop =
+        prependSnapshot.scrollTop + (element.scrollHeight - prependSnapshot.scrollHeight);
+      prependScrollSnapshotRef.current = null;
+      return;
+    }
     element.scrollTop = element.scrollHeight;
-  }, [autoScrollKey]);
+  }, [autoScrollKey, messages.length, session.id]);
+
+  useEffect(() => {
+    const snapshot = prependScrollSnapshotRef.current;
+    if (!isLoadingOlderHistory && snapshot && messages.length <= snapshot.messageCount) {
+      prependScrollSnapshotRef.current = null;
+    }
+  }, [isLoadingOlderHistory, messages.length]);
 
   useEffect(() => {
     setOpenCodeChangeGroupIds({});
@@ -228,6 +258,26 @@ function ChatThreadComponent({
     setCodeChangeDiffs({});
     setLoadingCodeChangeDiffIds({});
   }, [session.id]);
+
+  const requestOlderHistory = () => {
+    const element = streamRef.current;
+    if (
+      !element ||
+      !hasMoreHistory ||
+      isLoadingOlderHistory ||
+      !onLoadOlderHistory ||
+      prependScrollSnapshotRef.current
+    ) {
+      return;
+    }
+    prependScrollSnapshotRef.current = {
+      sessionId: session.id,
+      messageCount: messages.length,
+      scrollHeight: element.scrollHeight,
+      scrollTop: element.scrollTop,
+    };
+    onLoadOlderHistory();
+  };
 
   const toggleCodeChange = async (changeId: string, filePath: string, recordedDiff?: DiffPayload) => {
     const nextOpen = !openCodeChangeIds[changeId];
@@ -361,7 +411,26 @@ function ChatThreadComponent({
         ) : null}
       </header>
 
-      <div ref={streamRef} className="message-stream">
+      <div
+        ref={streamRef}
+        className="message-stream"
+        onScroll={(event) => {
+          if (event.currentTarget.scrollTop <= 96) {
+            requestOlderHistory();
+          }
+        }}
+      >
+        {hasMoreHistory ? (
+          <div className="history-page-loader">
+            <button
+              type="button"
+              disabled={isLoadingOlderHistory}
+              onClick={requestOlderHistory}
+            >
+              {isLoadingOlderHistory ? 'Loading earlier messages...' : 'Load earlier messages'}
+            </button>
+          </div>
+        ) : null}
         {activeBackgroundTasks.length > 0 ? (
           <section className="monitor-strip">
             <div className="monitor-strip-head">

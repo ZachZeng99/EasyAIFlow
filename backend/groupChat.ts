@@ -19,6 +19,8 @@ import {
   ensureGroupRoomBackingSessions,
   findSession,
   getProjects,
+  getSessionRecordForBootstrap,
+  releaseMaterializedSessionHistory,
   updateAssistantMessage,
   updateSessionRecord,
   upsertSessionMessage,
@@ -908,7 +910,7 @@ export const sendGroupMessage = async (
   // had the group placeholder message.
   void Promise.allSettled(turnPromises).then(async () => {
     try {
-      const latestRoom = await findSession(roomSession.id);
+      const latestRoom = await getSessionRecordForBootstrap(roomSession.id);
       if (latestRoom) {
         ctx.broadcastEvent({
           type: 'session-sync',
@@ -924,6 +926,12 @@ export const sendGroupMessage = async (
       sessionId: roomSession.id,
       runtime: { processActive: false, phase: 'inactive', updatedAt: Date.now() },
     });
+    await Promise.allSettled([
+      releaseMaterializedSessionHistory(roomSession.id),
+      ...roomSession.group.participants.map((participant) =>
+        releaseMaterializedSessionHistory(participant.backingSessionId),
+      ),
+    ]);
   });
 
   return {

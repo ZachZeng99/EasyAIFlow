@@ -290,6 +290,36 @@ run('hydrateSessionRecordInProjects keeps newer live content when an older full 
   assert.equal(session.messages[0]?.status, 'streaming');
 });
 
+run('hydrateSessionRecordInProjects merges live events that arrived before lazy history', () => {
+  const currentProjects = makeProjects(
+    makeSession('single', {
+      updatedAt: 500,
+      messagesLoaded: false,
+      messages: [
+        {
+          ...makeMessage('assistant-live', 'partial live answer'),
+          status: 'streaming',
+        },
+      ],
+    }),
+  );
+  const incomingRecord = makeSession('single', {
+    updatedAt: 490,
+    messagesLoaded: true,
+    messages: [makeMessage('assistant-history', 'bounded history page')],
+  });
+
+  const merged = hydrateSessionRecordInProjects(currentProjects, incomingRecord);
+  const session = merged[0]?.dreams[0]?.sessions[0] as SessionRecord;
+
+  assert.equal(session.messagesLoaded, true);
+  assert.deepEqual(session.messages.map((message) => message.id), [
+    'assistant-history',
+    'assistant-live',
+  ]);
+  assert.equal(session.messages[1]?.status, 'streaming');
+});
+
 run('mergeProjectSnapshots applies stale group conversion metadata and sequenced messages', () => {
   const currentProjects = makeProjects(
     makeSession('room', {

@@ -33,7 +33,8 @@ import {
   createSession,
   createSessionInStreamwork,
   createStreamwork,
-  findSession,
+  getSessionMessagePage,
+  getSessionRecordForBootstrap,
   renameEntity,
   reorderStreamworks,
   updateSessionContextReferences,
@@ -197,7 +198,7 @@ app.whenReady().then(async () => {
   );
   ipcMain.handle('sessions:bootstrap', async () => handleBootstrapSessions(state));
   ipcMain.handle('sessions:get-record', async (_event, payload: { sessionId: string }) => {
-    const session = await findSession(payload.sessionId);
+    const session = await getSessionRecordForBootstrap(payload.sessionId);
     if (!session) {
       throw new Error('Session not found.');
     }
@@ -206,6 +207,11 @@ app.whenReady().then(async () => {
       messagesLoaded: true,
     };
   });
+  ipcMain.handle(
+    'sessions:get-message-page',
+    (_event, payload: { sessionId: string; before?: string }) =>
+      getSessionMessagePage(payload.sessionId, payload.before),
+  );
   ipcMain.handle(
     'sessions:create',
     async (
