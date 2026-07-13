@@ -557,6 +557,7 @@ await run('native Claude import reconnects a model-switched session whose cwd mo
       : null;
 
     assert.equal(session?.claudeSessionId, 'new-native');
+    assert.equal(fullSession?.workspace, projectRoot);
     assert.equal(fullSession?.model, 'fable');
     assert.equal(session?.messagesLoaded, false);
     assert.deepEqual(session?.messages, []);

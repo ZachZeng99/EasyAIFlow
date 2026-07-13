@@ -89,10 +89,11 @@ await run('createSession returns a lightweight project snapshot', async () => {
   const userDataPath = path.join(tempRoot, 'userData');
   const homePath = path.join(tempRoot, 'home');
   const projectRoot = path.join(tempRoot, 'workspace');
+  const nestedWorkspace = path.join(projectRoot, 'Engine', 'Source');
 
   await mkdir(userDataPath, { recursive: true });
   await mkdir(homePath, { recursive: true });
-  await mkdir(projectRoot, { recursive: true });
+  await mkdir(nestedWorkspace, { recursive: true });
 
   const previousUserProfile = process.env.USERPROFILE;
   process.env.USERPROFILE = homePath;
@@ -104,8 +105,10 @@ await run('createSession returns a lightweight project snapshot', async () => {
     const projectResult = await sessionStore.createProject('Smoke', projectRoot);
 
     await sessionStore.updateSessionRecord(projectResult.session.id, (session: {
+      workspace: string;
       messages: Array<Record<string, unknown>>;
     }) => {
+      session.workspace = nestedWorkspace;
       session.messages.push({
         id: 'existing-message',
         role: 'assistant',
@@ -126,7 +129,110 @@ await run('createSession returns a lightweight project snapshot', async () => {
     assert.equal(sourceSnapshot?.messages?.length, 0);
     assert.equal(sourceSnapshot?.messagesLoaded, false);
     assert.equal(created.session.provider, 'codex');
+    assert.equal(created.session.workspace, projectRoot);
     assert.deepEqual(created.session.messages, []);
+
+    const groupCreated = await sessionStore.createSession(
+      projectResult.session.id,
+      false,
+      undefined,
+      'group',
+    );
+    assert.equal(groupCreated.session.workspace, projectRoot);
+    assert.equal(groupCreated.session.group?.kind, 'room');
+    for (const participant of groupCreated.session.group?.participants ?? []) {
+      const backing = await sessionStore.findSession(participant.backingSessionId);
+      assert.equal(backing?.workspace, projectRoot);
+    }
+  } finally {
+    await sessionStore?.flushPendingSave();
+    if (previousUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = previousUserProfile;
+    }
+  }
+});
+
+await run('native refresh keeps an EasyAIFlow session anchored to the project root', async () => {
+  const tempBase = path.resolve('.tmp-tests');
+  await mkdir(tempBase, { recursive: true });
+  const tempRoot = await mkdtemp(path.join(tempBase, 'session-store-refresh-workspace-'));
+  const userDataPath = path.join(tempRoot, 'userData');
+  const homePath = path.join(tempRoot, 'home');
+  const projectRoot = path.join(tempRoot, 'workspace');
+  const nestedWorkspace = path.join(projectRoot, 'Engine', 'Source');
+  const nativeSessionId = '5b861bec-a52d-4564-88f7-2c2663d0380d';
+  const nativeDirName = toClaudeProjectDirName(projectRoot);
+  assert.ok(nativeDirName);
+  const nativeSessionPath = path.join(
+    homePath,
+    '.claude',
+    'projects',
+    nativeDirName,
+    `${nativeSessionId}.jsonl`,
+  );
+
+  await mkdir(userDataPath, { recursive: true });
+  await mkdir(nestedWorkspace, { recursive: true });
+  await mkdir(path.dirname(nativeSessionPath), { recursive: true });
+
+  const previousUserProfile = process.env.USERPROFILE;
+  process.env.USERPROFILE = homePath;
+  configureRuntimePaths({ mode: 'web', userDataPath, homePath });
+  let sessionStore: Awaited<ReturnType<typeof importFreshSessionStore>> | undefined;
+
+  try {
+    sessionStore = await importFreshSessionStore();
+    const projectResult = await sessionStore.createProject('Smoke', projectRoot);
+    const created = await sessionStore.createSessionInStreamwork(
+      projectResult.session.dreamId,
+      'Anchored session',
+      false,
+      'claude',
+      'standard',
+    );
+    await sessionStore.setSessionRuntime(created.session.id, {
+      claudeSessionId: nativeSessionId,
+    });
+
+    await writeFile(
+      nativeSessionPath,
+      [
+        JSON.stringify({
+          type: 'custom-title',
+          customTitle: 'Anchored session',
+          sessionId: nativeSessionId,
+        }),
+        JSON.stringify({
+          type: 'user',
+          timestamp: '2026-07-13T08:00:00.000Z',
+          cwd: nestedWorkspace,
+          sessionId: nativeSessionId,
+          message: { role: 'user', content: 'refresh this session' },
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          timestamp: '2026-07-13T08:00:01.000Z',
+          cwd: nestedWorkspace,
+          sessionId: nativeSessionId,
+          message: {
+            model: 'claude-opus-4-8',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'refreshed' }],
+          },
+        }),
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const projects = await sessionStore.getProjectsForBootstrap();
+    const refreshed = projects[0]?.dreams
+      .flatMap((dream) => dream.sessions)
+      .find((session) => session.id === created.session.id);
+
+    assert.equal(refreshed?.workspace, projectRoot);
   } finally {
     await sessionStore?.flushPendingSave();
     if (previousUserProfile === undefined) {

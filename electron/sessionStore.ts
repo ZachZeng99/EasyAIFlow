@@ -3365,7 +3365,7 @@ const applyNativeCatalogEntries = (
       model: parsed.model
         ? normalizeSessionModel(parsed.model, provider)
         : existing?.model ?? getDefaultModelForProvider(provider),
-      workspace,
+      workspace: existing?.workspace ?? workspace,
       projectId: project.id,
       projectName: project.name,
       dreamId: targetDream.id,
@@ -3614,7 +3614,7 @@ const importNativeClaudeSessions = async (
       timeLabel: display.timeLabel,
       provider: existing?.provider ?? 'claude',
       model: parsed.model,
-      workspace,
+      workspace: existing?.workspace ?? workspace,
       projectId: project.id,
       projectName: project.name,
       dreamId: targetDream.id,
@@ -3749,7 +3749,7 @@ const importNativeCodexSessions = async (
       timeLabel: display.timeLabel,
       provider: 'codex',
       model: parsed.model,
-      workspace,
+      workspace: existing?.workspace ?? workspace,
       projectId: project.id,
       projectName: project.name,
       dreamId: targetDreamId,
@@ -5410,7 +5410,7 @@ export const createSession = async (
       fallbackProject,
       fallbackDream,
       `New Group ${nextIndex}`,
-      (sourceSession ?? (fallbackDream.sessions[0] as SessionRecord | undefined))?.workspace ?? fallbackProject.rootPath,
+      fallbackProject.rootPath,
     );
     if (includeStreamworkSummary && hadExistingSessions) {
       session.contextReferences = [makeStreamworkHistoryReference(fallbackDream)];
@@ -5443,7 +5443,7 @@ export const createSession = async (
       provider === undefined && normalizeSessionProvider(templateSession?.provider) === sessionProvider
         ? templateSession?.model ?? getDefaultModelForProvider(sessionProvider)
         : getDefaultModelForProvider(sessionProvider),
-    workspace: templateSession?.workspace ?? fallbackProject.rootPath,
+    workspace: fallbackProject.rootPath,
     projectId: fallbackProject.id,
     projectName: fallbackProject.name,
     dreamId: fallbackDream.id,
