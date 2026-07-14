@@ -283,6 +283,120 @@ await run('does not rewrite an empty event log while reading clean pages', async
   );
 });
 
+await run('persists empty page metadata when a new session enters the catalog', async () => {
+  const root = await mkdtemp(path.join(path.resolve('.tmp-tests'), 'session-store-v2-new-session-'));
+  await mkdir(root, { recursive: true });
+  const initial = session('initial-session');
+  const state = stateWithSessions([initial]);
+  const store = await migrateSessionStoreV2(root, state, { maxMessages: 0 });
+  const added = session('added-session');
+  state.projects[0]!.dreams[0]!.sessions.push(added);
+
+  await store.persist(state, { immediateIndex: true });
+
+  const addedPaths = getSessionStoreV2Paths(root, added.id);
+  const meta = JSON.parse(await readFile(addedPaths.metaPath, 'utf8')) as {
+    messageCount: number;
+    revision: number;
+  };
+  assert.deepEqual(meta, {
+    schemaVersion: 2,
+    sessionId: added.id,
+    revision: 0,
+    messageCount: 0,
+    pages: [],
+    messagePageById: {},
+  });
+});
+
+await run('initializes an empty page store for a catalog-only session', async () => {
+  const root = await mkdtemp(path.join(path.resolve('.tmp-tests'), 'session-store-v2-catalog-only-'));
+  await mkdir(root, { recursive: true });
+  const target = session('session-1');
+  const state = stateWithSessions([target]);
+  await migrateSessionStoreV2(root, state, { maxMessages: 0 });
+  const paths = getSessionStoreV2Paths(root, target.id);
+  await rm(paths.sessionPath, { recursive: true, force: true });
+
+  const opened = await openSessionStoreV2(root, { maxMessages: 0 });
+  const newest = await opened!.store.readMessagePage(target.id);
+  const meta = JSON.parse(await readFile(paths.metaPath, 'utf8')) as { messageCount: number };
+
+  assert.deepEqual(newest.messages, []);
+  assert.equal(meta.messageCount, 0);
+});
+
+await run('recovers a journal-only V2 session before the first page compaction', async () => {
+  const root = await mkdtemp(path.join(path.resolve('.tmp-tests'), 'session-store-v2-journal-only-'));
+  await mkdir(root, { recursive: true });
+  const target = session('session-1');
+  const state = stateWithSessions([target]);
+  await migrateSessionStoreV2(root, state, { maxMessages: 0 });
+  const paths = getSessionStoreV2Paths(root, target.id);
+  await rm(paths.sessionPath, { recursive: true, force: true });
+  await mkdir(paths.sessionPath, { recursive: true });
+  const event: SessionStoreV2Event = {
+    schemaVersion: 2,
+    sessionId: target.id,
+    revision: 1,
+    type: 'append-messages',
+    messages: [message('journal-message')],
+  };
+  await writeFile(paths.eventsPath, `${JSON.stringify(event)}\n`, 'utf8');
+
+  const opened = await openSessionStoreV2(root, { maxMessages: 0 });
+  const newest = await opened!.store.readMessagePage(target.id);
+
+  assert.deepEqual(newest.messages.map((item) => item.id), ['journal-message']);
+  assert.equal(await readFile(paths.eventsPath, 'utf8'), '');
+  assert.equal((JSON.parse(await readFile(paths.metaPath, 'utf8')) as { revision: number }).revision, 1);
+});
+
+await run('lazily upgrades legacy V2 snapshots and pending events to page storage', async () => {
+  const root = await mkdtemp(path.join(path.resolve('.tmp-tests'), 'session-store-v2-legacy-snapshot-'));
+  await mkdir(root, { recursive: true });
+  const target = session('session-1', [message('ignored-page-layout')]);
+  const state = stateWithSessions([target]);
+  await migrateSessionStoreV2(root, state, { maxMessages: 0 });
+  const paths = getSessionStoreV2Paths(root, target.id);
+  await rm(paths.metaPath, { force: true });
+  await rm(`${paths.metaPath}.previous`, { force: true });
+
+  await writeFile(paths.snapshotPath, JSON.stringify({
+    schemaVersion: 2,
+    sessionId: target.id,
+    revision: 1,
+    messages: [message('m0'), message('m1', 'before-upsert')],
+  }), 'utf8');
+  const events: SessionStoreV2Event[] = [
+    {
+      schemaVersion: 2,
+      sessionId: target.id,
+      revision: 2,
+      type: 'append-messages',
+      messages: [message('m2')],
+    },
+    {
+      schemaVersion: 2,
+      sessionId: target.id,
+      revision: 3,
+      type: 'upsert-message',
+      message: message('m1', 'after-upsert'),
+    },
+  ];
+  await writeFile(paths.eventsPath, `${events.map((event) => JSON.stringify(event)).join('\n')}\n`, 'utf8');
+
+  const opened = await openSessionStoreV2(root, { maxMessages: 0 });
+  const newest = await opened!.store.readMessagePage(target.id);
+  const meta = JSON.parse(await readFile(paths.metaPath, 'utf8')) as { revision: number };
+
+  assert.deepEqual(newest.messages.map((item) => item.id), ['m0', 'm1', 'm2']);
+  assert.equal(newest.messages[1]?.content, 'after-upsert');
+  assert.equal(meta.revision, 3);
+  assert.equal(await readFile(paths.eventsPath, 'utf8'), '');
+  await assert.rejects(() => stat(paths.snapshotPath), (error: NodeJS.ErrnoException) => error.code === 'ENOENT');
+});
+
 await run('repairs an incomplete crash tail before appending the next event', async () => {
   const root = await mkdtemp(path.join(path.resolve('.tmp-tests'), 'session-store-v2-tail-repair-'));
   await mkdir(root, { recursive: true });
