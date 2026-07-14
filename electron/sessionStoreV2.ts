@@ -2,6 +2,7 @@ import {
   appendFile,
   mkdir,
   readFile,
+  readdir,
   rename,
   rm,
   stat,
@@ -156,6 +157,25 @@ const isSessionStoreV2Event = (value: unknown): value is SessionStoreV2Event => 
   return false;
 };
 
+const validateSessionStoreV2Snapshot = (
+  value: unknown,
+  sessionId: string,
+): SessionStoreV2Snapshot => {
+  if (
+    !isRecord(value) ||
+    value.schemaVersion !== SESSION_STORE_V2_SCHEMA_VERSION ||
+    value.sessionId !== sessionId ||
+    typeof value.revision !== 'number' ||
+    !Number.isSafeInteger(value.revision) ||
+    value.revision < 0 ||
+    !Array.isArray(value.messages) ||
+    !value.messages.every(isConversationMessage)
+  ) {
+    throw new Error(`Invalid legacy V2 snapshot for session "${sessionId}".`);
+  }
+  return value as SessionStoreV2Snapshot;
+};
+
 export const parseSessionStoreV2EventLog = (raw: string): SessionStoreV2Event[] => {
   const lines = raw.split(/\r?\n/);
   const endsWithNewline = /\r?\n$/.test(raw);
@@ -238,6 +258,17 @@ const fileExists = async (filePath: string) => {
   try {
     await stat(filePath);
     return true;
+  } catch (error) {
+    if (isMissingEntry(error)) {
+      return false;
+    }
+    throw error;
+  }
+};
+
+const directoryHasEntries = async (directoryPath: string) => {
+  try {
+    return (await readdir(directoryPath)).length > 0;
   } catch (error) {
     if (isMissingEntry(error)) {
       return false;
@@ -472,6 +503,7 @@ const buildIndex = (state: SessionStoreAppState, revision: number): SessionStore
 });
 
 export class SessionStoreV2 {
+  private readonly maxMessages: number;
   private readonly compactionEventCount: number;
   private readonly compactionBytes: number;
   private readonly indexDebounceMs: number;
@@ -495,6 +527,7 @@ export class SessionStoreV2 {
     sessionEventCounts = new Map<string, number>(),
     knownSessionIds = new Set<string>(),
   ) {
+    this.maxMessages = options.maxMessages;
     this.compactionEventCount = options.compactionEventCount ?? 64;
     this.compactionBytes = options.compactionBytes ?? 1024 * 1024;
     this.indexDebounceMs = options.indexDebounceMs ?? 800;
@@ -516,18 +549,66 @@ export class SessionStoreV2 {
     return next;
   }
 
-  private async loadSessionRevisionState(sessionId: string) {
+  private async ensureSessionPageLayout(
+    sessionId: string,
+    initialMessages: ConversationMessage[] = [],
+  ) {
+    const paths = pathsForRoot(this.rootPath, sessionId);
+    if (await fileExists(paths.metaPath) || await fileExists(`${paths.metaPath}.previous`)) {
+      return;
+    }
+
+    const legacySnapshotRaw = await readOptionalTextWithPrevious(paths.snapshotPath);
+    if (legacySnapshotRaw !== null) {
+      const snapshot = validateSessionStoreV2Snapshot(
+        parseJson(legacySnapshotRaw, `legacy V2 snapshot for session "${sessionId}"`),
+        sessionId,
+      );
+      const rawEvents = await readOptionalTextWithPrevious(paths.eventsPath) ?? '';
+      const replayed = replaySessionStoreV2Events(
+        snapshot,
+        parseSessionStoreV2EventLog(rawEvents),
+        this.maxMessages,
+      );
+
+      // Page files without metadata can be leftovers from an interrupted
+      // legacy conversion. The snapshot and journal remain the authoritative
+      // source until the new metadata is atomically activated.
+      await rm(paths.pagesPath, { recursive: true, force: true });
+      await replaceSessionStoreV2Messages(
+        paths.sessionPath,
+        sessionId,
+        replayed.messages,
+        replayed.revision,
+      );
+      await atomicReplaceFile(paths.eventsPath, '');
+      await rm(paths.snapshotPath, { force: true });
+      await rm(`${paths.snapshotPath}.previous`, { force: true });
+      return;
+    }
+
+    if (await directoryHasEntries(paths.pagesPath)) {
+      throw new Error(`Missing V2 page metadata for session "${sessionId}".`);
+    }
+
+    const rawEvents = await readOptionalTextWithPrevious(paths.eventsPath) ?? '';
+    await replaceSessionStoreV2Messages(
+      paths.sessionPath,
+      sessionId,
+      rawEvents.trim() ? [] : initialMessages,
+      0,
+    );
+  }
+
+  private async loadSessionRevisionState(
+    sessionId: string,
+    initialMessages: ConversationMessage[] = [],
+  ) {
     if (this.sessionRevisions.has(sessionId)) {
       return;
     }
     const paths = pathsForRoot(this.rootPath, sessionId);
-    if (
-      this.knownSessionIds.has(sessionId) &&
-      !(await fileExists(paths.metaPath)) &&
-      !(await fileExists(`${paths.metaPath}.previous`))
-    ) {
-      throw new Error(`Missing V2 page metadata for session "${sessionId}".`);
-    }
+    await this.ensureSessionPageLayout(sessionId, initialMessages);
     const meta = await readSessionStoreV2PageMeta(paths.sessionPath, sessionId);
     const raw = await readOptionalTextWithPrevious(paths.eventsPath) ?? '';
     const events = parseSessionStoreV2EventLog(raw);
@@ -673,6 +754,15 @@ export class SessionStoreV2 {
       throw error;
     }
     this.latestState = state;
+    const addedSessions = sessionRecords(state).filter(
+      (session) => !this.knownSessionIds.has(session.id),
+    );
+    for (const session of addedSessions) {
+      await this.enqueueSession(session.id, async () => {
+        await this.loadSessionRevisionState(session.id, session.messages ?? []);
+        this.knownSessionIds.add(session.id);
+      });
+    }
     // Persist awaits every session queue before returning, so a deep clone here
     // only duplicates potentially multi-megabyte content without adding safety.
     const mutations = request.sessionMutations ?? [];
