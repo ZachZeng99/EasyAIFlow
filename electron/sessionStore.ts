@@ -100,6 +100,12 @@ type NativeCleanupResult = {
 type ParsedCodexImportedSession = NonNullable<Awaited<ReturnType<typeof parseCodexSessionFile>>>;
 type ParsedNativeClaudeSession = Awaited<ReturnType<typeof parseNativeClaudeSessionFile>>;
 
+type ImportedEasyAIFlowRecoveryContext = {
+  sessionId?: string;
+  projectName?: string;
+  streamworkName?: string;
+};
+
 type NativeImportCache = {
   parsedCodexSessions?: ParsedCodexImportedSession[];
   parsedClaudeSessionsByFile?: Map<string, ParsedNativeClaudeSession | null>;
@@ -117,6 +123,7 @@ type NativeSessionCatalogEntry = {
   filePath: string;
   provider: SessionProvider;
   sourceRevision: string;
+  recoveryContext?: ImportedEasyAIFlowRecoveryContext;
 };
 
 type NativeSessionSource = Pick<NativeSessionCatalogEntry, 'filePath' | 'provider' | 'sourceRevision'>;
@@ -485,6 +492,57 @@ const mapSessionDreams = (project: ProjectRecord) => {
     });
   });
   return result;
+};
+
+const normalizeImportLabel = (value: string | undefined) => value?.trim().toLowerCase() ?? '';
+
+const findSessionDream = (
+  project: ProjectRecord,
+  dreamBySessionId: Map<string, DreamRecord>,
+  session: SessionRecord,
+) =>
+  dreamBySessionId.get(session.id) ??
+  project.dreams.find((dream) => dream.sessions.some((candidate) => candidate.id === session.id)) ??
+  project.dreams.find((dream) => dream.id === session.dreamId);
+
+const findRecoveryContextStreamwork = (
+  project: ProjectRecord,
+  context: ImportedEasyAIFlowRecoveryContext | undefined,
+) => {
+  const streamworkName = normalizeImportLabel(context?.streamworkName);
+  if (!streamworkName || streamworkName === 'temporary') {
+    return undefined;
+  }
+
+  const projectName = normalizeImportLabel(context?.projectName);
+  if (projectName && projectName !== normalizeImportLabel(project.name)) {
+    return undefined;
+  }
+
+  return project.dreams.find(
+    (dream) =>
+      !dream.isTemporary &&
+      dream.name !== 'Temporary' &&
+      normalizeImportLabel(dream.name) === streamworkName,
+  );
+};
+
+const moveSessionToDream = (
+  session: SessionRecord,
+  sourceDream: DreamRecord | undefined,
+  targetDream: DreamRecord,
+) => {
+  if (sourceDream?.id === targetDream.id) {
+    return;
+  }
+
+  if (sourceDream) {
+    sourceDream.sessions = sourceDream.sessions.filter((candidate) => candidate.id !== session.id);
+  }
+
+  if (!targetDream.sessions.some((candidate) => candidate.id === session.id)) {
+    targetDream.sessions.unshift(session);
+  }
 };
 
 const groupTitlePrefix = '[Group] ';
@@ -1579,6 +1637,36 @@ const firstMeaningfulLine = (value: string) =>
     .map((line) => line.trim())
     .find((line) => line && !line.startsWith('<')) ?? '';
 
+const nativeRecoveryPromptPrefixes = [
+  'EasyAIFlow is starting a fresh native Claude conversation instead of resuming ',
+  'EasyAIFlow is starting a native Claude conversation for this existing EasyAIFlow session.',
+];
+
+const extractRecoveryContextLine = (content: string, label: string) => {
+  const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = new RegExp(`^${escapedLabel}:\\s*(.+?)\\s*$`, 'im').exec(content);
+  return match?.[1]?.trim() || undefined;
+};
+
+const parseImportedEasyAIFlowRecoveryContext = (
+  content: string,
+): ImportedEasyAIFlowRecoveryContext | null => {
+  if (
+    !nativeRecoveryPromptPrefixes.some((prefix) => content.startsWith(prefix)) ||
+    !content.includes('\nTranscript:')
+  ) {
+    return null;
+  }
+
+  const context: ImportedEasyAIFlowRecoveryContext = {
+    sessionId: extractRecoveryContextLine(content, 'Session ID'),
+    projectName: extractRecoveryContextLine(content, 'Project'),
+    streamworkName: extractRecoveryContextLine(content, 'Streamwork'),
+  };
+
+  return context.sessionId || context.projectName || context.streamworkName ? context : null;
+};
+
 const summarizeToolInput = (toolName: string, input: unknown) => {
   if (input && typeof input === 'object') {
     const record = input as Record<string, unknown>;
@@ -1644,6 +1732,18 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
   let interrupted = false;
   let backgroundTaskNotificationPending = false;
   let pendingBackgroundTaskResult = '';
+  let recoveryContext: ImportedEasyAIFlowRecoveryContext | undefined;
+
+  const noteRecoveryContext = (content: string) => {
+    const parsed = parseImportedEasyAIFlowRecoveryContext(content);
+    if (!parsed) {
+      return;
+    }
+    recoveryContext = {
+      ...recoveryContext,
+      ...parsed,
+    };
+  };
 
   const flushPendingBackgroundTaskResult = (timestamp: string | number | undefined) => {
     const content = pendingBackgroundTaskResult.trim();
@@ -1749,6 +1849,7 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
           }
 
           const content = extractTextFromMessageBlock(block);
+          noteRecoveryContext(content);
           const text = firstMeaningfulLine(content);
           if (!text) {
             continue;
@@ -1780,6 +1881,7 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
       }
 
       const content = extractTextFromContent(contentValue);
+      noteRecoveryContext(content);
       const text = firstMeaningfulLine(content);
       if (!text) {
         continue;
@@ -2022,6 +2124,7 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
     preview: summary.preview,
     timeLabel: toTimeLabel(lastTimestamp),
     updatedAt: toUpdatedAt(lastTimestamp),
+    recoveryContext,
   };
 };
 
@@ -2403,6 +2506,7 @@ const parseNativeClaudeSessionCatalogFile = async (
   let customTitle = '';
   let interrupted = false;
   let hasMeaningfulContent = false;
+  let recoveryContext: ImportedEasyAIFlowRecoveryContext | undefined;
 
   await forEachJsonlRecord(filePath, (parsed) => {
     if (typeof parsed.cwd === 'string') {
@@ -2422,10 +2526,6 @@ const parseNativeClaudeSessionCatalogFile = async (
     }
 
     if (parsed.type === 'user' && parsed.isMeta !== true) {
-      if (customTitle && workspace) {
-        hasMeaningfulContent = true;
-        return false;
-      }
       const contentValue = (parsed.message as { content?: unknown } | undefined)?.content;
       const blocks = Array.isArray(contentValue) ? contentValue : [contentValue];
       for (const block of blocks) {
@@ -2436,7 +2536,15 @@ const parseNativeClaudeSessionCatalogFile = async (
         ) {
           continue;
         }
-        const text = boundedCatalogText(firstMeaningfulLine(extractTextFromMessageBlock(block)));
+        const content = extractTextFromMessageBlock(block);
+        const parsedRecoveryContext = parseImportedEasyAIFlowRecoveryContext(content);
+        if (parsedRecoveryContext) {
+          recoveryContext = {
+            ...recoveryContext,
+            ...parsedRecoveryContext,
+          };
+        }
+        const text = boundedCatalogText(firstMeaningfulLine(content));
         if (!text) {
           continue;
         }
@@ -2444,7 +2552,7 @@ const parseNativeClaudeSessionCatalogFile = async (
         firstUserText ||= text;
         interrupted ||= text.includes('[Request interrupted by user]');
       }
-      return workspace && Boolean(firstUserText) ? false : undefined;
+      return workspace && Boolean(customTitle || firstUserText) ? false : undefined;
     }
 
     if (parsed.type === 'assistant') {
@@ -2512,6 +2620,7 @@ const parseNativeClaudeSessionCatalogFile = async (
     filePath,
     provider: 'claude',
     sourceRevision: '',
+    recoveryContext,
   };
 };
 
@@ -3196,6 +3305,7 @@ const applyNativeCatalogEntries = (
   const existingSessions = [...temporary.sessions] as SessionRecord[];
   const projectSessions = project.dreams.flatMap((dream) => dream.sessions) as SessionRecord[];
   const existingDreamBySessionId = mapSessionDreams(project);
+  const sessionById = new Map(projectSessions.map((session) => [session.id, session]));
   const importedSessions: SessionRecord[] = [];
   const seenNativeIds = new Set<string>();
   const provider = entries[0]?.provider;
@@ -3203,6 +3313,13 @@ const applyNativeCatalogEntries = (
     return;
   }
   const sessionIdKey = provider === 'claude' ? 'claudeSessionId' : 'codexThreadId';
+  const existingByNativeId = new Map<string, SessionRecord>();
+  projectSessions.forEach((session) => {
+    const nativeId = session[sessionIdKey];
+    if (nativeId) {
+      existingByNativeId.set(nativeId, session);
+    }
+  });
   const deletedIds = provider === 'claude'
     ? deletedImports.claudeSessionIds
     : deletedImports.codexThreadIds;
@@ -3218,18 +3335,27 @@ const applyNativeCatalogEntries = (
       continue;
     }
     seenNativeIds.add(parsed.nativeSessionId);
-    const existing = findImportedSessionTarget(
-      projectSessions,
-      parsed.nativeSessionId,
-      parsed.title,
-      workspace,
-      sessionIdKey,
-      provider,
-    );
+    const recoveredSessionId = provider === 'claude' ? parsed.recoveryContext?.sessionId : undefined;
+    const existing =
+      existingByNativeId.get(parsed.nativeSessionId) ??
+      (recoveredSessionId ? sessionById.get(recoveredSessionId) : undefined) ??
+      findImportedSessionTarget(
+        projectSessions,
+        parsed.nativeSessionId,
+        parsed.title,
+        workspace,
+        sessionIdKey,
+        provider,
+      );
     const display = resolveImportedSessionDisplay(existing, parsed);
-    const existingDream = existing ? existingDreamBySessionId.get(existing.id) : undefined;
-    const targetDreamId = existingDream?.id ?? existing?.dreamId ?? temporary.id;
-    const targetDreamName = existingDream?.name ?? existing?.dreamName ?? temporary.name;
+    const existingDream = existing ? findSessionDream(project, existingDreamBySessionId, existing) : undefined;
+    const recoveryDream = provider === 'claude'
+      ? findRecoveryContextStreamwork(project, parsed.recoveryContext)
+      : undefined;
+    const targetDream =
+      existingDream && !(existingDream.isTemporary && recoveryDream)
+        ? existingDream
+        : recoveryDream ?? existingDream ?? temporary;
     const record: SessionRecord = {
       id: existing?.id ?? randomUUID(),
       title: display.title,
@@ -3242,8 +3368,8 @@ const applyNativeCatalogEntries = (
       workspace,
       projectId: project.id,
       projectName: project.name,
-      dreamId: targetDreamId,
-      dreamName: targetDreamName,
+      dreamId: targetDream.id,
+      dreamName: targetDream.name,
       claudeSessionId: provider === 'claude' ? parsed.nativeSessionId : existing?.claudeSessionId,
       codexThreadId: provider === 'codex' ? parsed.nativeSessionId : existing?.codexThreadId,
       nativeHistoryRevision: existing?.nativeHistoryRevision,
@@ -3286,11 +3412,19 @@ const applyNativeCatalogEntries = (
     });
     if (existing) {
       Object.assign(existing, record);
-      if (existing.dreamId === temporary.id) {
+      moveSessionToDream(existing, existingDream, targetDream);
+      existingByNativeId.set(parsed.nativeSessionId, existing);
+      if (targetDream.id === temporary.id) {
         importedSessions.push(existing);
       }
     } else {
-      importedSessions.push(record);
+      sessionById.set(record.id, record);
+      existingByNativeId.set(parsed.nativeSessionId, record);
+      if (targetDream.id === temporary.id) {
+        importedSessions.push(record);
+      } else {
+        targetDream.sessions.unshift(record);
+      }
     }
   }
 
@@ -3396,7 +3530,8 @@ const importNativeClaudeSessions = async (
   const existingSessions = [...temporary.sessions] as SessionRecord[];
   const projectSessions = project.dreams.flatMap((dream) => dream.sessions) as SessionRecord[];
   const existingDreamBySessionId = mapSessionDreams(project);
-  const existingByClaudeSessionId = new Map(
+  const sessionById = new Map(projectSessions.map((session) => [session.id, session]));
+  const existingByClaudeSessionId: Map<string, SessionRecord> = new Map(
     projectSessions
       .filter((session): session is SessionRecord & { claudeSessionId: string } => Boolean(session.claudeSessionId))
       .map((session) => [session.claudeSessionId, session]),
@@ -3453,9 +3588,11 @@ const importNativeClaudeSessions = async (
     latestImportedUpdatedAtByNativeId.set(parsed.nativeSessionId, importedUpdatedAt);
 
     seenNativeIds.add(parsed.nativeSessionId);
+    const recoveredSessionId = parsed.recoveryContext?.sessionId;
     const existing =
-      findImportedSessionTarget(projectSessions, parsed.nativeSessionId, parsed.title, workspace, 'claudeSessionId', 'claude') ??
-      existingByClaudeSessionId.get(parsed.nativeSessionId);
+      existingByClaudeSessionId.get(parsed.nativeSessionId) ??
+      (recoveredSessionId ? sessionById.get(recoveredSessionId) : undefined) ??
+      findImportedSessionTarget(projectSessions, parsed.nativeSessionId, parsed.title, workspace, 'claudeSessionId', 'claude');
     if (existing) {
       const previousImportedUpdatedAt = latestImportedUpdatedAtBySessionId.get(existing.id);
       if (previousImportedUpdatedAt !== undefined && importedUpdatedAt <= previousImportedUpdatedAt) {
@@ -3464,9 +3601,12 @@ const importNativeClaudeSessions = async (
       latestImportedUpdatedAtBySessionId.set(existing.id, importedUpdatedAt);
     }
     const display = resolveImportedSessionDisplay(existing, parsed);
-    const existingDream = existing ? existingDreamBySessionId.get(existing.id) : undefined;
-    const targetDreamId = existingDream?.id ?? existing?.dreamId ?? temporary.id;
-    const targetDreamName = existingDream?.name ?? existing?.dreamName ?? temporary.name;
+    const existingDream = existing ? findSessionDream(project, existingDreamBySessionId, existing) : undefined;
+    const recoveryDream = findRecoveryContextStreamwork(project, parsed.recoveryContext);
+    const targetDream =
+      existingDream && !(existingDream.isTemporary && recoveryDream)
+        ? existingDream
+        : recoveryDream ?? existingDream ?? temporary;
     const importedSession: SessionRecord = {
       id: existing?.id ?? randomUUID(),
       title: display.title,
@@ -3477,8 +3617,8 @@ const importNativeClaudeSessions = async (
       workspace,
       projectId: project.id,
       projectName: project.name,
-      dreamId: targetDreamId,
-      dreamName: targetDreamName,
+      dreamId: targetDream.id,
+      dreamName: targetDream.name,
       claudeSessionId: parsed.nativeSessionId,
       updatedAt: display.updatedAt,
       sessionKind: existing?.sessionKind ?? 'standard',
@@ -3501,16 +3641,23 @@ const importNativeClaudeSessions = async (
     };
     if (existing) {
       Object.assign(existing, importedSession);
-      if (existing.dreamId === temporary.id) {
+      moveSessionToDream(existing, existingDream, targetDream);
+      if (targetDream.id === temporary.id) {
         importedSessions.push(existing);
       }
     } else {
-      const previousIndex = importedSessionIndexByNativeId.get(parsed.nativeSessionId);
-      if (previousIndex !== undefined) {
-        importedSessions[previousIndex] = importedSession;
+      sessionById.set(importedSession.id, importedSession);
+      existingByClaudeSessionId.set(parsed.nativeSessionId, importedSession);
+      if (targetDream.id === temporary.id) {
+        const previousIndex = importedSessionIndexByNativeId.get(parsed.nativeSessionId);
+        if (previousIndex !== undefined) {
+          importedSessions[previousIndex] = importedSession;
+        } else {
+          importedSessionIndexByNativeId.set(parsed.nativeSessionId, importedSessions.length);
+          importedSessions.push(importedSession);
+        }
       } else {
-        importedSessionIndexByNativeId.set(parsed.nativeSessionId, importedSessions.length);
-        importedSessions.push(importedSession);
+        targetDream.sessions.unshift(importedSession);
       }
     }
   }
@@ -3582,6 +3729,7 @@ const importNativeCodexSessions = async (
 
     seenCodexIds.add(parsed.nativeSessionId);
     const existing =
+      existingByCodexThreadId.get(parsed.nativeSessionId) ??
       findImportedSessionTarget(
         projectSessions,
         parsed.nativeSessionId,
@@ -3589,7 +3737,7 @@ const importNativeCodexSessions = async (
         workspace,
         'codexThreadId',
         'codex',
-      ) ?? existingByCodexThreadId.get(parsed.nativeSessionId);
+      );
     const display = resolveImportedSessionDisplay(existing, parsed);
     const existingDream = existing ? existingDreamBySessionId.get(existing.id) : undefined;
     const targetDreamId = existingDream?.id ?? existing?.dreamId ?? temporary.id;
@@ -4096,16 +4244,16 @@ const loadStateUncached = async () => {
     }
   }
 
-  if (v2Store) {
-    return cachedState;
+  if (!v2Store) {
+    await hydrateLoadedState(cachedState);
+    console.warn(`[SESSION_STORE] Failed to migrate V1 store to V2: ${describeError(migrationError)}`);
+    await saveState(cachedState);
   }
-
-  await hydrateLoadedState(cachedState);
-  console.warn(`[SESSION_STORE] Failed to migrate V1 store to V2: ${describeError(migrationError)}`);
-  await saveState(cachedState);
 
   // Fire-and-forget: make every already-stored Claude session resumable in the
   // native `/resume` picker without blocking (or being able to crash) load.
+  // V2's catalog contains the native ids and titles this needs; the V1 fallback
+  // reaches this point only after its native-history hydration completes.
   void backfillNativeClaudeResumeMetadata(cachedState).catch((error) => {
     console.warn(
       `[SESSION_STORE] Native Claude resume backfill failed: ${describeError(error)}`,
@@ -4189,31 +4337,53 @@ const MAX_PERSISTED_MESSAGES_PER_SESSION = (() => {
  * array. That unbounded array (not the trimmed save-time copy) is what grew the
  * web server to the ~4GB V8 ceiling and OOM-crashed it.
  *
- * Trimming the live array to the same bound the persisted file already uses
- * keeps in-memory and on-disk history consistent: a reload only ever restores
- * the last N anyway, so dropping older messages from memory loses nothing that
- * survives a restart. Override with EASYAIFLOW_MAX_RESIDENT_MESSAGES (0 disables,
- * matching the persisted-cap opt-out — at the cost of unbounded heap growth).
+ * V2 preserves complete paginated history on disk, so this limit applies only
+ * to incremental resident buffers. Fully materialized histories and group-room
+ * timelines remain intact until their lifecycle explicitly releases them.
  */
 const MAX_RESIDENT_MESSAGES_PER_SESSION = (() => {
   const raw = Number(process.env.EASYAIFLOW_MAX_RESIDENT_MESSAGES);
-  return Number.isFinite(raw) && raw >= 0 ? raw : MAX_PERSISTED_MESSAGES_PER_SESSION;
+  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 400;
 })();
 
 /**
- * Trims a session's live message array to the resident cap, in place. Reassigns
- * via slice so the dropped message objects become unreachable and collectible.
- * Cheap and idempotent: a no-op once the array is at or under the cap.
+ * Trims an incremental live message buffer while retaining every in-flight
+ * placeholder so later updates can still complete and persist it. A V2 history
+ * marked as fully materialized must never be turned into an unmarked suffix.
  */
 const capResidentSessionMessages = (session: SessionRecord) => {
   const limit = MAX_RESIDENT_MESSAGES_PER_SESSION;
-  if (!limit) {
+  const messages = session.messages;
+  if (
+    !limit ||
+    session.messagesLoaded === true ||
+    session.sessionKind === 'group' ||
+    !messages ||
+    messages.length <= limit
+  ) {
     return;
   }
-  const messages = session.messages;
-  if (messages && messages.length > limit) {
-    session.messages = messages.slice(-limit);
+
+  const retainedIndexes = new Set<number>();
+  messages.forEach((message, index) => {
+    if (
+      message.status === 'queued' ||
+      message.status === 'streaming' ||
+      message.status === 'running' ||
+      message.status === 'background'
+    ) {
+      retainedIndexes.add(index);
+    }
+  });
+
+  let remaining = Math.max(0, limit - retainedIndexes.size);
+  for (let index = messages.length - 1; index >= 0 && remaining > 0; index -= 1) {
+    if (!retainedIndexes.has(index)) {
+      retainedIndexes.add(index);
+      remaining -= 1;
+    }
   }
+  session.messages = messages.filter((_message, index) => retainedIndexes.has(index));
 };
 
 /**
@@ -4247,6 +4417,41 @@ export const buildPersistableState = (state: AppState): AppState => {
   return trimmedAny ? { ...state, projects } : state;
 };
 
+let tempSeq = 0;
+const nextTempSeq = () => (tempSeq = (tempSeq + 1) % Number.MAX_SAFE_INTEGER);
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+// Windows can transiently fail the atomic rename with EPERM/EACCES/EBUSY when
+// antivirus, the search indexer, or a second EasyAIFlow process momentarily
+// holds a lock on the destination. These clear within milliseconds, so retry
+// with backoff instead of crashing. EEXIST (older platforms that don't replace
+// on rename) needs the destination removed first.
+const TRANSIENT_REPLACE_CODES = new Set(['EPERM', 'EACCES', 'EBUSY', 'EEXIST']);
+const MAX_REPLACE_ATTEMPTS = 10;
+
+const replaceFileWithRetry = async (tempPath: string, filePath: string) => {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < MAX_REPLACE_ATTEMPTS; attempt += 1) {
+    try {
+      await rename(tempPath, filePath);
+      return;
+    } catch (error) {
+      const code = error && typeof error === 'object' ? (error as { code?: string }).code : undefined;
+      if (!code || !TRANSIENT_REPLACE_CODES.has(code)) {
+        throw error;
+      }
+      lastError = error;
+      if (code === 'EEXIST') {
+        await rm(filePath, { force: true }).catch(() => {});
+      }
+      // Linear backoff, capped: 25ms, 50ms, ... up to ~250ms per wait.
+      await sleep(Math.min(250, 25 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+};
+
 const writeLegacyToDisk = async () => {
   if (!cachedState) {
     return;
@@ -4264,7 +4469,7 @@ const writeLegacyToDisk = async () => {
   }
 
   const filePath = storePath();
-  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.${nextTempSeq()}.tmp`;
   const backupPath = `${filePath}.last-good.json`;
   const serialized = JSON.stringify(buildPersistableState(cachedState), null, 2);
   await writeFile(tempPath, serialized, 'utf8');
@@ -4276,14 +4481,11 @@ const writeLegacyToDisk = async () => {
     }
   }
   try {
-    await rename(tempPath, filePath);
-  } catch (error) {
-    const code = error && typeof error === 'object' ? (error as { code?: string }).code : undefined;
-    if (code !== 'EEXIST' && code !== 'EPERM') {
-      throw error;
-    }
-    await rm(filePath, { force: true });
-    await rename(tempPath, filePath);
+    await replaceFileWithRetry(tempPath, filePath);
+  } finally {
+    // On success the temp file was renamed away and this is a no-op; if the
+    // replace failed, drop the orphaned temp so *.tmp files don't accumulate.
+    await rm(tempPath, { force: true }).catch(() => {});
   }
   try {
     cachedStateMtimeMs = (await stat(filePath)).mtimeMs;
@@ -4325,6 +4527,32 @@ const buildV2SessionMutations = (
   return mutations;
 };
 
+// Serialize writes: two legacy writes overlapping would race on the same
+// destination (EPERM on Windows) and can even collide on an identical temp path
+// within the same millisecond. Coalesce concurrent requests onto a single
+// in-flight write, scheduling exactly one follow-up write to capture any state
+// changed while the current write was running.
+let activeLegacyWrite: Promise<void> | null = null;
+let rerunLegacyWrite = false;
+
+const flushLegacyWrites = (): Promise<void> => {
+  if (activeLegacyWrite) {
+    rerunLegacyWrite = true;
+    return activeLegacyWrite;
+  }
+  activeLegacyWrite = (async () => {
+    try {
+      do {
+        rerunLegacyWrite = false;
+        await writeLegacyToDisk();
+      } while (rerunLegacyWrite);
+    } finally {
+      activeLegacyWrite = null;
+    }
+  })();
+  return activeLegacyWrite;
+};
+
 export const saveState = async (state: AppState, options: SaveStateOptions = {}) => {
   cacheState(state);
 
@@ -4342,7 +4570,12 @@ export const saveState = async (state: AppState, options: SaveStateOptions = {})
   }
   pendingSaveTimer = setTimeout(() => {
     pendingSaveTimer = null;
-    void writeLegacyToDisk();
+    // Background save: never let a transient disk error become an unhandled
+    // rejection (which crashes the process). The latest state stays cached, so
+    // the next saveState/flush retries persisting it.
+    flushLegacyWrites().catch((error) => {
+      console.warn(`[SESSION_STORE] Deferred save failed, will retry on next save: ${String(error)}`);
+    });
   }, SAVE_DEBOUNCE_MS);
 };
 
@@ -4356,7 +4589,7 @@ export const flushPendingSave = async () => {
     clearTimeout(pendingSaveTimer);
     pendingSaveTimer = null;
   }
-  await writeLegacyToDisk();
+  await flushLegacyWrites();
 };
 
 export const getProjects = async () => {

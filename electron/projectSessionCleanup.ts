@@ -5,6 +5,37 @@ import { pruneTemporaryImportedDuplicates } from './importedSessionCleanup.js';
 const buildSessionTitleKey = (session: SessionRecord) =>
   `${normalizeSessionProvider(session.provider)}::${session.title.trim()}`;
 
+const buildNativeIdentityKey = (session: SessionRecord) => {
+  const provider = normalizeSessionProvider(session.provider);
+  if (provider === 'codex' && session.codexThreadId) {
+    return `codex:${session.codexThreadId}`;
+  }
+  if (provider === 'claude' && session.claudeSessionId) {
+    return `claude:${session.claudeSessionId}`;
+  }
+  return undefined;
+};
+
+const hasConversationMessages = (session: SessionRecord) =>
+  (session.messages ?? []).some((message) => message.content.trim());
+
+const shouldDropTemporaryTitleDuplicate = (
+  session: SessionRecord,
+  preferred: SessionRecord,
+) => {
+  if (session.dreamName !== 'Temporary' || preferred.dreamName === 'Temporary') {
+    return false;
+  }
+
+  const sessionNativeKey = buildNativeIdentityKey(session);
+  const preferredNativeKey = buildNativeIdentityKey(preferred);
+  if (sessionNativeKey && preferredNativeKey) {
+    return sessionNativeKey === preferredNativeKey;
+  }
+
+  return !hasConversationMessages(session);
+};
+
 const choosePreferredSession = (current: SessionRecord | undefined, candidate: SessionRecord, dream: DreamRecord) => {
   if (!current) {
     return candidate;
@@ -74,7 +105,7 @@ export const cleanupProjectSessions = (project: ProjectRecord) => {
           return session.id === preferred.id || buildSessionTitleKey(session as SessionRecord) !== buildSessionTitleKey(preferred);
         }
 
-        return session.dreamName !== 'Temporary';
+        return !shouldDropTemporaryTitleDuplicate(session as SessionRecord, preferred);
       });
     const normalized = (dream.isTemporary ? pruneTemporaryImportedDuplicates(filtered as SessionRecord[]) : filtered) as SessionRecord[];
     return {

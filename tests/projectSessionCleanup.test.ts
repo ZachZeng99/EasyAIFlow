@@ -88,7 +88,7 @@ run('cleanupProjectSessions prunes temporary duplicate titles when one has real 
   assert.deepEqual(cleaned.dreams[0].sessions.map((session) => session.id), ['current']);
 });
 
-run('cleanupProjectSessions prefers non-temporary session when the same title exists in Temporary and another streamwork', () => {
+run('cleanupProjectSessions prefers non-temporary session when the same native title exists in Temporary and another streamwork', () => {
   const project: ProjectRecord = {
     id: 'p',
     name: 'ProjectPBZ',
@@ -99,7 +99,12 @@ run('cleanupProjectSessions prefers non-temporary session when the same title ex
         name: 'Temporary',
         isTemporary: true,
         sessions: [
-          { ...makeSession('temp-total', 'Total', 40, 30), dreamId: 'tmp', dreamName: 'Temporary' },
+          {
+            ...makeSession('temp-total', 'Total', 40, 30),
+            claudeSessionId: 'memory-total-claude',
+            dreamId: 'tmp',
+            dreamName: 'Temporary',
+          },
         ],
       },
       {
@@ -115,6 +120,64 @@ run('cleanupProjectSessions prefers non-temporary session when the same title ex
   const cleaned = cleanupProjectSessions(project);
 
   assert.equal(cleaned.dreams[0].sessions.length, 0);
+  assert.deepEqual(cleaned.dreams[1].sessions.map((session) => session.id), ['memory-total']);
+});
+
+run('cleanupProjectSessions keeps same-title temporary sessions when native histories differ and both have content', () => {
+  const project: ProjectRecord = {
+    id: 'p',
+    name: 'ProjectPBZ',
+    rootPath: 'X:\\PBZ\\ProjectPBZ',
+    dreams: [
+      {
+        id: 'tmp',
+        name: 'Temporary',
+        isTemporary: true,
+        sessions: [
+          {
+            ...makeSession('temp-total', 'Total', 40, 30),
+            dreamId: 'tmp',
+            dreamName: 'Temporary',
+            messages: [
+              {
+                id: 'temp-message',
+                role: 'assistant',
+                timestamp: 'Imported',
+                title: 'Temp reply',
+                content: 'Temp reply',
+                status: 'complete',
+              },
+            ],
+          },
+        ],
+      },
+      {
+        id: 'mem',
+        name: 'Memory',
+        sessions: [
+          {
+            ...makeSession('memory-total', 'Total', 41, 31),
+            dreamId: 'mem',
+            dreamName: 'Memory',
+            messages: [
+              {
+                id: 'memory-message',
+                role: 'assistant',
+                timestamp: 'Imported',
+                title: 'Memory reply',
+                content: 'Memory reply',
+                status: 'complete',
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+
+  const cleaned = cleanupProjectSessions(project);
+
+  assert.deepEqual(cleaned.dreams[0].sessions.map((session) => session.id), ['temp-total']);
   assert.deepEqual(cleaned.dreams[1].sessions.map((session) => session.id), ['memory-total']);
 });
 

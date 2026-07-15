@@ -466,7 +466,30 @@ await run('native Claude import reconnects a model-switched session whose cwd mo
         sessionId: 'new-native',
         message: {
           role: 'user',
-          content: [{ type: 'text', text: '好的，做吧' }],
+          content: [
+            {
+              type: 'text',
+              text: [
+                'EasyAIFlow is starting a fresh native Claude conversation instead of resuming old-native.',
+                '',
+                'Reason: Claude no longer has that local transcript.',
+                '',
+                'The EasyAIFlow transcript before the current message is provided below as recovery context.',
+                '',
+                'Session: bindless',
+                'Session ID: bindless-session',
+                'Project: PBZ',
+                'Streamwork: Crash',
+                'Transcript:',
+                '[ASSISTANT | 6/10 08:40 | old reply]',
+                'old reply',
+                '',
+                'Current user message:',
+                '',
+                '好的，做吧',
+              ].join('\n'),
+            },
+          ],
         },
       }),
       JSON.stringify({
@@ -668,7 +691,30 @@ await run('native Claude import scans nested cwd project directories for matchin
         sessionId: 'new-native',
         message: {
           role: 'user',
-          content: [{ type: 'text', text: '你看现在还缺什么' }],
+          content: [
+            {
+              type: 'text',
+              text: [
+                'EasyAIFlow is starting a fresh native Claude conversation instead of resuming old-native.',
+                '',
+                'Reason: Claude no longer has that local transcript.',
+                '',
+                'The EasyAIFlow transcript before the current message is provided below as recovery context.',
+                '',
+                'Session: FogBlink',
+                'Session ID: fogblink-session',
+                'Project: PBZ',
+                'Streamwork: RenderBug',
+                'Transcript:',
+                '[ASSISTANT | 6/14 16:15 | old reply]',
+                'old reply',
+                '',
+                'Current user message:',
+                '',
+                '你看现在还缺什么',
+              ].join('\n'),
+            },
+          ],
         },
       }),
       JSON.stringify({
@@ -709,6 +755,352 @@ await run('native Claude import scans nested cwd project directories for matchin
     assert.equal(fullSession?.messages.at(-1)?.content, '还缺一次完整构建验证。');
     assert.equal(
       temporary?.sessions.some((candidate) => candidate.claudeSessionId === 'new-native'),
+      false,
+    );
+  } finally {
+    if (previousUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = previousUserProfile;
+    }
+  }
+});
+
+await run('native Claude import keeps title-only native history separate from populated sessions', async () => {
+  const tempBase = path.resolve('.tmp-tests');
+  await mkdir(tempBase, { recursive: true });
+  const tempRoot = await mkdtemp(path.join(tempBase, 'session-store-claude-title-separate-'));
+  const userDataPath = path.join(tempRoot, 'userData');
+  const homePath = path.join(tempRoot, 'home');
+  const projectRoot = path.join(tempRoot, 'PBZ');
+  const claudeProjectsDir = path.join(
+    homePath,
+    '.claude',
+    'projects',
+    toClaudeProjectDirName(projectRoot) ?? 'PBZ',
+  );
+  const storeFile = path.join(userDataPath, 'easyaiflow-sessions.json');
+
+  await mkdir(userDataPath, { recursive: true });
+  await mkdir(projectRoot, { recursive: true });
+  await mkdir(claudeProjectsDir, { recursive: true });
+
+  await writeFile(
+    storeFile,
+    JSON.stringify(
+      {
+        projects: [
+          {
+            id: 'project-1',
+            name: 'PBZ',
+            rootPath: projectRoot,
+            isClosed: false,
+            dreams: [
+              {
+                id: 'temporary',
+                name: 'Temporary',
+                isTemporary: true,
+                sessions: [],
+              },
+              {
+                id: 'memory',
+                name: 'Memory',
+                sessions: [
+                  {
+                    id: 'existing-session',
+                    title: 'Same Title',
+                    preview: 'old reply',
+                    timeLabel: '6/14 16:15',
+                    updatedAt: 1,
+                    provider: 'claude',
+                    model: 'claude-opus-4-8',
+                    workspace: projectRoot,
+                    projectId: 'project-1',
+                    projectName: 'PBZ',
+                    dreamId: 'memory',
+                    dreamName: 'Memory',
+                    claudeSessionId: 'old-native',
+                    sessionKind: 'standard',
+                    hidden: false,
+                    groups: [],
+                    contextReferences: [],
+                    tokenUsage: {
+                      contextWindow: 0,
+                      used: 0,
+                      input: 0,
+                      output: 0,
+                      cached: 0,
+                      windowSource: 'unknown',
+                    },
+                    branchSnapshot: {
+                      branch: 'main',
+                      ahead: 0,
+                      behind: 0,
+                      dirty: false,
+                      changedFiles: [],
+                    },
+                    messages: [
+                      {
+                        id: 'old-user',
+                        role: 'user',
+                        kind: 'message',
+                        timestamp: '6/14 16:14',
+                        title: 'old ask',
+                        content: 'old ask',
+                        status: 'complete',
+                      },
+                      {
+                        id: 'old-message',
+                        role: 'assistant',
+                        kind: 'message',
+                        timestamp: '6/14 16:15',
+                        title: 'old reply',
+                        content: 'old reply',
+                        status: 'complete',
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        deletedImports: {
+          claudeSessionIds: [],
+          codexThreadIds: [],
+        },
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+
+  await writeFile(
+    path.join(claudeProjectsDir, 'new-native.jsonl'),
+    [
+      JSON.stringify({
+        type: 'custom-title',
+        customTitle: 'Same Title',
+        sessionId: 'new-native',
+      }),
+      JSON.stringify({
+        type: 'user',
+        timestamp: '2026-06-14T08:18:33.359Z',
+        cwd: projectRoot,
+        sessionId: 'new-native',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'new unrelated ask' }],
+        },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        timestamp: '2026-06-14T08:21:54.721Z',
+        cwd: projectRoot,
+        sessionId: 'new-native',
+        message: {
+          model: 'claude-fable-5',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'new unrelated reply' }],
+        },
+      }),
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  const previousUserProfile = process.env.USERPROFILE;
+  process.env.USERPROFILE = homePath;
+  configureRuntimePaths({ mode: 'web', userDataPath, homePath });
+
+  try {
+    const sessionStore = await importFreshSessionStore();
+    const projects = await sessionStore.getProjects();
+    const memory = projects[0]?.dreams.find((dream) => dream.id === 'memory');
+    const temporary = projects[0]?.dreams.find((dream) => dream.isTemporary);
+    const existing = memory?.sessions.find((candidate) => candidate.id === 'existing-session');
+    const imported = temporary?.sessions.find((candidate) => candidate.claudeSessionId === 'new-native');
+    const fullImported = imported
+      ? await sessionStore.getSessionRecordForBootstrap(imported.id)
+      : null;
+
+    assert.equal(existing?.claudeSessionId, 'old-native');
+    assert.equal(existing?.messages.some((message) => message.content === 'new unrelated reply'), false);
+    assert.equal(imported?.title, 'Same Title');
+    assert.equal(fullImported?.messages.at(-1)?.content, 'new unrelated reply');
+  } finally {
+    if (previousUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = previousUserProfile;
+    }
+  }
+});
+
+await run('native Claude import uses EasyAIFlow recovery streamwork to move Temporary sessions back', async () => {
+  const tempBase = path.resolve('.tmp-tests');
+  await mkdir(tempBase, { recursive: true });
+  const tempRoot = await mkdtemp(path.join(tempBase, 'session-store-claude-recovery-streamwork-'));
+  const userDataPath = path.join(tempRoot, 'userData');
+  const homePath = path.join(tempRoot, 'home');
+  const projectRoot = path.join(tempRoot, 'PBZ');
+  const claudeProjectsDir = path.join(
+    homePath,
+    '.claude',
+    'projects',
+    toClaudeProjectDirName(projectRoot) ?? 'PBZ',
+  );
+  const storeFile = path.join(userDataPath, 'easyaiflow-sessions.json');
+
+  await mkdir(userDataPath, { recursive: true });
+  await mkdir(projectRoot, { recursive: true });
+  await mkdir(claudeProjectsDir, { recursive: true });
+
+  const baseSession = {
+    id: 'temp-vt-session',
+    title: 'VT Bug汇总',
+    preview: 'old preview',
+    timeLabel: '7/4 09:46',
+    updatedAt: 1,
+    provider: 'claude',
+    model: 'claude-opus-4-8',
+    workspace: projectRoot,
+    projectId: 'project-1',
+    projectName: 'PBZ',
+    dreamId: 'temporary',
+    dreamName: 'Temporary',
+    claudeSessionId: 'native-vt',
+    sessionKind: 'standard',
+    hidden: false,
+    groups: [],
+    contextReferences: [],
+    tokenUsage: {
+      contextWindow: 0,
+      used: 0,
+      input: 0,
+      output: 0,
+      cached: 0,
+      windowSource: 'unknown',
+    },
+    branchSnapshot: {
+      branch: 'main',
+      ahead: 0,
+      behind: 0,
+      dirty: false,
+      changedFiles: [],
+    },
+    messages: [],
+  };
+
+  await writeFile(
+    storeFile,
+    JSON.stringify(
+      {
+        projects: [
+          {
+            id: 'project-1',
+            name: 'PBZ',
+            rootPath: projectRoot,
+            isClosed: false,
+            dreams: [
+              {
+                id: 'temporary',
+                name: 'Temporary',
+                isTemporary: true,
+                sessions: [baseSession],
+              },
+              {
+                id: 'render',
+                name: 'Render',
+                sessions: [],
+              },
+            ],
+          },
+        ],
+        deletedImports: {
+          claudeSessionIds: [],
+          codexThreadIds: [],
+        },
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+
+  await writeFile(
+    path.join(claudeProjectsDir, 'native-vt.jsonl'),
+    [
+      JSON.stringify({
+        type: 'custom-title',
+        customTitle: 'VT Bug汇总',
+        sessionId: 'native-vt',
+      }),
+      JSON.stringify({
+        type: 'user',
+        timestamp: '2026-07-04T03:07:37.312Z',
+        cwd: projectRoot,
+        sessionId: 'native-vt',
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: [
+                'EasyAIFlow is starting a fresh native Claude conversation instead of resuming native-vt.',
+                '',
+                'Reason: Claude no longer has that local transcript.',
+                '',
+                'The EasyAIFlow transcript before the current message is provided below as recovery context.',
+                '',
+                'Session: VT Bug汇总',
+                'Session ID: temp-vt-session',
+                'Project: PBZ',
+                'Streamwork: Render',
+                'Transcript:',
+                '[USER | 7/4 09:46 | VT]',
+                'VT issue',
+              ].join('\n'),
+            },
+          ],
+        },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        timestamp: '2026-07-04T03:10:00.000Z',
+        cwd: projectRoot,
+        sessionId: 'native-vt',
+        message: {
+          model: 'claude-opus-4-8',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Recovered render reply.' }],
+        },
+      }),
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  const previousUserProfile = process.env.USERPROFILE;
+  process.env.USERPROFILE = homePath;
+  configureRuntimePaths({ mode: 'web', userDataPath, homePath });
+
+  try {
+    const sessionStore = await importFreshSessionStore();
+    const projects = await sessionStore.getProjects();
+    const render = projects[0]?.dreams.find((dream) => dream.id === 'render');
+    const temporary = projects[0]?.dreams.find((dream) => dream.isTemporary);
+    const session = render?.sessions.find((candidate) => candidate.claudeSessionId === 'native-vt');
+    const fullSession = session
+      ? await sessionStore.getSessionRecordForBootstrap(session.id)
+      : null;
+
+    assert.equal(session?.id, 'temp-vt-session');
+    assert.equal(session?.dreamName, 'Render');
+    assert.equal(fullSession?.messages.at(-1)?.content, 'Recovered render reply.');
+    assert.equal(
+      temporary?.sessions.some((candidate) => candidate.claudeSessionId === 'native-vt'),
       false,
     );
   } finally {

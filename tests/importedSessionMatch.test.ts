@@ -57,11 +57,32 @@ run('findImportedSessionTarget prefers exact claudeSessionId match', () => {
   assert.equal(result?.id, 'direct');
 });
 
-run('findImportedSessionTarget falls back to a unique non-temporary title match', () => {
+run('findImportedSessionTarget can attach an empty local shell by unique title', () => {
   const memory = makeSession({ id: 'memory', title: 'Total', dreamName: 'Memory' });
   const temp = makeSession({ id: 'temp', title: 'Total', dreamName: 'Temporary' });
   const result = findImportedSessionTarget([memory, temp], 'new-native', 'Total', 'X:\\PBZ\\ProjectPBZ');
   assert.equal(result?.id, 'memory');
+});
+
+run('findImportedSessionTarget does not attach a populated visible session by title alone', () => {
+  const populated = makeSession({
+    id: 'memory',
+    title: 'Total',
+    dreamName: 'Memory',
+    claudeSessionId: 'old-native',
+    messages: [
+      {
+        id: 'message-1',
+        role: 'assistant',
+        timestamp: 'now',
+        title: 'Existing reply',
+        content: 'Existing reply from another session.',
+        status: 'complete',
+      },
+    ],
+  });
+  const result = findImportedSessionTarget([populated], 'new-native', 'Total', 'X:\\PBZ\\ProjectPBZ');
+  assert.equal(result, undefined);
 });
 
 run('findImportedSessionTarget matches a nested native cwd under the existing session workspace', () => {
@@ -85,7 +106,7 @@ run('findImportedSessionTarget matches a nested native cwd under the existing se
   assert.equal(result?.id, 'crash-bindless');
 });
 
-run('findImportedSessionTarget keeps same-title Claude and Codex sessions distinct', () => {
+run('findImportedSessionTarget keeps same-title Claude and Codex sessions distinct without title-rebinding populated threads', () => {
   const claude = makeSession({
     id: 'claude-memory',
     title: '[Group] Room',
@@ -109,7 +130,7 @@ run('findImportedSessionTarget keeps same-title Claude and Codex sessions distin
     'codex',
   );
 
-  assert.equal(result?.id, 'codex-memory');
+  assert.equal(result, undefined);
 });
 
 run('findImportedSessionTarget can match hidden temporary group backings by title', () => {

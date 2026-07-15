@@ -8,6 +8,17 @@ const sameProjectWorkspace = (left: string, right: string) =>
   isWorkspaceWithinProjectTree(left, right) ||
   isWorkspaceWithinProjectTree(right, left);
 
+const isSafeTitleFallbackTarget = (
+  session: SessionRecord,
+  sessionIdKey: 'claudeSessionId' | 'codexThreadId',
+) =>
+  session.hidden === true ||
+  session.group?.kind === 'member' ||
+  (
+    !session[sessionIdKey] &&
+    (session.messages?.length ?? 0) === 0
+  );
+
 export const findImportedSessionTarget = (
   projectSessions: SessionRecord[],
   importedSessionId: string,
@@ -27,6 +38,7 @@ export const findImportedSessionTarget = (
       session.title === title &&
       sameProjectWorkspace(session.workspace, workspace) &&
       normalizeSessionProvider(session.provider) === provider &&
+      isSafeTitleFallbackTarget(session, sessionIdKey) &&
       (
         session.dreamName !== 'Temporary' ||
         session.hidden === true ||

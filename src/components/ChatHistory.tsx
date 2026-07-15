@@ -1,5 +1,6 @@
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { getProviderBadgeLabel, normalizeSessionProvider } from '../data/sessionProvider';
+import { buildInitialCollapsedStreamworks } from '../data/streamworkCollapse';
 import { sortDreamsWithTemporaryFirst } from '../data/streamworkOrder';
 import type { DreamRecord, ProjectRecord, SessionActivityState, SessionSummary } from '../data/types';
 
@@ -88,6 +89,7 @@ function ChatHistoryComponent({
 }: ChatHistoryProps) {
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
   const [collapsedStreamworks, setCollapsedStreamworks] = useState<Record<string, boolean>>({});
+  const initializedStreamworkCollapse = useRef(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [editing, setEditing] = useState<EditingState | null>(null);
   const [draggingStreamwork, setDraggingStreamwork] = useState<{ projectId: string; streamworkId: string } | null>(null);
@@ -96,6 +98,19 @@ function ChatHistoryComponent({
     x: number;
     y: number;
   } | null>(null);
+
+  useLayoutEffect(() => {
+    if (initializedStreamworkCollapse.current || projects.length === 0) {
+      return;
+    }
+
+    initializedStreamworkCollapse.current = true;
+    const initialCollapse = buildInitialCollapsedStreamworks(projects, sessionIndicators);
+    setCollapsedStreamworks((current) => ({
+      ...initialCollapse,
+      ...current,
+    }));
+  }, [projects, sessionIndicators]);
 
   useEffect(() => {
     if (!contextMenu) {

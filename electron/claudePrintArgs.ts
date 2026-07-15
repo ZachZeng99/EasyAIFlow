@@ -23,6 +23,15 @@ export const buildClaudePrintArgs = ({
     'stream-json',
     '--input-format',
     'stream-json',
+    // Stream partial assistant/tool chunks as they are generated so the UI can
+    // render live intermediate output (text deltas + tool input/result detail)
+    // instead of only updating at message boundaries. Removing this flag (commit
+    // 2db7036) silently disabled all `stream_event`/`delta` output, leaving the
+    // delta-handling path dead and making live updates appear "stuck". The
+    // thinking-block resume issue that motivated its removal is handled
+    // separately by detachThinkingBlockMutationClaudeConversation(); this flag
+    // only affects stdout streaming, not the native transcript used for resume.
+    '--include-partial-messages',
     '--permission-mode',
     permissionMode,
     '--permission-prompt-tool',
