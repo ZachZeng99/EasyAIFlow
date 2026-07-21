@@ -11,10 +11,10 @@ const run = (name: string, fn: () => void) => {
   }
 };
 
-run('getDefaultModelForProvider uses fable for Claude sessions', () => {
-  assert.equal(getDefaultModelForProvider('claude'), 'fable');
+run('getDefaultModelForProvider keeps the current Claude default', () => {
+  assert.equal(getDefaultModelForProvider('claude'), 'opus[1m]');
 });
 
-run('getDefaultModelForProvider keeps the Codex default model', () => {
-  assert.equal(getDefaultModelForProvider('codex'), 'gpt-5.5');
+run('getDefaultModelForProvider uses GPT-5.6 Sol for new Codex sessions', () => {
+  assert.equal(getDefaultModelForProvider('codex'), 'gpt-5.6-sol');
 });

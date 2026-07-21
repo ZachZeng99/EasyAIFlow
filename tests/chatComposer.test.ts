@@ -147,6 +147,38 @@ run('ChatComposer includes fable as the default Claude model option', () => {
   assert.match(html, />fable\[1M\]</);
 });
 
+run('ChatComposer offers GPT-5.6 Sol while retaining older Codex models', () => {
+  const html = renderToStaticMarkup(
+    createElement(ChatComposer, {
+      provider: 'codex',
+      draft: '继续这个需求',
+      tokenUsage,
+      sessionModel: 'gpt-5.5',
+      contextReferences: [],
+      slashCommands: [],
+      attachments: [],
+      isSending: false,
+      isResponding: false,
+      model: 'gpt-5.5',
+      effort: 'medium',
+      onDraftChange: () => undefined,
+      onInsertDroppedPaths: () => undefined,
+      onAttachFiles: () => undefined,
+      onRemoveAttachment: () => undefined,
+      onModelChange: () => undefined,
+      onEffortChange: () => undefined,
+      onUpdateContextReferenceMode: () => undefined,
+      onRemoveContextReference: () => undefined,
+      onSend: () => undefined,
+      onStop: () => undefined,
+    }),
+  );
+
+  assert.match(html, /value="gpt-5\.6-sol"/);
+  assert.match(html, /value="gpt-5\.5"/);
+  assert.match(html, /value="gpt-5\.5-mini"/);
+});
+
 run('ChatComposer uses the known fable million-token context window for usage display', () => {
   const html = renderToStaticMarkup(
     createElement(ChatComposer, {

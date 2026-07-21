@@ -95,3 +95,13 @@ run('syncModelSelectionForSession resets explicit model choices that belong to a
     },
   );
 });
+
+run('syncModelSelectionForSession keeps an explicit GPT-5.6 Sol choice for Codex', () => {
+  assert.deepEqual(
+    syncModelSelectionForSession('gpt-5.6-sol', 'explicit', 'gpt-5.5', 'codex'),
+    {
+      model: 'gpt-5.6-sol',
+      source: 'explicit',
+    },
+  );
+});
