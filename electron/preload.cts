@@ -66,6 +66,8 @@ contextBridge.exposeInMainWorld('easyAIFlow', {
   }) =>
     ipcRenderer.invoke('sessions:create', payload),
   deleteSession: (payload: { sessionId: string }) => ipcRenderer.invoke('sessions:delete', payload),
+  setSessionPinned: (payload: { sessionId: string; pinned: boolean }) =>
+    ipcRenderer.invoke('sessions:set-pinned', payload),
   updateSessionContextReferences: (payload: {
     sessionId: string;
     references: import('../src/data/types.js').ContextReference[];

@@ -128,6 +128,7 @@ export type EasyAIFlowBridge = {
     sessionKind?: SessionKind;
   }) => Promise<SessionCreateResult>;
   deleteSession: (payload: { sessionId: string }) => Promise<DeleteEntityResult>;
+  setSessionPinned: (payload: { sessionId: string; pinned: boolean }) => Promise<RenameEntityResult>;
   updateSessionContextReferences: (payload: {
     sessionId: string;
     references: ContextReference[];
@@ -243,6 +244,7 @@ const webBridge: EasyAIFlowBridge = {
   createSessionInStreamwork: (payload) => callWebRpc('createSessionInStreamwork', payload),
   createSession: (payload) => callWebRpc('createSession', payload),
   deleteSession: (payload) => callWebRpc('deleteSession', payload),
+  setSessionPinned: (payload) => callWebRpc('setSessionPinned', payload),
   updateSessionContextReferences: (payload) => callWebRpc('updateSessionContextReferences', payload),
   renameEntity: (payload) => callWebRpc('renameEntity', payload),
   sendMessage: (payload) => callWebRpc('sendMessage', payload),

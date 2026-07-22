@@ -150,6 +150,7 @@ export type SessionSummary = {
   preview: string;
   timeLabel: string;
   updatedAt?: number;
+  pinned?: boolean;
   provider?: SessionProvider;
   messagesLoaded?: boolean;
   model: string;

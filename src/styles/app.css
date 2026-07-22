@@ -246,6 +246,37 @@ p {
   color: rgba(245, 239, 230, 0.45);
 }
 
+.pinned-threads {
+  margin: 0 0 20px;
+  padding: 0 0 18px;
+  border-bottom: 1px solid rgba(96, 165, 250, 0.16);
+}
+
+.pinned-threads-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 3px 9px;
+  color: rgba(147, 197, 253, 0.82);
+  font-family: 'Cascadia Code', 'Consolas', monospace;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.pinned-threads-header em {
+  font-style: normal;
+  color: rgba(245, 239, 230, 0.42);
+}
+
+.pinned-session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-width: 0;
+}
+
 .history-tree,
 .dream-list,
 .session-list,
@@ -480,6 +511,46 @@ p {
   z-index: 0;
 }
 
+.session-card.pinned-session-card {
+  padding: 14px 14px 13px;
+}
+
+.pinned-session-location {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  margin: -1px 0 12px;
+  padding-bottom: 11px;
+  border-bottom: 1px solid rgba(147, 197, 253, 0.2);
+}
+
+.pinned-session-location-part {
+  min-width: 0;
+}
+
+.pinned-session-location-key {
+  display: block;
+  margin-bottom: 4px;
+  color: rgba(147, 197, 253, 0.78);
+  font-family: 'Cascadia Code', 'Consolas', monospace;
+  font-size: 0.56rem;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.pinned-session-location strong {
+  display: block;
+  overflow: hidden;
+  color: rgba(245, 239, 230, 0.92);
+  font-size: 0.75rem;
+  font-weight: 650;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .session-card > * {
   position: relative;
   z-index: 1;
@@ -620,6 +691,26 @@ p {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.session-pin-marker {
+  display: inline-flex;
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+  align-items: center;
+  justify-content: center;
+  color: #93c5fd;
+}
+
+.session-pin-marker svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .session-kind-badge {

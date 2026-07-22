@@ -2044,6 +2044,16 @@ export default function App() {
     }
   };
 
+  const handleSetSessionPinned = async (sessionId: string, pinned: boolean) => {
+    try {
+      const result = await bridge.setSessionPinned({ sessionId, pinned });
+      replaceProjects(result.projects);
+      setUiError(null);
+    } catch (error) {
+      setUiError(error instanceof Error ? error.message : 'Failed to update pinned thread.');
+    }
+  };
+
   const handleCopySessionReference = async (sessionId: string) => {
     try {
       await bridge.writeClipboardText(`[[session:${sessionId}]]`);
@@ -2257,6 +2267,9 @@ export default function App() {
           onCloseProject={(projectId) => openDialog('close-project', projectId)}
           onDeleteStreamwork={(streamworkId) => openDialog('delete-streamwork', streamworkId)}
           onDeleteSession={(sessionId) => openDialog('delete-session', sessionId)}
+          onSetSessionPinned={(sessionId, pinned) => {
+            void handleSetSessionPinned(sessionId, pinned);
+          }}
           onCopySessionReference={(sessionId) => {
             void handleCopySessionReference(sessionId);
           }}

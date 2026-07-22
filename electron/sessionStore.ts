@@ -5334,6 +5334,25 @@ export const updateSessionContextReferences = async (
   };
 };
 
+export const setSessionPinned = async (
+  sessionId: string,
+  pinned: boolean,
+): Promise<RenameEntityResult> => {
+  const state = await loadState();
+  const session = findSessionInProjects(state.projects, sessionId);
+
+  if (!session) {
+    throw new Error('Session not found.');
+  }
+
+  session.pinned = pinned;
+  await saveState(state, { immediateIndex: true });
+
+  return {
+    projects: cloneVisibleProjects(state.projects),
+  };
+};
+
 const makeEmptyBranchSnapshot = (workspace: string): BranchSnapshot => ({
   branch: 'new-session',
   tracking: undefined,

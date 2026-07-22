@@ -46,6 +46,7 @@ import {
   getSessionRecordForBootstrap,
   renameEntity,
   reorderStreamworks,
+  setSessionPinned,
   updateSessionContextReferences,
   flushPendingSave,
 } from '../electron/sessionStore.js';
@@ -329,6 +330,8 @@ const rpcHandlers = {
     ),
   deleteSession: async (payload: { sessionId: string }) =>
     summarizeProjectsInResult(await handleDeleteSession(ctx, state, payload)),
+  setSessionPinned: async (payload: { sessionId: string; pinned: boolean }) =>
+    summarizeProjectsInResult(await setSessionPinned(payload.sessionId, payload.pinned)),
   updateSessionContextReferences: async (payload: { sessionId: string; references: ContextReference[] }) =>
     summarizeProjectsInResult(await updateSessionContextReferences(payload.sessionId, payload.references)),
   renameEntity: async (payload: { kind: 'project' | 'streamwork' | 'session'; id: string; name: string }) =>

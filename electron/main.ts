@@ -37,6 +37,7 @@ import {
   getSessionRecordForBootstrap,
   renameEntity,
   reorderStreamworks,
+  setSessionPinned,
   updateSessionContextReferences,
   flushPendingSave,
 } from './sessionStore.js';
@@ -301,6 +302,11 @@ app.whenReady().then(async () => {
   );
   ipcMain.handle('sessions:delete', async (_event, payload: { sessionId: string }) =>
     handleDeleteSession(ctx, state, payload),
+  );
+  ipcMain.handle(
+    'sessions:set-pinned',
+    async (_event, payload: { sessionId: string; pinned: boolean }) =>
+      setSessionPinned(payload.sessionId, payload.pinned),
   );
   ipcMain.handle(
     'sessions:update-context-references',
