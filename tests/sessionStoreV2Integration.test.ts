@@ -256,3 +256,71 @@ await run('recovers stale pending messages lazily when a session is first opened
     }
   }
 });
+
+await run('bounds trace content for UI pages without changing runtime materialization', async () => {
+  const base = path.resolve('.tmp-tests');
+  await mkdir(base, { recursive: true });
+  const tempRoot = await mkdtemp(path.join(base, 'session-store-v2-trace-safety-'));
+  const userDataPath = path.join(tempRoot, 'userData');
+  const homePath = path.join(tempRoot, 'home');
+  const legacyPath = path.join(userDataPath, 'easyaiflow-sessions.json');
+  const rawTraceContent = JSON.stringify({
+    image_url: `data:image/png;base64,${'A'.repeat(300_000)}`,
+  });
+  const trace: ConversationMessage = {
+    ...message('trace-image'),
+    role: 'system',
+    kind: 'tool_use',
+    title: 'exec',
+    content: rawTraceContent,
+    status: 'success',
+  };
+  const target = session('session-trace-safety', [
+    trace,
+    ...Array.from({ length: 100 }, (_, index) => message(`normal-${index}`)),
+  ]);
+  await mkdir(userDataPath, { recursive: true });
+  await mkdir(path.join(homePath, '.claude', 'projects'), { recursive: true });
+  await writeFile(legacyPath, JSON.stringify({
+    projects: [{
+      id: 'project-1',
+      name: 'Project',
+      rootPath: 'X:\\workspace',
+      dreams: [{ id: 'dream-1', name: 'Dream', sessions: [target] }],
+    }],
+    deletedImports: { claudeSessionIds: [], codexThreadIds: [] },
+  }), 'utf8');
+
+  const previousUserProfile = process.env.USERPROFILE;
+  process.env.USERPROFILE = homePath;
+  configureRuntimePaths({ mode: 'web', userDataPath, homePath });
+  let store: Awaited<ReturnType<typeof importFreshSessionStore>> | undefined;
+
+  try {
+    store = await importFreshSessionStore();
+    await store.getProjectsForBootstrap();
+    const opened = await store.getSessionRecordForBootstrap(target.id);
+    assert.equal(opened?.messages.length, 1);
+    assert.equal(opened?.historyPage?.hasMoreBefore, true);
+
+    const older = opened?.historyPage?.nextBefore
+      ? await store.getSessionMessagePage(target.id, opened.historyPage.nextBefore)
+      : null;
+    const displayedTrace = older?.messages.find((entry) => entry.id === trace.id);
+    assert.ok(displayedTrace);
+    assert.equal(displayedTrace.content.includes('data:image'), false);
+    assert.match(displayedTrace.content, /Embedded binary data omitted/);
+    assert.ok(displayedTrace.content.length < 1024);
+
+    const materialized = await store.materializeSessionHistoryForRuntime(target.id);
+    const runtimeTrace = materialized?.messages.find((entry) => entry.id === trace.id);
+    assert.equal(runtimeTrace?.content, rawTraceContent);
+  } finally {
+    await store?.flushPendingSave();
+    if (previousUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = previousUserProfile;
+    }
+  }
+});

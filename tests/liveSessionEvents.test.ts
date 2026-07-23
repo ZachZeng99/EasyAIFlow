@@ -129,3 +129,26 @@ run('applyClaudeEventToProjects preserves newer streamed content if the trace pl
   assert.equal(assistant?.title, 'Claude response');
   assert.equal(assistant?.status, 'streaming');
 });
+
+run('applyClaudeEventToProjects bounds embedded image data in live traces', () => {
+  const projects = applyClaudeEventToProjects(makeProjects(), {
+    type: 'trace',
+    sessionId: 'session-1',
+    message: makeMessage(
+      'trace-image',
+      JSON.stringify({ image_url: `data:image/png;base64,${'A'.repeat(300_000)}` }),
+      {
+        role: 'system',
+        kind: 'tool_use',
+        title: 'exec',
+        status: 'success',
+      },
+    ),
+  });
+
+  const trace = getSession(projects).messages.find((message) => message.id === 'trace-image');
+  assert.ok(trace);
+  assert.equal(trace.content.includes('data:image'), false);
+  assert.match(trace.content, /Embedded binary data omitted/);
+  assert.ok(trace.content.length < 1024);
+});

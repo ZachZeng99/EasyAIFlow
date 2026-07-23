@@ -25,6 +25,10 @@ import {
 import { buildRecordedCodeChangeDiff } from '../electron/recordedCodeChangeDiff.js';
 import { stopPendingSessionMessages } from '../electron/sessionStop.js';
 import { getProviderDisplayName, normalizeSessionProvider } from '../src/data/sessionProvider.js';
+import {
+  sanitizeConversationMessageTraceContent,
+  sanitizeTraceContent,
+} from '../src/data/traceContent.js';
 import type {
   ConversationMessage,
   ContextReference,
@@ -102,15 +106,16 @@ export const emitTraceMessage = async (
   message: ConversationMessage,
   options?: { persist?: boolean },
 ) => {
+  const safeMessage = sanitizeConversationMessageTraceContent(message);
   if (options?.persist === false) {
-    await upsertSessionMessageInMemory(sessionId, message);
+    await upsertSessionMessageInMemory(sessionId, safeMessage);
   } else {
-    await upsertSessionMessage(sessionId, message);
+    await upsertSessionMessage(sessionId, safeMessage);
   }
   ctx.broadcastEvent({
     type: 'trace',
     sessionId,
-    message,
+    message: safeMessage,
   });
 };
 
@@ -214,6 +219,8 @@ type CodexFunctionCallOutputItem = {
 
 const getString = (value: unknown) => (typeof value === 'string' ? value : '');
 
+const normalizeCodexTraceText = (value: string) => sanitizeTraceContent(value).trim();
+
 const normalizeCodexFunctionToolName = (value: string) =>
   value.trim().startsWith('functions.') ? value.trim().slice('functions.'.length) : value.trim();
 
@@ -233,7 +240,7 @@ const parseCodexFunctionArguments = (value: string) => {
 
 const stringifyCodexStructuredValue = (value: unknown): string => {
   if (typeof value === 'string') {
-    return value.trim();
+    return normalizeCodexTraceText(value);
   }
 
   if (Array.isArray(value)) {
@@ -245,12 +252,12 @@ const stringifyCodexStructuredValue = (value: unknown): string => {
 
         const candidate = entry as Record<string, unknown>;
         if (typeof candidate.text === 'string') {
-          return candidate.text.trim();
+          return normalizeCodexTraceText(candidate.text);
         }
         if (typeof candidate.message === 'string') {
-          return candidate.message.trim();
+          return normalizeCodexTraceText(candidate.message);
         }
-        return JSON.stringify(candidate);
+        return normalizeCodexTraceText(JSON.stringify(candidate));
       })
       .filter(Boolean)
       .join('\n\n')
@@ -260,7 +267,7 @@ const stringifyCodexStructuredValue = (value: unknown): string => {
   if (value && typeof value === 'object') {
     const candidate = value as Record<string, unknown>;
     if (typeof candidate.text === 'string') {
-      return candidate.text.trim();
+      return normalizeCodexTraceText(candidate.text);
     }
     if (Array.isArray(candidate.content)) {
       const nested = stringifyCodexStructuredValue(candidate.content);
@@ -275,9 +282,9 @@ const stringifyCodexStructuredValue = (value: unknown): string => {
       }
     }
     if (typeof candidate.message === 'string') {
-      return candidate.message.trim();
+      return normalizeCodexTraceText(candidate.message);
     }
-    return JSON.stringify(candidate, null, 2).trim();
+    return normalizeCodexTraceText(JSON.stringify(candidate, null, 2));
   }
 
   return '';
@@ -298,15 +305,15 @@ const extractCodexToolCallId = (item: CodexFunctionCallItem | CodexFunctionCallO
 const extractCodexToolArgumentsText = (item: CodexFunctionCallItem | CodexFunctionCallOutputItem) => {
   const rawArguments = (item as { arguments?: unknown }).arguments;
   if (typeof rawArguments === 'string') {
-    return rawArguments.trim();
+    return normalizeCodexTraceText(rawArguments);
   }
 
   if (rawArguments && typeof rawArguments === 'object') {
-    return JSON.stringify(rawArguments, null, 2).trim();
+    return normalizeCodexTraceText(JSON.stringify(rawArguments, null, 2));
   }
 
   if (typeof (item as { prompt?: unknown }).prompt === 'string') {
-    return ((item as { prompt: string }).prompt).trim();
+    return normalizeCodexTraceText((item as { prompt: string }).prompt);
   }
 
   return '';
@@ -318,9 +325,7 @@ const extractCodexToolArgumentsObject = (item: CodexFunctionCallItem | CodexFunc
     return rawArguments as Record<string, unknown>;
   }
 
-  return extractCodexToolArgumentsText(item)
-    ? parseCodexFunctionArguments(extractCodexToolArgumentsText(item))
-    : undefined;
+  return typeof rawArguments === 'string' ? parseCodexFunctionArguments(rawArguments) : undefined;
 };
 
 const extractCodexToolOutputText = (item: CodexFunctionCallItem | CodexFunctionCallOutputItem) => {
@@ -374,16 +379,16 @@ export const buildCodexCommandTraceMessage = (payload: {
     return null;
   }
 
-  const command = payload.item.command.trim();
+  const command = normalizeCodexTraceText(payload.item.command);
   if (!command) {
     return null;
   }
 
   const output =
     typeof payload.item.aggregated_output === 'string'
-      ? payload.item.aggregated_output.trim()
+      ? normalizeCodexTraceText(payload.item.aggregated_output)
       : typeof payload.item.aggregatedOutput === 'string'
-        ? payload.item.aggregatedOutput.trim()
+        ? normalizeCodexTraceText(payload.item.aggregatedOutput)
         : '';
   const exitCode =
     typeof payload.item.exit_code === 'number' && Number.isFinite(payload.item.exit_code)
@@ -405,7 +410,7 @@ export const buildCodexCommandTraceMessage = (payload: {
     kind: 'tool_use' as const,
     timestamp: payload.previous?.timestamp ?? payload.timestamp ?? nowLabel(),
     title: 'Command',
-    content: contentParts.join('\n\n'),
+    content: sanitizeTraceContent(contentParts.join('\n\n')),
     status: payload.status,
   };
 };
@@ -438,7 +443,7 @@ export const buildCodexFunctionCallTraceMessage = (payload: {
     payload.previous?.recordedDiff ??
     (parsedArguments ? buildRecordedCodeChangeDiff(name, parsedArguments) : undefined);
   const filePath = recordedDiff?.filePath || getString(parsedArguments?.file_path).trim();
-  const contentParts = (payload.previous?.content?.trim() ?? '')
+  const contentParts = normalizeCodexTraceText(payload.previous?.content ?? '')
     .split(/\n{2,}/)
     .map((part) => part.trim())
     .filter(Boolean);
@@ -455,7 +460,7 @@ export const buildCodexFunctionCallTraceMessage = (payload: {
     contentParts.push(outputText);
   }
   for (const line of payload.extraLines ?? []) {
-    const trimmed = line.trim();
+    const trimmed = normalizeCodexTraceText(line);
     if (trimmed && !contentParts.includes(trimmed)) {
       contentParts.push(trimmed);
     }
@@ -467,7 +472,7 @@ export const buildCodexFunctionCallTraceMessage = (payload: {
     kind: 'tool_use' as const,
     timestamp: payload.previous?.timestamp ?? payload.timestamp ?? nowLabel(),
     title: payload.previous?.title ?? name,
-    content: contentParts.join('\n\n'),
+    content: sanitizeTraceContent(contentParts.join('\n\n')),
     recordedDiff,
     status: payload.status,
   };

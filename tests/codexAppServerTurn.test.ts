@@ -599,6 +599,37 @@ await run('handleAppServerNotification keeps commentary out of the final assista
       },
     );
 
+    await codexAppServerTurn.handleAppServerNotification(
+      ctx as never,
+      sessionId,
+      activeTurn as never,
+      state as never,
+      () => undefined,
+      {
+        method: 'item/completed',
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          item: {
+            id: 'mcp-1',
+            type: 'mcpToolCall',
+            tool: 'search_query',
+            server: 'web',
+            arguments: {
+              q: 'EasyAIFlow',
+            },
+            result: {
+              content: [
+                { image_url: `data:image/png;base64,${'A'.repeat(300_000)}` },
+                { text: 'Search complete' },
+              ],
+            },
+            status: 'completed',
+          },
+        },
+      },
+    );
+
     const session = await sessionStore.findSession(sessionId);
     const updatedAssistant = session?.messages.find((message: ConversationMessage) => message.id === assistantMessage.id);
     const commentaryTrace = session?.messages.find((message: ConversationMessage) => message.id === 'commentary-1');
@@ -617,6 +648,11 @@ await run('handleAppServerNotification keeps commentary out of the final assista
     assert.match(commandTrace?.content ?? '', /git status --short/);
     assert.match(commandTrace?.content ?? '', /M src\/App\.tsx|M src\\App\.tsx/);
     assert.match(toolTrace?.content ?? '', /Searching primary sources/);
+    assert.match(toolTrace?.content ?? '', /Embedded binary data omitted/);
+    assert.match(toolTrace?.content ?? '', /Search complete/);
+    assert.equal(toolTrace?.content.includes('data:image'), false);
+    assert.ok((toolTrace?.content.length ?? 0) < 1024);
+    assert.ok(JSON.stringify(state.traceItemSnapshots.get('mcp-1')).length < 1024);
   } finally {
     if (previousUserProfile === undefined) {
       delete process.env.USERPROFILE;

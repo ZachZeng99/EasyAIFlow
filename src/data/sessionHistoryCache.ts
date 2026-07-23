@@ -1,4 +1,5 @@
 import type { ProjectRecord, SessionMessagePage, SessionRecord } from './types.js';
+import { sanitizeConversationMessagesForDisplay } from './traceContent.js';
 
 export const touchSessionHistory = (recency: string[], sessionId: string) => [
   sessionId,
@@ -12,7 +13,11 @@ export const mergeOlderSessionMessagePage = (
   if (page.sessionId !== session.id) {
     return session;
   }
-  const messages = new Map(page.messages.map((message) => [message.id, message] as const));
+  const messages = new Map(
+    sanitizeConversationMessagesForDisplay(page.messages).map(
+      (message) => [message.id, message] as const,
+    ),
+  );
   for (const message of session.messages ?? []) {
     messages.set(message.id, message);
   }

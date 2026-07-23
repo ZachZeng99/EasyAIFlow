@@ -1,4 +1,5 @@
 import type { ConversationMessage, ProjectRecord, SessionRecord } from './types.js';
+import { sanitizeConversationMessagesForDisplay } from './traceContent.js';
 
 const getMessageStatusRank = (status: ConversationMessage['status']) => {
   switch (status) {
@@ -225,6 +226,7 @@ export const hydrateSessionRecordInProjects = (
 ) => {
   const hydratedSession = {
     ...sessionRecord,
+    messages: sanitizeConversationMessagesForDisplay(sessionRecord.messages ?? []),
     messagesLoaded: true,
   };
   let found = false;

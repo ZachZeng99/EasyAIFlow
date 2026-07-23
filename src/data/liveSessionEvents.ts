@@ -1,6 +1,7 @@
 import { reconcileLiveTraceMessage } from './optimisticSend.js';
 import { hydrateSessionRecordInProjects } from './projectSnapshots.js';
 import { getProviderDisplayName } from './sessionProvider.js';
+import { sanitizeConversationMessageTraceContent } from './traceContent.js';
 import type {
   ClaudeStreamEvent,
   ConversationMessage,
@@ -94,7 +95,10 @@ export const applyClaudeEventToProjects = (projects: ProjectRecord[], event: Cla
           }
 
           if (event.type === 'trace') {
-            const messages = reconcileLiveTraceMessage(session.messages ?? [], event.message);
+            const messages = reconcileLiveTraceMessage(
+              session.messages ?? [],
+              sanitizeConversationMessageTraceContent(event.message),
+            );
 
             return {
               ...session,

@@ -39,6 +39,7 @@ import {
   normalizeSessionProvider,
 } from '../src/data/sessionProvider.js';
 import { sortDreamsWithTemporaryFirst } from '../src/data/streamworkOrder.js';
+import { sanitizeConversationMessagesForDisplay } from '../src/data/traceContent.js';
 import {
   isWorkspaceWithinProjectTree,
   normalizeWorkspacePath,
@@ -4800,7 +4801,11 @@ export const getSessionRecordForBootstrap = async (sessionId: string) => {
     return null;
   }
   if (!v2Store) {
-    return cloneSessionRecord(session);
+    const cloned = cloneSessionRecord(session);
+    return {
+      ...cloned,
+      messages: sanitizeConversationMessagesForDisplay(cloned.messages),
+    };
   }
 
   const hasChangedNativeGroupBacking =
@@ -4822,7 +4827,9 @@ export const getSessionRecordForBootstrap = async (sessionId: string) => {
   }
   page = {
     ...page,
-    messages: await recoverLoadedMessagesAfterCrash(session, page.messages),
+    messages: sanitizeConversationMessagesForDisplay(
+      await recoverLoadedMessagesAfterCrash(session, page.messages),
+    ),
   };
   return {
     ...cloneSessionRecord(session),
@@ -4849,12 +4856,16 @@ export const getSessionMessagePage = async (
     return {
       sessionId,
       pageId: '',
-      messages: cloneSessionRecord(session).messages,
+      messages: sanitizeConversationMessagesForDisplay(cloneSessionRecord(session).messages),
       hasMoreBefore: false,
       sessionRevision: 0,
     };
   }
-  return v2Store.readMessagePage(sessionId, before);
+  const page = await v2Store.readMessagePage(sessionId, before);
+  return {
+    ...page,
+    messages: sanitizeConversationMessagesForDisplay(page.messages),
+  };
 };
 
 export const releaseMaterializedSessionHistory = async (sessionId: string) => {

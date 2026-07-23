@@ -10,6 +10,7 @@ import {
   buildCodexFunctionCallTraceMessage,
   finalizeCodexTraceMessages,
 } from './codexInteraction.js';
+import { sanitizeTraceStructuredValue } from '../src/data/traceContent.js';
 import {
   findSession,
   getProjects,
@@ -178,9 +179,22 @@ const upsertTraceItemSnapshot = (
   itemId: string,
   item: Record<string, unknown>,
 ) => {
+  const safeItem = { ...item };
+  for (const key of [
+    'output',
+    'contentItems',
+    'result',
+    'error',
+    'aggregated_output',
+    'aggregatedOutput',
+  ]) {
+    if (key in safeItem) {
+      safeItem[key] = sanitizeTraceStructuredValue(safeItem[key]);
+    }
+  }
   const next = {
     ...(state.traceItemSnapshots.get(itemId) ?? {}),
-    ...item,
+    ...safeItem,
   };
   state.traceItemSnapshots.set(itemId, next);
   return next;

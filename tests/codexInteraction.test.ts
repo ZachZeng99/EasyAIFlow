@@ -354,6 +354,32 @@ run('buildCodexFunctionCallTraceMessage maps tool calls and outputs into tool tr
   });
 });
 
+run('buildCodexFunctionCallTraceMessage omits embedded image bytes from structured output', () => {
+  const completed = buildCodexFunctionCallTraceMessage({
+    item: {
+      call_id: 'call_image',
+      name: 'exec',
+      output: {
+        content: [
+          {
+            type: 'image',
+            image_url: `data:image/png;base64,${'A'.repeat(300_000)}`,
+          },
+          { text: 'Image inspected successfully.' },
+        ],
+      },
+    },
+    status: 'success',
+    timestamp: '4/7 01:11',
+  });
+
+  assert.ok(completed);
+  assert.equal(completed.content.includes('data:image'), false);
+  assert.match(completed.content, /Embedded binary data omitted/);
+  assert.match(completed.content, /Image inspected successfully/);
+  assert.ok(completed.content.length < 1024);
+});
+
 run('buildCodexFunctionCallTraceMessage keeps code edits as recorded code changes', () => {
   const patch = [
     '*** Begin Patch',
