@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import {
+  isActiveBackgroundTask,
   mergeGroupRoomAskUserQuestionState,
+  mergeBackgroundTaskRecords,
   mergeGroupRoomRuntimeState,
   mergeSessionRuntimeStates,
   setSessionRuntimeState,
@@ -169,4 +171,42 @@ run('setSessionRuntimeState preserves active background tasks while the runtime 
     },
   ]);
   assert.equal(next.runtime?.phase, 'background');
+});
+
+run('detached running processes no longer count as active background work', () => {
+  const detached = {
+    taskId: 'editor-process',
+    status: 'running' as const,
+    description: 'Unreal Editor',
+    detached: true,
+    updatedAt: 10,
+  };
+
+  assert.equal(isActiveBackgroundTask(detached), false);
+  assert.deepEqual(
+    setSessionRuntimeState(
+      { backgroundTasks: [detached] },
+      makeRuntime({ processActive: true, phase: 'idle', updatedAt: 20 }),
+    ).backgroundTasks,
+    [detached],
+  );
+});
+
+run('a terminal update clears a previous detached marker', () => {
+  const merged = mergeBackgroundTaskRecords(
+    {
+      taskId: 'editor-process',
+      status: 'running',
+      description: 'Unreal Editor',
+      detached: true,
+    },
+    {
+      taskId: 'editor-process',
+      status: 'completed',
+      description: 'Unreal Editor exited',
+    },
+  );
+
+  assert.equal(merged.status, 'completed');
+  assert.equal(merged.detached, undefined);
 });

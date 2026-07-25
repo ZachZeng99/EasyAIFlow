@@ -130,10 +130,17 @@ function ContextPanelComponent({
         {backgroundTasks.length > 0 ? (
           <div className="background-task-list">
             {backgroundTasks.map((task) => (
-              <div key={task.taskId} className={`background-task-card status-${task.status}`}>
+              <div
+                key={task.taskId}
+                className={`background-task-card status-${task.detached ? 'detached' : task.status}`}
+              >
                 <div className="background-task-head">
                   <strong>{task.description}</strong>
-                  <span className={`background-task-status status-${task.status}`}>{task.status}</span>
+                  <span
+                    className={`background-task-status status-${task.detached ? 'detached' : task.status}`}
+                  >
+                    {task.detached ? 'detached' : task.status}
+                  </span>
                 </div>
                 <div className="background-task-meta">
                   <span>{task.taskType ?? 'task'}</span>

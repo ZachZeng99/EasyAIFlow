@@ -31,6 +31,7 @@ import {
   type AskUserQuestionDraft,
 } from './data/askUserQuestion';
 import {
+  isActiveBackgroundTask,
   mergeGroupRoomAskUserQuestionState,
   mergeGroupRoomRuntimeState,
   setSessionRuntimeState,
@@ -621,9 +622,7 @@ export default function App() {
         interaction.pendingPermissions?.length ||
         interaction.askUserQuestion ||
         interaction.planModeRequest ||
-        interaction.backgroundTasks?.some(
-          (task) => task.status === 'pending' || task.status === 'running',
-        ),
+        interaction.backgroundTasks?.some(isActiveBackgroundTask),
       );
       if (
         hasPendingInteraction ||
@@ -779,9 +778,7 @@ export default function App() {
             session.id !== activeSelectedSessionId && unreadSessionIds.includes(session.id);
           const interaction = getEffectiveSessionInteraction(session);
           const hasActiveBackgroundTasks = Boolean(
-            interaction?.backgroundTasks?.some(
-              (task) => task.status === 'pending' || task.status === 'running',
-            ),
+            interaction?.backgroundTasks?.some(isActiveBackgroundTask),
           );
           const runtimePhase = interaction?.runtime?.phase;
           const isOnline = Boolean(interaction?.runtime?.processActive);
@@ -836,9 +833,7 @@ export default function App() {
       selectedInteractionState?.planModeRequest,
   );
   const hasActiveSelectedBackgroundTasks = Boolean(
-    selectedInteractionState?.backgroundTasks?.some(
-      (task) => task.status === 'pending' || task.status === 'running',
-    ),
+    selectedInteractionState?.backgroundTasks?.some(isActiveBackgroundTask),
   );
   const canDisconnectSelectedSession = Boolean(selectedInteractionState?.runtime?.processActive);
   const isSelectedGroupSession = selectedSession?.sessionKind === 'group';

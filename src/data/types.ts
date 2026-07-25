@@ -71,6 +71,8 @@ export type BackgroundTaskRecord = {
   taskId: string;
   status: BackgroundTaskStatus;
   description: string;
+  /** The process is still alive, but it no longer represents unfinished session work. */
+  detached?: boolean;
   toolUseId?: string;
   taskType?: string;
   workflowName?: string;

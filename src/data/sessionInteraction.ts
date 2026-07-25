@@ -32,6 +32,21 @@ export type SessionInteractionState = {
   isSubmittingPlanMode?: boolean;
 };
 
+export const isActiveBackgroundTask = (task: BackgroundTaskRecord) =>
+  !task.detached && (task.status === 'pending' || task.status === 'running');
+
+export const mergeBackgroundTaskRecords = (
+  previous: BackgroundTaskRecord | undefined,
+  next: BackgroundTaskRecord,
+): BackgroundTaskRecord => ({
+  ...(previous ?? {}),
+  ...next,
+  detached:
+    next.status === 'completed' || next.status === 'failed' || next.status === 'stopped'
+      ? undefined
+      : next.detached ?? previous?.detached,
+});
+
 const isSamePermissionRequest = (
   left: SessionPermissionRequest,
   right: SessionPermissionRequest,
@@ -99,10 +114,7 @@ export const upsertSessionBackgroundTask = (
   const tasks = [...(state.backgroundTasks ?? [])];
   const existingIndex = tasks.findIndex((candidate) => candidate.taskId === task.taskId);
   if (existingIndex >= 0) {
-    tasks[existingIndex] = {
-      ...tasks[existingIndex],
-      ...task,
-    };
+    tasks[existingIndex] = mergeBackgroundTaskRecords(tasks[existingIndex], task);
   } else {
     tasks.unshift(task);
   }
@@ -129,9 +141,7 @@ const pruneActiveBackgroundTasks = (
     return undefined;
   }
 
-  const next = tasks.filter(
-    (task) => task.status !== 'pending' && task.status !== 'running',
-  );
+  const next = tasks.filter((task) => !isActiveBackgroundTask(task));
   return next.length > 0 ? next : undefined;
 };
 

@@ -252,6 +252,131 @@ run('resident runtime snapshots reconcile stale running tasks from native Claude
   }
 });
 
+run('resident runtime treats a completed prompt task list as detached process state', () => {
+  const state = createClaudeInteractionState();
+  const events: Array<{ type: string; runtime?: { phase?: string; processActive?: boolean } }> = [];
+  const ctx: ClaudeInteractionContext = {
+    broadcastEvent: (event) => {
+      events.push(event);
+    },
+    attachmentRoot: () => 'D:\\AIAgent\\EasyAIFlow',
+    claudeSettingsPath: () => 'D:\\AIAgent\\EasyAIFlow\\.claude.json',
+    homePath: () => 'D:\\AIAgent\\EasyAIFlow',
+  };
+
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousHomePath = getRuntimePaths().homePath;
+  const tempHome = mkdtempSync(path.join(os.tmpdir(), 'resident-runtime-detached-'));
+
+  try {
+    process.env.USERPROFILE = tempHome;
+    configureRuntimePaths({ homePath: tempHome });
+
+    const projectRoot = 'D:\\PBZ';
+    const claudeSessionId = 'native-session-detached';
+    const nativeDir = path.join(
+      tempHome,
+      '.claude',
+      'projects',
+      toClaudeProjectDirName(projectRoot) ?? 'workspace',
+    );
+    mkdirSync(nativeDir, { recursive: true });
+    const promptId = 'prompt-editor';
+    writeFileSync(
+      path.join(nativeDir, `${claudeSessionId}.jsonl`),
+      [
+        { type: 'user', promptId, toolUseResult: { task: { id: '3' } } },
+        { type: 'user', promptId, toolUseResult: { task: { id: '4' } } },
+        {
+          type: 'user',
+          promptId,
+          toolUseResult: { backgroundTaskId: 'editor-process' },
+        },
+        {
+          type: 'user',
+          promptId,
+          toolUseResult: {
+            success: true,
+            taskId: '3',
+            statusChange: { from: 'in_progress', to: 'completed' },
+          },
+        },
+        {
+          type: 'user',
+          promptId,
+          toolUseResult: {
+            success: true,
+            taskId: '4',
+            statusChange: { from: 'pending', to: 'completed' },
+          },
+        },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join('\n'),
+      'utf8',
+    );
+
+    const runState: ClaudeRunState = {
+      ...createClaudeRunState(),
+      claudeSessionId,
+      backgroundTasks: new Map([
+        [
+          'editor-process',
+          {
+            taskId: 'editor-process',
+            status: 'running',
+            description: 'Background command task',
+            updatedAt: 1,
+          },
+        ],
+      ]),
+      toolTraces: new Map(),
+      toolUseBlockIds: new Map(),
+      toolUseJsonBuffers: new Map(),
+    };
+    const resident = {
+      child: {
+        killed: false,
+        exitCode: null,
+        signalCode: null,
+      },
+      configuredEffort: 'max',
+      projectRoot,
+      currentTurn: undefined,
+      activeOutputTurn: undefined,
+      backgroundTaskOwners: new Map([
+        [
+          'editor-process',
+          {
+            assistantMessageId: 'assistant-editor',
+            runState,
+          },
+        ],
+      ]),
+      queuedTurns: new Map(),
+    } as unknown as ResidentClaudeSession;
+
+    state.residentSessions.set('session-editor', resident);
+    syncResidentRuntimeState(ctx, state, 'session-editor', resident);
+    const snapshot = getSessionInteractionSnapshots(state)['session-editor'];
+
+    assert.equal(events[0]?.runtime?.phase, 'idle');
+    assert.equal(events[0]?.runtime?.processActive, true);
+    assert.equal(runState.backgroundTasks.get('editor-process')?.status, 'running');
+    assert.equal(runState.backgroundTasks.get('editor-process')?.detached, true);
+    assert.equal(snapshot?.runtime?.phase, 'idle');
+    assert.equal(snapshot?.backgroundTasks?.[0]?.detached, true);
+  } finally {
+    if (previousUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = previousUserProfile;
+    }
+    configureRuntimePaths({ homePath: previousHomePath });
+    rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
 run('readNativeClaudeTerminalBackgroundTasks returns only requested task ids from native history', () => {
   const previousUserProfile = process.env.USERPROFILE;
   const previousHomePath = getRuntimePaths().homePath;

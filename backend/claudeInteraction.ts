@@ -68,6 +68,7 @@ import {
   extractBackgroundTaskNotificationContent,
   parseClaudeBackgroundTaskEvent,
 } from '../electron/backgroundTaskNotification.js';
+import { createClaudeTaskListCompletionTracker } from '../electron/claudeTaskListState.js';
 import {
   buildClaudeAskUserQuestionToolResultLine,
   buildClaudeControlRequestLine,
@@ -113,7 +114,11 @@ import {
   parseAskUserQuestions,
   type AskUserQuestion,
 } from '../src/data/askUserQuestion.js';
-import type { SessionInteractionState } from '../src/data/sessionInteraction.js';
+import {
+  isActiveBackgroundTask,
+  mergeBackgroundTaskRecords,
+  type SessionInteractionState,
+} from '../src/data/sessionInteraction.js';
 import {
   buildPlanModeResponseText,
   buildPlanModeTraceContent,
@@ -543,18 +548,19 @@ const syncRunSessionRuntime = async (sessionId: string, runState: ClaudeRunState
 };
 
 const hasActiveBackgroundTasks = (runState: ClaudeRunState) =>
-  [...runState.backgroundTasks.values()].some(
-    (task) => task.status === 'pending' || task.status === 'running',
-  );
+  [...runState.backgroundTasks.values()].some(isActiveBackgroundTask);
 
 type NativeClaudeBackgroundTaskCacheEntry = {
   mtimeMs: number;
   taskIdsKey: string;
   tasks: Map<string, BackgroundTaskRecord>;
+  detachedTaskIds: Set<string>;
 };
 
 const nativeClaudeBackgroundTaskCache = new Map<string, NativeClaudeBackgroundTaskCacheEntry>();
 const terminalBackgroundTaskStatuses = new Set(['completed', 'failed', 'stopped']);
+const isUnsettledBackgroundTask = (task: BackgroundTaskRecord) =>
+  !terminalBackgroundTaskStatuses.has(task.status);
 const NATIVE_CLAUDE_LOG_READ_CHUNK_BYTES = 64 * 1024;
 /** Cap on retained resident-session stderr. Only the tail is ever surfaced. */
 const MAX_RESIDENT_STDERR_CHARS = 256 * 1024;
@@ -590,12 +596,12 @@ const getResidentClaudeSessionIds = (resident: ResidentClaudeSession) =>
     ),
   ];
 
-const getActiveBackgroundTaskIds = (runStates: ClaudeRunState[]) => {
+const getUnsettledBackgroundTaskIds = (runStates: ClaudeRunState[]) => {
   const taskIds = new Set<string>();
 
   runStates.forEach((runState) => {
     runState.backgroundTasks.forEach((task, taskId) => {
-      if (task.status === 'pending' || task.status === 'running') {
+      if (isUnsettledBackgroundTask(task)) {
         taskIds.add(task.taskId || taskId);
       }
     });
@@ -638,18 +644,24 @@ const getTaskIdsCacheKey = (taskIds: Set<string>) => [...taskIds].sort().join('\
 const lineMayContainRequestedTaskId = (line: string, requestedTaskIds: Set<string>) =>
   requestedTaskIds.size === 0 || [...requestedTaskIds].some((taskId) => line.includes(taskId));
 
-const parseNativeClaudeTerminalBackgroundTaskLine = (
+const parseNativeClaudeBackgroundTaskLine = (
   line: string,
   requestedTaskIds: Set<string>,
   tasks: Map<string, BackgroundTaskRecord>,
+  taskListTracker: ReturnType<typeof createClaudeTaskListCompletionTracker>,
 ) => {
   const trimmed = line.trim();
-  if (!trimmed || !lineMayContainRequestedTaskId(trimmed, requestedTaskIds)) {
+  if (
+    !trimmed ||
+    (!lineMayContainRequestedTaskId(trimmed, requestedTaskIds) &&
+      !trimmed.includes('"toolUseResult"'))
+  ) {
     return;
   }
 
   try {
     const parsed = JSON.parse(trimmed) as unknown;
+    taskListTracker.consume(parsed);
     const task = parseClaudeBackgroundTaskEvent(parsed);
     if (!task || !terminalBackgroundTaskStatuses.has(task.status)) {
       return;
@@ -667,19 +679,25 @@ const parseNativeClaudeTerminalBackgroundTaskLine = (
   }
 };
 
-export const readNativeClaudeTerminalBackgroundTasks = (
+const readNativeClaudeBackgroundTaskReconciliation = (
   projectRoot: string | undefined,
   claudeSessionId: string,
   taskIds?: Iterable<string>,
 ) => {
   const requestedTaskIds = normalizeRequestedTaskIds(taskIds);
   if (taskIds && requestedTaskIds.size === 0) {
-    return new Map<string, BackgroundTaskRecord>();
+    return {
+      tasks: new Map<string, BackgroundTaskRecord>(),
+      detachedTaskIds: new Set<string>(),
+    };
   }
 
   const filePath = resolveNativeClaudeSessionLogPath(projectRoot, claudeSessionId);
   if (!filePath) {
-    return new Map<string, BackgroundTaskRecord>();
+    return {
+      tasks: new Map<string, BackgroundTaskRecord>(),
+      detachedTaskIds: new Set<string>(),
+    };
   }
 
   const taskIdsKey = getTaskIdsCacheKey(requestedTaskIds);
@@ -689,10 +707,14 @@ export const readNativeClaudeTerminalBackgroundTasks = (
     const { mtimeMs } = fstatSync(file);
     const cached = nativeClaudeBackgroundTaskCache.get(filePath);
     if (cached?.mtimeMs === mtimeMs && cached.taskIdsKey === taskIdsKey) {
-      return cached.tasks;
+      return {
+        tasks: cached.tasks,
+        detachedTaskIds: cached.detachedTaskIds,
+      };
     }
 
     const tasks = new Map<string, BackgroundTaskRecord>();
+    const taskListTracker = createClaudeTaskListCompletionTracker(requestedTaskIds);
     const decoder = new StringDecoder('utf8');
     const buffer = Buffer.allocUnsafe(NATIVE_CLAUDE_LOG_READ_CHUNK_BYTES);
     let pending = '';
@@ -708,24 +730,39 @@ export const readNativeClaudeTerminalBackgroundTasks = (
       while (lineEnd >= 0) {
         const line = pending.slice(0, lineEnd);
         pending = pending.slice(lineEnd + 1);
-        parseNativeClaudeTerminalBackgroundTaskLine(line, requestedTaskIds, tasks);
+        parseNativeClaudeBackgroundTaskLine(line, requestedTaskIds, tasks, taskListTracker);
         lineEnd = pending.indexOf('\n');
       }
     }
 
     pending += decoder.end();
-    parseNativeClaudeTerminalBackgroundTaskLine(pending, requestedTaskIds, tasks);
+    parseNativeClaudeBackgroundTaskLine(pending, requestedTaskIds, tasks, taskListTracker);
 
-    nativeClaudeBackgroundTaskCache.set(filePath, { mtimeMs, taskIdsKey, tasks });
-    return tasks;
+    const detachedTaskIds = taskListTracker.getDetachedBackgroundTaskIds();
+    nativeClaudeBackgroundTaskCache.set(filePath, {
+      mtimeMs,
+      taskIdsKey,
+      tasks,
+      detachedTaskIds,
+    });
+    return { tasks, detachedTaskIds };
   } catch {
-    return new Map<string, BackgroundTaskRecord>();
+    return {
+      tasks: new Map<string, BackgroundTaskRecord>(),
+      detachedTaskIds: new Set<string>(),
+    };
   } finally {
     if (file !== null) {
       closeSync(file);
     }
   }
 };
+
+export const readNativeClaudeTerminalBackgroundTasks = (
+  projectRoot: string | undefined,
+  claudeSessionId: string,
+  taskIds?: Iterable<string>,
+) => readNativeClaudeBackgroundTaskReconciliation(projectRoot, claudeSessionId, taskIds).tasks;
 
 const reconcileResidentBackgroundTasksFromNativeHistory = (resident: ResidentClaudeSession) => {
   const projectRoot = resident.projectRoot?.trim();
@@ -737,41 +774,55 @@ const reconcileResidentBackgroundTasksFromNativeHistory = (resident: ResidentCla
   if (runStates.length === 0) {
     return;
   }
-  const activeTaskIds = getActiveBackgroundTaskIds(runStates);
-  if (activeTaskIds.size === 0) {
+  const unsettledTaskIds = getUnsettledBackgroundTaskIds(runStates);
+  if (unsettledTaskIds.size === 0) {
     return;
   }
 
   const terminalTasks = new Map<string, BackgroundTaskRecord>();
+  const detachedTaskIds = new Set<string>();
   getResidentClaudeSessionIds(resident).forEach((claudeSessionId) => {
-    readNativeClaudeTerminalBackgroundTasks(projectRoot, claudeSessionId, activeTaskIds).forEach((task, taskId) => {
+    const reconciliation = readNativeClaudeBackgroundTaskReconciliation(
+      projectRoot,
+      claudeSessionId,
+      unsettledTaskIds,
+    );
+    reconciliation.tasks.forEach((task, taskId) => {
       terminalTasks.set(taskId, {
         ...(terminalTasks.get(taskId) ?? {}),
         ...task,
       });
     });
+    reconciliation.detachedTaskIds.forEach((taskId) => detachedTaskIds.add(taskId));
   });
 
-  if (terminalTasks.size === 0) {
+  if (terminalTasks.size === 0 && detachedTaskIds.size === 0) {
     return;
   }
 
   runStates.forEach((runState) => {
     runState.backgroundTasks.forEach((task, taskId) => {
-      if (task.status !== 'pending' && task.status !== 'running') {
+      if (!isUnsettledBackgroundTask(task)) {
         return;
       }
 
       const terminalTask = terminalTasks.get(taskId);
-      if (!terminalTask) {
+      if (terminalTask) {
+        runState.backgroundTasks.set(taskId, {
+          ...task,
+          ...terminalTask,
+          detached: undefined,
+          updatedAt: Math.max(task.updatedAt ?? 0, terminalTask.updatedAt ?? 0) || undefined,
+        });
         return;
       }
 
-      runState.backgroundTasks.set(taskId, {
-        ...task,
-        ...terminalTask,
-        updatedAt: Math.max(task.updatedAt ?? 0, terminalTask.updatedAt ?? 0) || undefined,
-      });
+      if (detachedTaskIds.has(taskId)) {
+        runState.backgroundTasks.set(taskId, {
+          ...task,
+          detached: true,
+        });
+      }
     });
   });
 };
@@ -822,13 +873,9 @@ const getResidentProcessUnavailableMessage = (
 
 const canRestartResidentSession = (resident: ResidentClaudeSession) =>
   !resident.currentTurn &&
-  ![...getResidentOrphanBackgroundTasks(resident).values()].some(
-    (task) => task.status === 'pending' || task.status === 'running',
-  ) &&
+  ![...getResidentOrphanBackgroundTasks(resident).values()].some(isActiveBackgroundTask) &&
   ![...resident.backgroundTaskOwners.values()].some((owner) =>
-    [...owner.runState.backgroundTasks.values()].some(
-      (task) => task.status === 'pending' || task.status === 'running',
-    ),
+    [...owner.runState.backgroundTasks.values()].some(isActiveBackgroundTask),
   );
 
 const rejectResidentControlRequests = (
@@ -897,7 +944,7 @@ export const recordUnownedResidentBackgroundTask = (
   resident: ResidentClaudeSession,
   task: BackgroundTaskRecord,
 ) => {
-  const mergedTask = mergeBackgroundTaskRecord(
+  const mergedTask = mergeBackgroundTaskRecords(
     getResidentOrphanBackgroundTasks(resident).get(task.taskId),
     task,
   );
@@ -958,7 +1005,7 @@ const finalizeBackgroundOwnersIfSettled = async (
     }
     seen.add(owner.assistantMessageId);
     const hasActiveTasks = [...owner.runState.backgroundTasks.values()].some(
-      (task) => task.status === 'pending' || task.status === 'running',
+      isActiveBackgroundTask,
     );
     if (hasActiveTasks) {
       continue;
@@ -991,13 +1038,9 @@ const finalizeBackgroundOwnersIfSettled = async (
 };
 
 const residentHasActiveBackgroundTasks = (resident: ResidentClaudeSession) =>
-  [...getResidentOrphanBackgroundTasks(resident).values()].some(
-    (task) => task.status === 'pending' || task.status === 'running',
-  ) ||
+  [...getResidentOrphanBackgroundTasks(resident).values()].some(isActiveBackgroundTask) ||
   [...resident.backgroundTaskOwners.values()].some((owner) =>
-    [...owner.runState.backgroundTasks.values()].some(
-      (task) => task.status === 'pending' || task.status === 'running',
-    ),
+    [...owner.runState.backgroundTasks.values()].some(isActiveBackgroundTask),
   );
 
 const residentHasForegroundTurn = (resident: ResidentClaudeSession | undefined) =>
@@ -1469,14 +1512,6 @@ export const shouldForkResidentClaudeSession = (input: {
   return input.session.sessionKind !== 'group_member';
 };
 
-const mergeBackgroundTaskRecord = (
-  previous: BackgroundTaskRecord | undefined,
-  next: BackgroundTaskRecord,
-): BackgroundTaskRecord => ({
-  ...(previous ?? {}),
-  ...next,
-});
-
 export const completeAssistantRun = async (
   ctx: ClaudeInteractionContext,
   sessionId: string,
@@ -1613,7 +1648,7 @@ export const handleClaudeLine = async (
   }
   const backgroundTask = parseClaudeBackgroundTaskEvent(parsed);
   if (backgroundTask) {
-    const mergedBackgroundTask = mergeBackgroundTaskRecord(
+    const mergedBackgroundTask = mergeBackgroundTaskRecords(
       runState.backgroundTasks.get(backgroundTask.taskId),
       backgroundTask,
     );
@@ -1622,7 +1657,7 @@ export const handleClaudeLine = async (
       runState.lastToolResultContent = mergedBackgroundTask.result;
     }
     options?.onBackgroundTaskOwner?.(mergedBackgroundTask.taskId, assistantMessageId, runState);
-    if (mergedBackgroundTask.status === 'pending' || mergedBackgroundTask.status === 'running') {
+    if (isActiveBackgroundTask(mergedBackgroundTask)) {
       emitRuntimeState(ctx, sessionId, 'background', true, options?.appliedEffort);
       options?.onBackgroundActivated?.(assistantMessageId, runState);
       await updateAssistantMessage(sessionId, assistantMessageId, (message) => {
@@ -1925,7 +1960,7 @@ export const handleClaudeLine = async (
             });
             if (backgroundResolution) {
               const previousTask = runState.backgroundTasks.get(backgroundResolution.taskId);
-              const nextTask = mergeBackgroundTaskRecord(previousTask, {
+              const nextTask = mergeBackgroundTaskRecords(previousTask, {
                 ...(previousTask ?? {
                   taskId: backgroundResolution.taskId,
                   description: current.title === 'Agent' ? 'Background agent task' : 'Background task',
@@ -2602,7 +2637,7 @@ const ensureResidentClaudeSession = async (
 
       if (turn && parsed.type === 'result') {
         for (const [taskId, task] of turn.runState.backgroundTasks) {
-          if (task.status === 'pending' || task.status === 'running') {
+          if (isActiveBackgroundTask(task)) {
             registerBackgroundTaskOwner(currentResident, taskId, turn.assistantMessageId, turn.runState);
           }
         }

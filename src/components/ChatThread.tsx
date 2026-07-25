@@ -15,6 +15,7 @@ import type { AskUserQuestionDraft } from '../data/askUserQuestion';
 import type { PlanModeResponsePayload } from '../data/planMode';
 import {
   getActiveSessionPermissionRequest,
+  isActiveBackgroundTask,
   type SessionInteractionState,
 } from '../data/sessionInteraction';
 import type { ConversationMessage, DiffPayload, SessionProvider, SessionSummary } from '../data/types';
@@ -111,7 +112,7 @@ const buildMessageAutoScrollPart = (message: ConversationMessage) =>
 const buildInteractionAutoScrollPart = (interaction?: SessionInteractionState) => {
   const activePermissionRequest = getActiveSessionPermissionRequest(interaction);
   const activeBackgroundTasks = (interaction?.backgroundTasks ?? []).filter(
-    (task) => task.status === 'pending' || task.status === 'running',
+    isActiveBackgroundTask,
   );
 
   return [
@@ -192,7 +193,7 @@ function ChatThreadComponent({
   const activeBackgroundTasks = useMemo(
     () =>
       (interaction?.backgroundTasks ?? []).filter(
-        (task) => task.status === 'pending' || task.status === 'running',
+        isActiveBackgroundTask,
       ),
     [interaction?.backgroundTasks],
   );

@@ -351,3 +351,37 @@ run('ContextPanel renders background task state in the right rail', () => {
   assert.match(html, /Still parsing the latest chunk/);
   assert.match(html, /task-ctx\.log/);
 });
+
+run('ContextPanel labels detached processes separately from active background work', () => {
+  const html = renderToStaticMarkup(
+    createElement(ContextPanel, {
+      session: makeSession(),
+      messages: [],
+      interaction: {
+        runtime: {
+          processActive: true,
+          phase: 'idle',
+        },
+        backgroundTasks: [
+          {
+            taskId: 'editor-process',
+            status: 'running',
+            detached: true,
+            description: 'Unreal Editor',
+            updatedAt: Date.now(),
+          },
+        ],
+      },
+      requestedEffort: 'max',
+      appVersion: 'desktop',
+      gitSnapshot,
+      onRequestDiff: async () => {
+        throw new Error('not needed');
+      },
+    }),
+  );
+
+  assert.match(html, /status-detached/);
+  assert.match(html, />detached</);
+  assert.doesNotMatch(html, />running</);
+});
