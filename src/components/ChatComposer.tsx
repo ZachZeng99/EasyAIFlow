@@ -74,7 +74,7 @@ const isImageAttachment = (attachment: ComposerAttachment) => attachment.mimeTyp
 const MODEL_OPTIONS = {
   claude: [
     { value: 'fable', label: 'fable[1M]' },
-    { value: 'opus[1m]', label: 'opus4.8[1M]' },
+    { value: 'opus[1m]', label: 'opus5[1M]' },
     { value: 'sonnet', label: 'sonnet4.6' },
   ],
   codex: [

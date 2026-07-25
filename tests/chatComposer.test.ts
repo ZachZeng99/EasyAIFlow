@@ -117,7 +117,7 @@ run('ChatComposer renders an inline notice when the host provides one', () => {
   assert.match(html, /session restarts/);
 });
 
-run('ChatComposer includes fable as the default Claude model option', () => {
+run('ChatComposer includes the current Claude model options', () => {
   const html = renderToStaticMarkup(
     createElement(ChatComposer, {
       draft: '继续这个需求',
@@ -143,6 +143,7 @@ run('ChatComposer includes fable as the default Claude model option', () => {
     }),
   );
 
+  assert.ok(html.includes('opus5[1M]'));
   assert.match(html, /value="fable"/);
   assert.match(html, />fable\[1M\]</);
 });
