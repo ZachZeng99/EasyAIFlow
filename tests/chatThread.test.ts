@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import {
   buildChatThreadAutoScrollKey,
   ChatThread,
+  isChatThreadNearBottom,
 } from '../src/components/ChatThread.js';
 import type { SessionInteractionState } from '../src/data/sessionInteraction.js';
 import type { ConversationMessage, SessionSummary } from '../src/data/types.js';
@@ -266,5 +267,32 @@ run('ChatThread auto-scroll key changes when switching sessions', () => {
   assert.notEqual(
     buildChatThreadAutoScrollKey(session.id, messages),
     buildChatThreadAutoScrollKey('session-2', messages),
+  );
+});
+
+run('ChatThread follows updates only while the viewport remains near the bottom', () => {
+  assert.equal(
+    isChatThreadNearBottom({
+      scrollHeight: 1000,
+      scrollTop: 360,
+      clientHeight: 600,
+    }),
+    true,
+  );
+  assert.equal(
+    isChatThreadNearBottom({
+      scrollHeight: 1000,
+      scrollTop: 200,
+      clientHeight: 600,
+    }),
+    false,
+  );
+  assert.equal(
+    isChatThreadNearBottom({
+      scrollHeight: 500,
+      scrollTop: 0,
+      clientHeight: 600,
+    }),
+    true,
   );
 });

@@ -169,6 +169,16 @@ export const buildChatThreadAutoScrollKey = (
     buildInteractionAutoScrollPart(interaction),
   ].join('||');
 
+const CHAT_THREAD_BOTTOM_THRESHOLD_PX = 48;
+
+export const isChatThreadNearBottom = (scrollState: {
+  scrollHeight: number;
+  scrollTop: number;
+  clientHeight: number;
+}) =>
+  scrollState.scrollHeight - scrollState.scrollTop - scrollState.clientHeight <=
+  CHAT_THREAD_BOTTOM_THRESHOLD_PX;
+
 function ChatThreadComponent({
   session,
   messages,
@@ -206,6 +216,8 @@ function ChatThreadComponent({
   const [codeChangeDiffs, setCodeChangeDiffs] = useState<Record<string, DiffPayload | null>>({});
   const [loadingCodeChangeDiffIds, setLoadingCodeChangeDiffIds] = useState<Record<string, boolean>>({});
   const streamRef = useRef<HTMLDivElement | null>(null);
+  const followLatestRef = useRef(true);
+  const scrollSessionIdRef = useRef(session.id);
   const prependScrollSnapshotRef = useRef<{
     sessionId: string;
     messageCount: number;
@@ -232,6 +244,12 @@ function ChatThreadComponent({
       return;
     }
 
+    if (scrollSessionIdRef.current !== session.id) {
+      scrollSessionIdRef.current = session.id;
+      followLatestRef.current = true;
+      prependScrollSnapshotRef.current = null;
+    }
+
     const prependSnapshot = prependScrollSnapshotRef.current;
     if (
       prependSnapshot &&
@@ -243,6 +261,11 @@ function ChatThreadComponent({
       prependScrollSnapshotRef.current = null;
       return;
     }
+
+    if (!followLatestRef.current) {
+      return;
+    }
+
     element.scrollTop = element.scrollHeight;
   }, [autoScrollKey, messages.length, session.id]);
 
@@ -416,7 +439,9 @@ function ChatThreadComponent({
         ref={streamRef}
         className="message-stream"
         onScroll={(event) => {
-          if (event.currentTarget.scrollTop <= 96) {
+          const element = event.currentTarget;
+          followLatestRef.current = isChatThreadNearBottom(element);
+          if (element.scrollTop <= 96) {
             requestOlderHistory();
           }
         }}
