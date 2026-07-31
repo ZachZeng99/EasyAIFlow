@@ -11,7 +11,7 @@ import {
   buildOptimisticSendState,
   reconcileOptimisticSendMessages,
 } from './data/optimisticSend';
-import { applyClaudeEventToProjects } from './data/liveSessionEvents';
+import { applyClaudeEventToProjects, coalesceClaudeDeltaEvents } from './data/liveSessionEvents';
 import {
   hydrateSessionRecordInProjects,
   mergeProjectSnapshots,
@@ -1039,14 +1039,14 @@ export default function App() {
     let unsubscribe: (() => void) | undefined;
 
     const EVENT_THROTTLE_MS = 33; // ~30 fps
-    let pendingDeltas: ClaudeStreamEvent[] = [];
+    let pendingDeltas: Array<Extract<ClaudeStreamEvent, { type: 'delta' }>> = [];
     let deltaTimer: ReturnType<typeof setTimeout> | null = null;
 
     const flushDeltas = () => {
       if (pendingDeltas.length === 0) {
         return;
       }
-      const batch = pendingDeltas;
+      const batch = coalesceClaudeDeltaEvents(pendingDeltas);
       pendingDeltas = [];
       setProjects((current) => batch.reduce(applyClaudeEventToProjects, current));
     };

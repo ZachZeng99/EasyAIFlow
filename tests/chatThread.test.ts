@@ -83,6 +83,27 @@ run('ChatThread keeps process groups collapsed by default', () => {
   assert.ok(html.indexOf('Process') < html.indexOf('Implemented.'));
 });
 
+run('ChatThread defers Markdown parsing while an assistant reply is streaming', () => {
+  const html = renderToStaticMarkup(
+    createElement(ChatThread, {
+      session,
+      messages: [
+        {
+          id: 'assistant-streaming',
+          role: 'assistant',
+          timestamp: '3/23 20:53',
+          title: 'Reply',
+          content: '**still streaming**',
+          status: 'streaming',
+        },
+      ],
+    }),
+  );
+
+  assert.match(html, /\*\*still streaming\*\*/);
+  assert.doesNotMatch(html, /<strong>still streaming<\/strong>/);
+});
+
 run('ChatThread expands failed process groups and shows an inline failure reason', () => {
   const html = renderToStaticMarkup(
     createElement(ChatThread, {

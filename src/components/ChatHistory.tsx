@@ -439,22 +439,7 @@ const areChatHistoryPropsEqual = (current: ChatHistoryProps, next: ChatHistoryPr
 
 export const ChatHistory = memo(ChatHistoryComponent, areChatHistoryPropsEqual);
 
-function SessionCard({
-  session,
-  selectedSessionId,
-  indicator,
-  editing,
-  showLocation = false,
-  onEditChange,
-  onStartEdit,
-  onCommitEdit,
-  onCancelEdit,
-  onDeleteSession,
-  onSetSessionPinned,
-  onCopySessionReference,
-  onSelectSession,
-  onOpenContextMenu,
-}: {
+type SessionCardProps = {
   session: SessionSummary;
   selectedSessionId: string;
   indicator: { state: SessionActivityState; online?: boolean };
@@ -469,7 +454,24 @@ function SessionCard({
   onCopySessionReference: (sessionId: string) => void;
   onSelectSession: (session: SessionSummary) => void;
   onOpenContextMenu: (session: SessionSummary, x: number, y: number) => void;
-}) {
+};
+
+function SessionCardComponent({
+  session,
+  selectedSessionId,
+  indicator,
+  editing,
+  showLocation = false,
+  onEditChange,
+  onStartEdit,
+  onCommitEdit,
+  onCancelEdit,
+  onDeleteSession,
+  onSetSessionPinned,
+  onCopySessionReference,
+  onSelectSession,
+  onOpenContextMenu,
+}: SessionCardProps) {
   const selected = session.id === selectedSessionId;
   const isEditingSession = editing?.kind === 'session' && editing.id === session.id;
 
@@ -593,6 +595,24 @@ function SessionCard({
     </div>
   );
 }
+
+const areSessionCardPropsEqual = (current: SessionCardProps, next: SessionCardProps) =>
+  current.session.id === next.session.id &&
+  current.session.title === next.session.title &&
+  current.session.pinned === next.session.pinned &&
+  current.session.sessionKind === next.session.sessionKind &&
+  current.session.provider === next.session.provider &&
+  current.session.projectName === next.session.projectName &&
+  current.session.dreamName === next.session.dreamName &&
+  current.session.timeLabel === next.session.timeLabel &&
+  current.session.tokenUsage.used === next.session.tokenUsage.used &&
+  current.selectedSessionId === next.selectedSessionId &&
+  current.indicator.state === next.indicator.state &&
+  current.indicator.online === next.indicator.online &&
+  current.editing === next.editing &&
+  current.showLocation === next.showLocation;
+
+const SessionCard = memo(SessionCardComponent, areSessionCardPropsEqual);
 
 function DreamSection({
   dream,

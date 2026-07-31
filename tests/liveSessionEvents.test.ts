@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 
-import { applyClaudeEventToProjects } from '../src/data/liveSessionEvents.ts';
+import {
+  applyClaudeEventToProjects,
+  coalesceClaudeDeltaEvents,
+} from '../src/data/liveSessionEvents.ts';
 import type { ConversationMessage, ProjectRecord, SessionRecord } from '../src/data/types.ts';
 
 const run = (name: string, fn: () => void) => {
@@ -104,6 +107,122 @@ run('applyClaudeEventToProjects accumulates deltas even if the first delta arriv
   assert.equal(assistant?.role, 'assistant');
   assert.equal(assistant?.content, 'hello');
   assert.equal(assistant?.status, 'streaming');
+});
+
+run('coalesceClaudeDeltaEvents joins chunks per live message while preserving final event order', () => {
+  const events = coalesceClaudeDeltaEvents([
+    {
+      type: 'delta',
+      sessionId: 'session-1',
+      messageId: 'assistant-1',
+      delta: 'hel',
+    },
+    {
+      type: 'delta',
+      sessionId: 'session-2',
+      messageId: 'assistant-2',
+      delta: 'wor',
+    },
+    {
+      type: 'delta',
+      sessionId: 'session-1',
+      messageId: 'assistant-1',
+      delta: 'lo',
+    },
+    {
+      type: 'delta',
+      sessionId: 'session-2',
+      messageId: 'assistant-2',
+      delta: 'ld',
+    },
+  ]);
+
+  assert.deepEqual(
+    events.map((event) => [event.sessionId, event.messageId, event.delta]),
+    [
+      ['session-1', 'assistant-1', 'hello'],
+      ['session-2', 'assistant-2', 'world'],
+    ],
+  );
+});
+
+run('coalesceClaudeDeltaEvents preserves interleaved message order within one session', () => {
+  const events = coalesceClaudeDeltaEvents([
+    {
+      type: 'delta',
+      sessionId: 'session-1',
+      messageId: 'assistant-1',
+      delta: 'first-a',
+    },
+    {
+      type: 'delta',
+      sessionId: 'session-1',
+      messageId: 'assistant-2',
+      delta: 'second',
+    },
+    {
+      type: 'delta',
+      sessionId: 'session-1',
+      messageId: 'assistant-1',
+      delta: 'first-b',
+    },
+  ]);
+
+  assert.deepEqual(
+    events.map((event) => [event.messageId, event.delta]),
+    [
+      ['assistant-1', 'first-a'],
+      ['assistant-2', 'second'],
+      ['assistant-1', 'first-b'],
+    ],
+  );
+});
+
+run('applyClaudeEventToProjects preserves the root tree for interaction-only events', () => {
+  const projects = makeProjects();
+  const result = applyClaudeEventToProjects(projects, {
+    type: 'runtime-state',
+    sessionId: 'session-1',
+    runtime: {
+      phase: 'running',
+      processActive: true,
+      updatedAt: 2,
+    },
+  });
+
+  assert.equal(result, projects);
+});
+
+run('applyClaudeEventToProjects only replaces the path containing the updated session', () => {
+  const otherSession = makeSession({
+    id: 'session-2',
+    projectId: 'project-2',
+    dreamId: 'dream-2',
+  });
+  const otherProject: ProjectRecord = {
+    id: 'project-2',
+    name: 'Other',
+    rootPath: 'X:\\other',
+    dreams: [
+      {
+        id: 'dream-2',
+        name: 'Other streamwork',
+        sessions: [otherSession],
+      },
+    ],
+  };
+  const projects = [...makeProjects(), otherProject];
+
+  const result = applyClaudeEventToProjects(projects, {
+    type: 'delta',
+    sessionId: 'session-1',
+    messageId: 'assistant-1',
+    delta: 'hello',
+  });
+
+  assert.notEqual(result, projects);
+  assert.notEqual(result[0], projects[0]);
+  assert.equal(result[1], projects[1]);
 });
 
 run('applyClaudeEventToProjects preserves newer streamed content if the trace placeholder arrives late', () => {

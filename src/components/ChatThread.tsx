@@ -20,6 +20,14 @@ import {
 } from '../data/sessionInteraction';
 import type { ConversationMessage, DiffPayload, SessionProvider, SessionSummary } from '../data/types';
 
+const RenderedMarkdown = memo(function RenderedMarkdown({ content }: { content: string }) {
+  return (
+    <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
+      {content}
+    </ReactMarkdown>
+  );
+});
+
 const isTraceErrorStatus = (status: ConversationMessage['status']) => status === 'error';
 
 const getTracePreview = (message: ConversationMessage) => {
@@ -88,8 +96,15 @@ const fingerprintText = (value: string | undefined) => {
 
 const fingerprintJson = (value: unknown) => fingerprintText(JSON.stringify(value ?? null));
 
-const buildMessageAutoScrollPart = (message: ConversationMessage) =>
-  [
+const messageAutoScrollPartCache = new WeakMap<ConversationMessage, string>();
+
+const buildMessageAutoScrollPart = (message: ConversationMessage) => {
+  const cached = messageAutoScrollPartCache.get(message);
+  if (cached) {
+    return cached;
+  }
+
+  const result = [
     message.id,
     message.role,
     message.kind ?? '',
@@ -108,6 +123,9 @@ const buildMessageAutoScrollPart = (message: ConversationMessage) =>
         ].join(',')
       : '',
   ].join(',');
+  messageAutoScrollPartCache.set(message, result);
+  return result;
+};
 
 const buildInteractionAutoScrollPart = (interaction?: SessionInteractionState) => {
   const activePermissionRequest = getActiveSessionPermissionRequest(interaction);
@@ -564,7 +582,7 @@ function ChatThreadComponent({
                         </button>
                         {isOpen ? (
                           <div className="markdown-body trace-markdown">
-                            <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{message.content}</ReactMarkdown>
+                            <RenderedMarkdown content={message.content} />
                             {(() => {
                               const request = parsePermissionRequest(message.content);
                               if (!request || !onRequestPermission) {
@@ -603,9 +621,11 @@ function ChatThreadComponent({
 
               {shouldShowTitle(item.message) ? <h2>{item.message.title}</h2> : null}
 
-              {item.message.role === 'assistant' ? (
+              {item.message.role === 'assistant' && item.message.status === 'streaming' ? (
+                <pre className="message-body">{item.message.content}</pre>
+              ) : item.message.role === 'assistant' ? (
                 <div className="markdown-body">
-                  <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{item.message.content}</ReactMarkdown>
+                  <RenderedMarkdown content={item.message.content} />
                 </div>
               ) : (
                 <pre className="message-body">{item.message.content}</pre>

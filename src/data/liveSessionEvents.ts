@@ -15,16 +15,66 @@ const updateSessionInProjects = (
   projects: ProjectRecord[],
   sessionId: string,
   updater: (session: SessionRecord) => SessionRecord,
-) =>
-  projects.map((project) => ({
-    ...project,
-    dreams: project.dreams.map((dream) => ({
-      ...dream,
-      sessions: dream.sessions.map((session) =>
-        session.id === sessionId ? updater(session as SessionRecord) : session,
-      ),
-    })),
-  }));
+) => {
+  for (let projectIndex = 0; projectIndex < projects.length; projectIndex += 1) {
+    const project = projects[projectIndex];
+    for (let dreamIndex = 0; dreamIndex < project.dreams.length; dreamIndex += 1) {
+      const dream = project.dreams[dreamIndex];
+      const sessionIndex = dream.sessions.findIndex((session) => session.id === sessionId);
+      if (sessionIndex === -1) {
+        continue;
+      }
+
+      const currentSession = dream.sessions[sessionIndex] as SessionRecord;
+      const nextSession = updater(currentSession);
+      if (nextSession === currentSession) {
+        return projects;
+      }
+
+      const sessions = [...dream.sessions];
+      sessions[sessionIndex] = nextSession;
+      const dreams = [...project.dreams];
+      dreams[dreamIndex] = { ...dream, sessions };
+      const nextProjects = [...projects];
+      nextProjects[projectIndex] = { ...project, dreams };
+      return nextProjects;
+    }
+  }
+
+  return projects;
+};
+
+type ClaudeDeltaEvent = Extract<ClaudeStreamEvent, { type: 'delta' }>;
+
+export const coalesceClaudeDeltaEvents = (events: ClaudeDeltaEvent[]): ClaudeDeltaEvent[] => {
+  type DeltaBatch = {
+    event: ClaudeDeltaEvent;
+    chunks: string[];
+    lastIndex: number;
+  };
+
+  const batches: DeltaBatch[] = [];
+  const activeBatchBySession = new Map<string, DeltaBatch>();
+
+  events.forEach((event, index) => {
+    const existing = activeBatchBySession.get(event.sessionId);
+    if (existing?.event.messageId === event.messageId) {
+      existing.chunks.push(event.delta);
+      existing.lastIndex = index;
+      return;
+    }
+
+    const batch = { event, chunks: [event.delta], lastIndex: index };
+    batches.push(batch);
+    activeBatchBySession.set(event.sessionId, batch);
+  });
+
+  return batches
+    .sort((left, right) => left.lastIndex - right.lastIndex)
+    .map(({ event, chunks }) =>
+      chunks.length === 1 ? event : { ...event, delta: chunks.join('') },
+    );
+};
 
 const createFallbackAssistantMessage = (
   event: Extract<ClaudeStreamEvent, { type: 'status' | 'delta' | 'complete' | 'error' }>,
