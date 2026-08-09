@@ -252,7 +252,7 @@ run('resident runtime snapshots reconcile stale running tasks from native Claude
   }
 });
 
-run('resident runtime treats a completed prompt task list as detached process state', () => {
+run('resident runtime treats completed task lists and direct-command end turns as detached process state', () => {
   const state = createClaudeInteractionState();
   const events: Array<{ type: string; runtime?: { phase?: string; processActive?: boolean } }> = [];
   const ctx: ClaudeInteractionContext = {
@@ -310,6 +310,25 @@ run('resident runtime treats a completed prompt task list as detached process st
             statusChange: { from: 'pending', to: 'completed' },
           },
         },
+        {
+          type: 'user',
+          isSidechain: false,
+          promptId: 'prompt-watch-server',
+          toolUseResult: { backgroundTaskId: 'watch-server' },
+        },
+        {
+          type: 'assistant',
+          isSidechain: false,
+          message: {
+            stop_reason: 'end_turn',
+            content: [
+              {
+                type: 'text',
+                text: 'The watch server is running and the requested work is complete.',
+              },
+            ],
+          },
+        },
       ]
         .map((record) => JSON.stringify(record))
         .join('\n'),
@@ -327,6 +346,16 @@ run('resident runtime treats a completed prompt task list as detached process st
             status: 'running',
             description: 'Background command task',
             updatedAt: 1,
+          },
+        ],
+        [
+          'watch-server',
+          {
+            taskId: 'watch-server',
+            status: 'running',
+            description: 'Background command task',
+            taskType: 'command',
+            updatedAt: 2,
           },
         ],
       ]),
@@ -352,6 +381,13 @@ run('resident runtime treats a completed prompt task list as detached process st
             runState,
           },
         ],
+        [
+          'watch-server',
+          {
+            assistantMessageId: 'assistant-editor',
+            runState,
+          },
+        ],
       ]),
       queuedTurns: new Map(),
     } as unknown as ResidentClaudeSession;
@@ -364,8 +400,13 @@ run('resident runtime treats a completed prompt task list as detached process st
     assert.equal(events[0]?.runtime?.processActive, true);
     assert.equal(runState.backgroundTasks.get('editor-process')?.status, 'running');
     assert.equal(runState.backgroundTasks.get('editor-process')?.detached, true);
+    assert.equal(runState.backgroundTasks.get('watch-server')?.status, 'running');
+    assert.equal(runState.backgroundTasks.get('watch-server')?.detached, true);
     assert.equal(snapshot?.runtime?.phase, 'idle');
-    assert.equal(snapshot?.backgroundTasks?.[0]?.detached, true);
+    assert.equal(
+      snapshot?.backgroundTasks?.find((task) => task.taskId === 'watch-server')?.detached,
+      true,
+    );
   } finally {
     if (previousUserProfile === undefined) {
       delete process.env.USERPROFILE;

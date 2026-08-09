@@ -33,6 +33,7 @@ import {
   createSession,
   createSessionInStreamwork,
   createStreamwork,
+  getNativeSessionHistoryRevision,
   getSessionMessagePage,
   getSessionRecordForBootstrap,
   renameEntity,
@@ -210,6 +211,11 @@ app.whenReady().then(async () => {
       messagesLoaded: true,
     };
   });
+  ipcMain.handle(
+    'sessions:get-native-history-revision',
+    (_event, payload: { sessionId: string }) =>
+      getNativeSessionHistoryRevision(payload.sessionId),
+  );
   ipcMain.handle(
     'sessions:get-message-page',
     (_event, payload: { sessionId: string; before?: string }) =>

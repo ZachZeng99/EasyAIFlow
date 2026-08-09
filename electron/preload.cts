@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld('easyAIFlow', {
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
   getProjects: () => ipcRenderer.invoke('sessions:bootstrap'),
   getSessionRecord: (payload: { sessionId: string }) => ipcRenderer.invoke('sessions:get-record', payload),
+  getSessionHistoryRevision: (payload: { sessionId: string }) =>
+    ipcRenderer.invoke('sessions:get-native-history-revision', payload),
   getSessionMessagePage: (payload: { sessionId: string; before?: string }) =>
     ipcRenderer.invoke('sessions:get-message-page', payload),
   grantPathPermission: (payload: { projectRoot: string; targetPath: string }) =>

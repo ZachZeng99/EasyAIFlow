@@ -66,6 +66,15 @@ await run('createProject imports Codex CLI sessions under the opened project tre
         },
       }),
       JSON.stringify({
+        timestamp: '2026-04-06T12:00:01.250Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: '<recommended_plugins>\nplugin context\n</recommended_plugins>\n<environment_context>hidden</environment_context>' }],
+        },
+      }),
+      JSON.stringify({
         timestamp: '2026-04-06T12:00:01.500Z',
         type: 'response_item',
         payload: {
@@ -160,6 +169,110 @@ await run('createProject imports Codex CLI sessions under the opened project tre
       [
         { role: 'user', content: '检查 PBZ 的旧线程导入' },
         { role: 'assistant', content: '已记录，后续继续处理。' },
+      ],
+    );
+  } finally {
+    if (previousUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = previousUserProfile;
+    }
+  }
+});
+
+await run('Codex import keeps event-message-only replies and deduplicates mirrored response items', async () => {
+  const tempBase = path.resolve('.tmp-tests');
+  await mkdir(tempBase, { recursive: true });
+  const tempRoot = await mkdtemp(path.join(tempBase, 'session-store-codex-event-messages-'));
+  const userDataPath = path.join(tempRoot, 'userData');
+  const homePath = path.join(tempRoot, 'home');
+  const projectRoot = path.join(tempRoot, 'PBZ');
+  const codexSessionsDir = path.join(homePath, '.codex', 'sessions', '2026', '08', '05');
+  const codexIndexPath = path.join(homePath, '.codex', 'session_index.jsonl');
+  const threadId = 'event-message-thread';
+
+  await mkdir(userDataPath, { recursive: true });
+  await mkdir(projectRoot, { recursive: true });
+  await mkdir(codexSessionsDir, { recursive: true });
+  await mkdir(path.dirname(codexIndexPath), { recursive: true });
+  await writeFile(
+    codexIndexPath,
+    `${JSON.stringify({ id: threadId, thread_name: 'Event messages' })}\n`,
+    'utf8',
+  );
+  await writeFile(
+    path.join(codexSessionsDir, `rollout-2026-08-05T12-00-00-${threadId}.jsonl`),
+    [
+      JSON.stringify({
+        timestamp: '2026-08-05T12:00:00.000Z',
+        type: 'session_meta',
+        payload: { id: threadId, cwd: projectRoot },
+      }),
+      JSON.stringify({
+        timestamp: '2026-08-05T12:00:01.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'first question' }],
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-08-05T12:00:01.000Z',
+        type: 'event_msg',
+        payload: { type: 'user_message', message: 'first question' },
+      }),
+      JSON.stringify({
+        timestamp: '2026-08-05T12:00:02.000Z',
+        type: 'event_msg',
+        payload: { type: 'agent_message', message: 'first answer' },
+      }),
+      JSON.stringify({
+        timestamp: '2026-08-05T12:00:02.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'first answer' }],
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-08-05T12:00:03.000Z',
+        type: 'event_msg',
+        payload: { type: 'user_message', message: 'event-only follow up' },
+      }),
+      JSON.stringify({
+        timestamp: '2026-08-05T12:00:04.000Z',
+        type: 'event_msg',
+        payload: { type: 'agent_message', message: 'event-only answer' },
+      }),
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  const previousUserProfile = process.env.USERPROFILE;
+  process.env.USERPROFILE = homePath;
+  configureRuntimePaths({ mode: 'web', userDataPath, homePath });
+
+  try {
+    const sessionStore = await importFreshSessionStore();
+    const created = await sessionStore.createProject('PBZ', projectRoot);
+    const temporary = created.projects[0]?.dreams.find((dream: { isTemporary?: boolean }) => dream.isTemporary);
+    const imported = temporary?.sessions.find(
+      (session: { codexThreadId?: string }) => session.codexThreadId === threadId,
+    );
+    const fullSession = imported
+      ? await sessionStore.getSessionRecordForBootstrap(imported.id)
+      : null;
+
+    assert.deepEqual(
+      fullSession?.messages.map((message) => [message.role, message.content]),
+      [
+        ['user', 'first question'],
+        ['assistant', 'first answer'],
+        ['user', 'event-only follow up'],
+        ['assistant', 'event-only answer'],
       ],
     );
   } finally {
@@ -302,6 +415,8 @@ await run('getProjectsForBootstrap refreshes Codex CLI sessions added after stat
 
     const fullSession = imported ? await sessionStore.getSessionRecordForBootstrap(imported.id) : null;
     assert.equal(fullSession?.messages?.at(-1)?.content, 'cached import visible');
+    const originalMessageIds = fullSession?.messages.map((message) => message.id) ?? [];
+    const originalRevision = fullSession?.nativeHistoryRevision;
 
     await appendFile(
       codexSessionPath,
@@ -328,11 +443,18 @@ await run('getProjectsForBootstrap refreshes Codex CLI sessions added after stat
       ].join('\n'),
       'utf8',
     );
-    await sessionStore.getProjectsForBootstrap();
+    const changedRevision = imported
+      ? await sessionStore.getNativeSessionHistoryRevision(imported.id)
+      : {};
+    assert.notEqual(changedRevision.revision, originalRevision);
     const changedSession = imported
       ? await sessionStore.getSessionRecordForBootstrap(imported.id)
       : null;
     assert.equal(changedSession?.messages?.at(-1)?.content, 'changed import visible');
+    assert.deepEqual(
+      changedSession?.messages.slice(0, originalMessageIds.length).map((message) => message.id),
+      originalMessageIds,
+    );
   } finally {
     if (previousUserProfile === undefined) {
       delete process.env.USERPROFILE;

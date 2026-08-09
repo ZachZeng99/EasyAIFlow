@@ -4,6 +4,7 @@ type PromptTaskState = {
   createdTaskIds: Set<string>;
   taskStatuses: Map<string, string>;
   backgroundTaskIds: Set<string>;
+  assistantTurnCompleted: boolean;
 };
 
 const asRecord = (value: unknown): JsonRecord | null =>
@@ -27,6 +28,7 @@ const getPromptTaskState = (
     createdTaskIds: new Set(),
     taskStatuses: new Map(),
     backgroundTaskIds: new Set(),
+    assistantTurnCompleted: false,
   };
   prompts.set(promptId, created);
   return created;
@@ -41,17 +43,49 @@ export const createClaudeTaskListCompletionTracker = (
       .filter(Boolean),
   );
   const prompts = new Map<string, PromptTaskState>();
+  let latestMainPromptId: string | null = null;
 
   return {
     consume(value: unknown) {
       const record = asRecord(value);
-      const promptId = asNonEmptyString(record?.promptId);
-      const toolUseResult = asRecord(record?.toolUseResult);
-      if (!promptId || !toolUseResult) {
+      const explicitPromptId = asNonEmptyString(record?.promptId);
+      if (explicitPromptId && record?.isSidechain !== true) {
+        latestMainPromptId = explicitPromptId;
+      }
+      const promptId =
+        explicitPromptId ??
+        (record?.isSidechain !== true ? latestMainPromptId : null);
+      if (!promptId) {
         return;
       }
 
       const prompt = getPromptTaskState(prompts, promptId);
+      const message = asRecord(record?.message);
+      const messageContent = message?.content;
+      const hasVisibleAssistantText =
+        typeof messageContent === 'string'
+          ? Boolean(messageContent.trim())
+          : Array.isArray(messageContent) &&
+            messageContent.some((block) => {
+              const contentBlock = asRecord(block);
+              return (
+                contentBlock?.type === 'text' &&
+                Boolean(asNonEmptyString(contentBlock.text))
+              );
+            });
+      if (
+        record?.type === 'assistant' &&
+        message?.stop_reason === 'end_turn' &&
+        hasVisibleAssistantText
+      ) {
+        prompt.assistantTurnCompleted = true;
+      }
+
+      const toolUseResult = asRecord(record?.toolUseResult);
+      if (!toolUseResult) {
+        return;
+      }
+
       const createdTaskId = asNonEmptyString(asRecord(toolUseResult.task)?.id);
       if (createdTaskId) {
         prompt.createdTaskIds.add(createdTaskId);
@@ -80,12 +114,14 @@ export const createClaudeTaskListCompletionTracker = (
     getDetachedBackgroundTaskIds() {
       const detachedTaskIds = new Set<string>();
       prompts.forEach((prompt) => {
+        const taskListCompleted =
+          prompt.createdTaskIds.size > 0 &&
+          [...prompt.createdTaskIds].every(
+            (taskId) => prompt.taskStatuses.get(taskId) === 'completed',
+          );
         if (
           prompt.backgroundTaskIds.size === 0 ||
-          prompt.createdTaskIds.size === 0 ||
-          ![...prompt.createdTaskIds].every(
-            (taskId) => prompt.taskStatuses.get(taskId) === 'completed',
-          )
+          (!prompt.assistantTurnCompleted && !taskListCompleted)
         ) {
           return;
         }

@@ -11,6 +11,224 @@ export type ParsedNativeSession = {
   messages: ConversationMessage[];
 };
 
+type NativeClaudeHistoryEntry = Record<string, unknown>;
+
+type NativeClaudeTranscriptNode = {
+  entry: NativeClaudeHistoryEntry;
+  index: number;
+  uuid: string;
+  parentUuid: string | null;
+  type: 'user' | 'assistant' | 'attachment' | 'system';
+  timestampMs: number;
+  isSidechain: boolean;
+};
+
+const nativeClaudeTranscriptTypes = new Set<NativeClaudeTranscriptNode['type']>([
+  'user',
+  'assistant',
+  'attachment',
+  'system',
+]);
+
+const asNativeRecord = (value: unknown): Record<string, unknown> | null =>
+  typeof value === 'object' && value !== null
+    ? value as Record<string, unknown>
+    : null;
+
+const asNativeString = (value: unknown) =>
+  typeof value === 'string' && value.trim() ? value.trim() : undefined;
+
+const getNativeTimestampMs = (value: unknown, fallback: number) => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return fallback;
+};
+
+const getNativeAssistantMessageId = (node: NativeClaudeTranscriptNode) =>
+  asNativeString(asNativeRecord(node.entry.message)?.id);
+
+const isNativeToolResultNode = (node: NativeClaudeTranscriptNode) => {
+  if (node.type !== 'user' || !node.parentUuid) {
+    return false;
+  }
+  const content = asNativeRecord(node.entry.message)?.content;
+  return Array.isArray(content) && content.some(
+    (block) => asNativeRecord(block)?.type === 'tool_result',
+  );
+};
+
+/**
+ * Claude JSONL is an append-only tree, not a linear conversation. Rewinds and
+ * parallel tool results create sibling branches. Mirror Claude Code's resume
+ * semantics: choose the newest non-sidechain conversation leaf, walk its
+ * parent chain, and recover legitimate parallel tool siblings. Returning the
+ * selected records in physical order keeps append-time ordering for metadata
+ * and auxiliary records while removing abandoned conversation branches.
+ */
+export const selectActiveNativeClaudeHistoryEntries = (
+  entries: NativeClaudeHistoryEntry[],
+) => {
+  const progressParents = new Map<string, string | null>();
+  const nodesByUuid = new Map<string, NativeClaudeTranscriptNode>();
+  const orderedNodes: NativeClaudeTranscriptNode[] = [];
+
+  const resolveProgressParent = (parentUuid: string | null) => {
+    const seen = new Set<string>();
+    let current = parentUuid;
+    while (current && progressParents.has(current) && !seen.has(current)) {
+      seen.add(current);
+      current = progressParents.get(current) ?? null;
+    }
+    return current;
+  };
+
+  entries.forEach((entry, index) => {
+    const type = asNativeString(entry.type);
+    const uuid = asNativeString(entry.uuid);
+    const rawParentUuid = asNativeString(entry.parentUuid) ?? null;
+
+    if (type === 'progress' && uuid) {
+      progressParents.set(uuid, resolveProgressParent(rawParentUuid));
+      return;
+    }
+    if (!uuid || !type || !nativeClaudeTranscriptTypes.has(type as NativeClaudeTranscriptNode['type'])) {
+      return;
+    }
+
+    const node: NativeClaudeTranscriptNode = {
+      entry,
+      index,
+      uuid,
+      parentUuid: resolveProgressParent(rawParentUuid),
+      type: type as NativeClaudeTranscriptNode['type'],
+      timestampMs: getNativeTimestampMs(entry.timestamp, index),
+      isSidechain: entry.isSidechain === true,
+    };
+    nodesByUuid.set(uuid, node);
+    orderedNodes.push(node);
+  });
+
+  // Synthetic fixtures and older exports may omit UUID linkage entirely.
+  // Preserve their original behavior rather than guessing a chain.
+  if (orderedNodes.length === 0) {
+    return entries;
+  }
+
+  const parentUuids = new Set(
+    orderedNodes
+      .map((node) => node.parentUuid)
+      .filter((uuid): uuid is string => Boolean(uuid)),
+  );
+  const terminalNodes = orderedNodes.filter((node) => !parentUuids.has(node.uuid));
+  const hasConversationChild = new Set(
+    orderedNodes
+      .filter((node) => node.type === 'user' || node.type === 'assistant')
+      .map((node) => node.parentUuid)
+      .filter((uuid): uuid is string => Boolean(uuid)),
+  );
+  const leafCandidates = new Map<string, NativeClaudeTranscriptNode>();
+
+  for (const terminal of terminalNodes) {
+    const seen = new Set<string>();
+    let current: NativeClaudeTranscriptNode | undefined = terminal;
+    while (current && !seen.has(current.uuid)) {
+      seen.add(current.uuid);
+      if (current.type === 'user' || current.type === 'assistant') {
+        if (!hasConversationChild.has(current.uuid)) {
+          leafCandidates.set(current.uuid, current);
+        }
+        break;
+      }
+      current = current.parentUuid ? nodesByUuid.get(current.parentUuid) : undefined;
+    }
+  }
+
+  let leaf: NativeClaudeTranscriptNode | undefined;
+  for (const candidate of leafCandidates.values()) {
+    if (candidate.isSidechain) {
+      continue;
+    }
+    if (
+      !leaf ||
+      candidate.timestampMs > leaf.timestampMs ||
+      (candidate.timestampMs === leaf.timestampMs && candidate.index > leaf.index)
+    ) {
+      leaf = candidate;
+    }
+  }
+  if (!leaf) {
+    return entries;
+  }
+
+  const chain: NativeClaudeTranscriptNode[] = [];
+  const selectedUuids = new Set<string>();
+  let current: NativeClaudeTranscriptNode | undefined = leaf;
+  while (current && !selectedUuids.has(current.uuid)) {
+    selectedUuids.add(current.uuid);
+    chain.push(current);
+    current = current.parentUuid ? nodesByUuid.get(current.parentUuid) : undefined;
+  }
+  chain.reverse();
+
+  // Claude streams parallel content blocks as assistant siblings sharing one
+  // message.id, with tool_result records parented to their specific sibling.
+  // Recover those records without admitting unrelated conversation branches.
+  const assistantGroups = new Map<string, NativeClaudeTranscriptNode[]>();
+  const toolResultsByAssistant = new Map<string, NativeClaudeTranscriptNode[]>();
+  for (const node of orderedNodes) {
+    const assistantMessageId = node.type === 'assistant'
+      ? getNativeAssistantMessageId(node)
+      : undefined;
+    if (assistantMessageId) {
+      const group = assistantGroups.get(assistantMessageId) ?? [];
+      group.push(node);
+      assistantGroups.set(assistantMessageId, group);
+    } else if (isNativeToolResultNode(node) && node.parentUuid) {
+      const group = toolResultsByAssistant.get(node.parentUuid) ?? [];
+      group.push(node);
+      toolResultsByAssistant.set(node.parentUuid, group);
+    }
+  }
+
+  const processedAssistantGroups = new Set<string>();
+  for (const node of chain) {
+    if (node.type !== 'assistant') {
+      continue;
+    }
+    const assistantMessageId = getNativeAssistantMessageId(node);
+    if (!assistantMessageId || processedAssistantGroups.has(assistantMessageId)) {
+      continue;
+    }
+    processedAssistantGroups.add(assistantMessageId);
+    const group = assistantGroups.get(assistantMessageId) ?? [node];
+    for (const sibling of group) {
+      selectedUuids.add(sibling.uuid);
+      for (const toolResult of toolResultsByAssistant.get(sibling.uuid) ?? []) {
+        selectedUuids.add(toolResult.uuid);
+      }
+    }
+  }
+
+  return entries.filter((entry) => {
+    const uuid = asNativeString(entry.uuid);
+    const type = asNativeString(entry.type);
+    if (type === 'progress' && uuid) {
+      return false;
+    }
+    if (!uuid || !type || !nativeClaudeTranscriptTypes.has(type as NativeClaudeTranscriptNode['type'])) {
+      return true;
+    }
+    return selectedUuids.has(uuid);
+  });
+};
+
 const hasEmptyCompletedAssistantPlaceholder = (messages: ConversationMessage[] | undefined) =>
   (messages ?? []).some(
     (message) =>

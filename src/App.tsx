@@ -95,6 +95,7 @@ const isTerminalBackgroundTaskStatus = (
 
 const CREATE_SESSION_TIMEOUT_MS = 15_000;
 const PROJECT_FOCUS_REFRESH_MIN_INTERVAL_MS = 5_000;
+const NATIVE_SESSION_REFRESH_INTERVAL_MS = 2_000;
 
 const withTimeout = async <T,>(
   promise: Promise<T>,
@@ -669,6 +670,63 @@ export default function App() {
     }
     ensureSessionRecordLoaded(selectedSession.id);
   }, [ensureSessionRecordLoaded, selectedSession?.id, selectedSession?.messagesLoaded]);
+  const selectedNativeSessionId = selectedSession?.codexThreadId ?? selectedSession?.claudeSessionId;
+  useEffect(() => {
+    if (
+      !selectedSession ||
+      !selectedNativeSessionId ||
+      selectedSession.messagesLoaded === false ||
+      selectedInteractionState?.runtime?.processActive
+    ) {
+      return;
+    }
+
+    let disposed = false;
+    let requestInFlight = false;
+    let lastAppliedRevision = selectedSession.nativeHistoryRevision;
+
+    const refreshSelectedNativeSession = async () => {
+      if (disposed || requestInFlight || document.visibilityState === 'hidden') {
+        return;
+      }
+      requestInFlight = true;
+      try {
+        const { revision } = await bridge.getSessionHistoryRevision({
+          sessionId: selectedSession.id,
+        });
+        if (!revision || revision === lastAppliedRevision) {
+          return;
+        }
+        const sessionRecord = await bridge.getSessionRecord({ sessionId: selectedSession.id });
+        if (
+          disposed ||
+          activeSelectedSessionIdRef.current !== selectedSession.id ||
+          sessionRecord.nativeHistoryRevision === lastAppliedRevision
+        ) {
+          return;
+        }
+        lastAppliedRevision = sessionRecord.nativeHistoryRevision;
+        hydrateSessionRecord(sessionRecord);
+      } catch {
+        // Native history polling is best-effort. Focus/reconnect sync remains as a fallback.
+      } finally {
+        requestInFlight = false;
+      }
+    };
+
+    void refreshSelectedNativeSession();
+    const timer = setInterval(refreshSelectedNativeSession, NATIVE_SESSION_REFRESH_INTERVAL_MS);
+    return () => {
+      disposed = true;
+      clearInterval(timer);
+    };
+  }, [
+    hydrateSessionRecord,
+    selectedInteractionState?.runtime?.processActive,
+    selectedNativeSessionId,
+    selectedSession?.id,
+    selectedSession?.messagesLoaded,
+  ]);
   useEffect(() => {
     const appliedEffort = selectedInteractionState?.runtime?.appliedEffort;
     if (!composerNotice || !appliedEffort) {
@@ -1035,6 +1093,17 @@ export default function App() {
     };
   }, [refreshProjectsFromBridge]);
 
+  const resyncActiveSessionFromBridge = useCallback(async () => {
+    const nextProjects = await refreshProjectsFromBridge();
+    const sessionId = activeSelectedSessionIdRef.current;
+    if (!sessionId || !flattenSessions(nextProjects).some((session) => session.id === sessionId)) {
+      return;
+    }
+
+    const sessionRecord = await bridge.getSessionRecord({ sessionId });
+    replaceProjectsAndHydrateSession(nextProjects, sessionRecord);
+  }, [refreshProjectsFromBridge, replaceProjectsAndHydrateSession]);
+
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
 
@@ -1054,6 +1123,9 @@ export default function App() {
     const processEvent = (event: ClaudeStreamEvent) => {
       if (event.type === 'interaction-sync') {
         setSessionInteractions(new Map());
+        void resyncActiveSessionFromBridge().catch((error) => {
+          setUiError(error instanceof Error ? error.message : 'Failed to resync session events.');
+        });
         return;
       }
       if (event.type === 'session-sync') {
@@ -1165,7 +1237,7 @@ export default function App() {
       flushDeltas();
       unsubscribe?.();
     };
-  }, [playReplyCompleteTone]);
+  }, [playReplyCompleteTone, resyncActiveSessionFromBridge]);
 
   useEffect(() => {
     if (!activeSelectedSessionId) {

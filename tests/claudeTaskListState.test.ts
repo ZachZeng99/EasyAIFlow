@@ -77,3 +77,45 @@ run('does not combine completion state from unrelated prompts', () => {
 
   assert.deepEqual([...tracker.getDetachedBackgroundTaskIds()], []);
 });
+
+run('detaches a direct background command after the main assistant turn ends', () => {
+  const tracker = createClaudeTaskListCompletionTracker(['watch-server']);
+
+  tracker.consume({
+    type: 'user',
+    isSidechain: false,
+    promptId: 'prompt-watch',
+    toolUseResult: { backgroundTaskId: 'watch-server' },
+  });
+  tracker.consume({
+    type: 'assistant',
+    isSidechain: false,
+    message: {
+      stop_reason: 'end_turn',
+      content: [{ type: 'text', text: 'The server is running and the requested work is done.' }],
+    },
+  });
+
+  assert.deepEqual([...tracker.getDetachedBackgroundTaskIds()], ['watch-server']);
+});
+
+run('does not let a sidechain end turn detach a main-thread command', () => {
+  const tracker = createClaudeTaskListCompletionTracker(['watch-server']);
+
+  tracker.consume({
+    type: 'user',
+    isSidechain: false,
+    promptId: 'prompt-watch',
+    toolUseResult: { backgroundTaskId: 'watch-server' },
+  });
+  tracker.consume({
+    type: 'assistant',
+    isSidechain: true,
+    message: {
+      stop_reason: 'end_turn',
+      content: [{ type: 'text', text: 'A sidechain finished.' }],
+    },
+  });
+
+  assert.deepEqual([...tracker.getDetachedBackgroundTaskIds()], []);
+});

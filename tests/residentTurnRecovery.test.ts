@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+  detachActiveBackgroundCommandsForCompletedTurn,
   getAssistantMessageSnapshot,
   getResidentIdleTurnOutcome,
   isClaudeAssistantEndTurnEvent,
@@ -147,6 +148,66 @@ run('getResidentIdleTurnOutcome leaves background-backed turns alone', () => {
   );
 
   assert.equal(outcome, null);
+});
+
+run('completed assistant turns detach direct commands without detaching background agents', () => {
+  const runState = makeRunState({
+    content: 'The watch server is running and the requested work is complete.',
+    backgroundTasks: new Map([
+      [
+        'watch-server',
+        {
+          taskId: 'watch-server',
+          status: 'running',
+          description: 'Background command task',
+          taskType: 'command',
+          updatedAt: 1,
+        },
+      ],
+      [
+        'background-agent',
+        {
+          taskId: 'background-agent',
+          status: 'running',
+          description: 'Background research agent',
+          taskType: 'local_agent',
+          updatedAt: 2,
+        },
+      ],
+    ]),
+  });
+
+  const detached = detachActiveBackgroundCommandsForCompletedTurn(runState);
+
+  assert.deepEqual(detached.map((task) => task.taskId), ['watch-server']);
+  assert.equal(runState.backgroundTasks.get('watch-server')?.detached, true);
+  assert.equal(runState.backgroundTasks.get('background-agent')?.detached, undefined);
+  assert.equal(getResidentIdleTurnOutcome(runState), null);
+});
+
+run('detaching the only direct command lets a completed assistant turn settle', () => {
+  const runState = makeRunState({
+    content: 'The server is back up and serving requests.',
+    backgroundTasks: new Map([
+      [
+        'watch-server',
+        {
+          taskId: 'watch-server',
+          status: 'running',
+          description: 'Background command task',
+          taskType: 'command',
+          updatedAt: 1,
+        },
+      ],
+    ]),
+  });
+
+  detachActiveBackgroundCommandsForCompletedTurn(runState);
+
+  assert.deepEqual(getResidentIdleTurnOutcome(runState), {
+    kind: 'complete',
+    content: 'The server is back up and serving requests.',
+  });
 });
 
 run('getResidentIdleTurnOutcome keeps prior assistant text instead of replacing it with raw task output', () => {

@@ -34,6 +34,7 @@ import {
   mergeNativeConversationMessages,
   mergeNativeHydrationMessages,
   mergeNativeSessionIntoExisting,
+  selectActiveNativeClaudeHistoryEntries,
   shouldRecoverSessionFromNative,
 } from './nativeSessionRecovery.js';
 import { hydrateProjectForOpen } from './projectOpen.js';
@@ -1779,12 +1780,35 @@ export type NativeClaudeSessionParseOptions = {
   finalizeTrailingUserTurn?: boolean;
 };
 
+const getNativeClaudeMessageId = (
+  entry: Record<string, unknown>,
+  suffix?: string,
+) => {
+  const uuid = typeof entry.uuid === 'string' ? entry.uuid.trim() : '';
+  if (!uuid) {
+    return randomUUID();
+  }
+  return suffix ? `${uuid}:${suffix}` : uuid;
+};
+
 export const parseNativeClaudeSessionFile = async (
   filePath: string,
   options?: NativeClaudeSessionParseOptions,
 ) => {
   const raw = await readFile(filePath, 'utf8');
-  const lines = raw.split(/\r?\n/).filter(Boolean);
+  const rawEntries: Record<string, unknown>[] = [];
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line) {
+      continue;
+    }
+    try {
+      rawEntries.push(JSON.parse(line) as Record<string, unknown>);
+    } catch {
+      // Native histories can end with a partially written line. Ignore it
+      // until the next source revision completes the JSON record.
+    }
+  }
+  const entries = selectActiveNativeClaudeHistoryEntries(rawEntries);
   const messages: ConversationMessage[] = [];
   const toolTraceById = new Map<string, ConversationMessage>();
   const interactiveQuestionToolIds = new Set<string>();
@@ -1803,6 +1827,7 @@ export const parseNativeClaudeSessionFile = async (
   let currentTurnLastAssistantStopReason: string | undefined;
   let currentTurnLastAssistantMessage: ConversationMessage | undefined;
   let currentTurnLastTimestamp: string | number | undefined;
+  let currentTurnMessageIdSeed: string | undefined;
   let currentTurnSawToolResult = false;
   let currentTurnHasUserPrompt = false;
   const currentTurnActiveBackgroundTaskIds = new Set<string>();
@@ -1832,7 +1857,9 @@ export const parseNativeClaudeSessionFile = async (
     }
 
     const message: ConversationMessage = {
-      id: randomUUID(),
+      id: currentTurnMessageIdSeed
+        ? `${currentTurnMessageIdSeed}:incomplete`
+        : randomUUID(),
       role: 'assistant',
       kind: 'message',
       timestamp: toTimeLabel(currentTurnLastTimestamp ?? lastTimestamp),
@@ -1844,7 +1871,10 @@ export const parseNativeClaudeSessionFile = async (
     currentTurnLastAssistantMessage = message;
   };
 
-  const beginNativeUserTurn = (timestamp: string | number | undefined) => {
+  const beginNativeUserTurn = (
+    timestamp: string | number | undefined,
+    messageIdSeed?: string,
+  ) => {
     const missingVisibleResponse =
       currentTurnHasUserPrompt &&
       !currentTurnLastAssistantMessage &&
@@ -1857,6 +1887,7 @@ export const parseNativeClaudeSessionFile = async (
     currentTurnLastAssistantStopReason = undefined;
     currentTurnLastAssistantMessage = undefined;
     currentTurnLastTimestamp = timestamp;
+    currentTurnMessageIdSeed = messageIdSeed;
     currentTurnSawToolResult = false;
     currentTurnHasUserPrompt = true;
     currentTurnActiveBackgroundTaskIds.clear();
@@ -1898,14 +1929,7 @@ export const parseNativeClaudeSessionFile = async (
     });
   };
 
-  for (const line of lines) {
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
-
+  for (const parsed of entries) {
     if (typeof parsed.cwd === 'string') {
       workspace = parsed.cwd;
     }
@@ -1948,7 +1972,10 @@ export const parseNativeClaudeSessionFile = async (
               : `${String(parsed.timestamp ?? '')}:${queuedPrompt}`;
         if (!importedQueuedCommandIds.has(sourceId)) {
           importedQueuedCommandIds.add(sourceId);
-          beginNativeUserTurn(parsed.timestamp as string | number | undefined);
+          beginNativeUserTurn(
+            parsed.timestamp as string | number | undefined,
+            sourceId,
+          );
           if (pendingBackgroundTaskResult) {
             flushPendingBackgroundTaskResult(parsed.timestamp as string | number | undefined);
           }
@@ -1984,10 +2011,13 @@ export const parseNativeClaudeSessionFile = async (
           })
         : Boolean(firstMeaningfulLine(extractTextFromContent(contentValue)));
       if (hasUserPromptContent) {
-        beginNativeUserTurn(parsed.timestamp as string | number | undefined);
+        beginNativeUserTurn(
+          parsed.timestamp as string | number | undefined,
+          getNativeClaudeMessageId(parsed),
+        );
       }
       if (Array.isArray(contentValue)) {
-        for (const block of contentValue) {
+        for (const [blockIndex, block] of contentValue.entries()) {
           if (
             block &&
             typeof block === 'object' &&
@@ -2022,7 +2052,7 @@ export const parseNativeClaudeSessionFile = async (
             }
             if (answeredInteractiveQuestion && interactiveAnswer) {
               messages.push({
-                id: randomUUID(),
+                id: getNativeClaudeMessageId(parsed, `interactive-answer-${blockIndex}`),
                 role: 'user',
                 kind: 'message',
                 timestamp: toTimeLabel(parsed.timestamp as string | number | undefined),
@@ -2038,7 +2068,7 @@ export const parseNativeClaudeSessionFile = async (
               current.status = (block as { is_error?: boolean }).is_error ? 'error' : 'success';
             } else {
               messages.push({
-                id: randomUUID(),
+                id: getNativeClaudeMessageId(parsed, `tool-result-${blockIndex}`),
                 role: 'system',
                 kind: 'tool_result',
                 timestamp: toTimeLabel(parsed.timestamp as string | number | undefined),
@@ -2070,7 +2100,7 @@ export const parseNativeClaudeSessionFile = async (
             firstUserText = text;
           }
           messages.push({
-            id: randomUUID(),
+            id: getNativeClaudeMessageId(parsed, `user-text-${blockIndex}`),
             role: 'user',
             kind: 'message',
             timestamp: toTimeLabel(parsed.timestamp as string | number | undefined),
@@ -2102,7 +2132,7 @@ export const parseNativeClaudeSessionFile = async (
         firstUserText = text;
       }
       messages.push({
-        id: randomUUID(),
+        id: getNativeClaudeMessageId(parsed),
         role: 'user',
         kind: 'message',
         timestamp: toTimeLabel(parsed.timestamp as string | number | undefined),
@@ -2154,7 +2184,7 @@ export const parseNativeClaudeSessionFile = async (
         }
         lastAssistantText = text;
         const assistantMessage: ConversationMessage = {
-          id: randomUUID(),
+          id: getNativeClaudeMessageId(parsed),
           role: 'assistant',
           kind: 'message',
           timestamp: toTimeLabel(parsed.timestamp as string | number | undefined),
@@ -2167,7 +2197,7 @@ export const parseNativeClaudeSessionFile = async (
         continue;
       }
 
-      for (const block of messageObj.content) {
+      for (const [blockIndex, block] of messageObj.content.entries()) {
         if (!block || typeof block !== 'object') {
           continue;
         }
@@ -2203,7 +2233,7 @@ export const parseNativeClaudeSessionFile = async (
           }
           lastAssistantText = text;
           const assistantMessage: ConversationMessage = {
-            id: randomUUID(),
+            id: getNativeClaudeMessageId(parsed, `assistant-text-${blockIndex}`),
             role: 'assistant',
             kind: 'message',
             timestamp: toTimeLabel(parsed.timestamp as string | number | undefined),
@@ -2235,7 +2265,7 @@ export const parseNativeClaudeSessionFile = async (
               prior.content = `${prior.content.trimEnd()}\n\n${interactivePrompt.content}`;
             } else {
               messages.push({
-                id: randomUUID(),
+                id: getNativeClaudeMessageId(parsed, `assistant-question-${blockIndex}`),
                 role: 'assistant',
                 kind: 'message',
                 timestamp: toTimeLabel(parsed.timestamp as string | number | undefined),
@@ -2285,7 +2315,7 @@ export const parseNativeClaudeSessionFile = async (
         current.status = 'running';
       } else {
         messages.push({
-          id: randomUUID(),
+          id: getNativeClaudeMessageId(parsed, 'progress'),
           role: 'system',
           kind: 'progress',
           timestamp: toTimeLabel(parsed.timestamp as string | number | undefined),
@@ -2669,12 +2699,22 @@ const buildImportedCodexCommandTraceMessage = (payload: {
 
 const isCodexImportedContextMessage = (text: string) => {
   const trimmed = text.trim();
+  const contextPrefixes = [
+    '<app-context>',
+    '<environment_context>',
+    '<recommended_plugins>',
+    '<permissions instructions>',
+    '<collaboration_mode>',
+    '<apps_instructions>',
+    '<plugins_instructions>',
+    '<skills_instructions>',
+    '# AGENTS.md instructions for ',
+    '<INSTRUCTIONS>',
+    'Host behavior note:',
+  ];
   return (
     !trimmed ||
-    trimmed.startsWith('<environment_context>') ||
-    trimmed.startsWith('# AGENTS.md instructions for ') ||
-    trimmed.startsWith('<INSTRUCTIONS>') ||
-    trimmed.startsWith('Host behavior note:')
+    contextPrefixes.some((prefix) => trimmed.startsWith(prefix))
   );
 };
 
@@ -2917,6 +2957,7 @@ const parseCodexSessionCatalogFile = async (
     if (parsed.type === 'event_msg') {
       const payload = parsed.payload as {
         type?: unknown;
+        message?: unknown;
         info?: {
           total_token_usage?: {
             input_tokens?: number;
@@ -2939,6 +2980,23 @@ const parseCodexSessionCatalogFile = async (
           cached,
           windowSource: payload.info.model_context_window ? 'runtime' : 'unknown',
         };
+      }
+      if (
+        (payload?.type === 'user_message' || payload?.type === 'agent_message') &&
+        typeof payload.message === 'string'
+      ) {
+        const text = boundedCatalogText(firstMeaningfulLine(payload.message));
+        if (!text || isCodexImportedContextMessage(text)) {
+          return undefined;
+        }
+        if (payload.type === 'user_message') {
+          firstUserText ||= text;
+          hasCatalogIdentity = true;
+          return workspace ? false : undefined;
+        }
+        if (hasCatalogIdentity) {
+          lastAssistantText = text;
+        }
       }
       return undefined;
     }
@@ -3085,7 +3143,54 @@ const parseCodexSessionFile = async (
   };
   let hasMeaningfulUserMessage = false;
 
-  for (const line of lines) {
+  let lastImportedMessageRecord: { signature: string; lineIndex: number } | undefined;
+  const appendImportedMessage = (payload: {
+    role: 'user' | 'assistant';
+    text: string;
+    lineIndex: number;
+    id?: string;
+  }) => {
+    const text = payload.text.trim();
+    if (!text || isCodexImportedContextMessage(text)) {
+      return;
+    }
+
+    const signature = `${payload.role}\u0000${text}`;
+    if (
+      lastImportedMessageRecord?.signature === signature &&
+      payload.lineIndex - lastImportedMessageRecord.lineIndex <= 1
+    ) {
+      lastImportedMessageRecord = { signature, lineIndex: payload.lineIndex };
+      return;
+    }
+
+    if (payload.role === 'user') {
+      firstUserText ||= text;
+      hasMeaningfulUserMessage = true;
+    } else {
+      if (!hasMeaningfulUserMessage) {
+        return;
+      }
+      lastAssistantText = text;
+    }
+
+    messages.push({
+      id: payload.id || `codex-message:${nativeSessionId}:${payload.lineIndex}`,
+      role: payload.role,
+      kind: 'message',
+      timestamp: toTimeLabel(lastTimestamp),
+      title:
+        payload.role === 'user'
+          ? 'User prompt'
+          : firstMeaningfulLine(text).slice(0, 42) || 'Codex response',
+      content: text,
+      status: 'complete',
+    });
+    lastImportedMessageRecord = { signature, lineIndex: payload.lineIndex };
+  };
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex];
     let parsed: Record<string, unknown>;
     try {
       parsed = JSON.parse(line) as Record<string, unknown>;
@@ -3139,6 +3244,7 @@ const parseCodexSessionFile = async (
             exit_code?: unknown;
             exitCode?: unknown;
             status?: unknown;
+            message?: unknown;
           }
         | undefined;
       if (payload?.type === 'token_count' && payload.info?.total_token_usage) {
@@ -3182,6 +3288,17 @@ const parseCodexSessionFile = async (
           }
         }
       }
+      if (
+        (payload?.type === 'user_message' || payload?.type === 'agent_message') &&
+        typeof payload.message === 'string'
+      ) {
+        appendImportedMessage({
+          role: payload.type === 'user_message' ? 'user' : 'assistant',
+          text: payload.message,
+          lineIndex,
+          id: getImportedCodexString(payload.id).trim(),
+        });
+      }
       continue;
     }
 
@@ -3204,6 +3321,7 @@ const parseCodexSessionFile = async (
           result?: unknown;
           contentItems?: unknown;
           error?: unknown;
+          phase?: unknown;
         }
       | undefined;
 
@@ -3257,27 +3375,11 @@ const parseCodexSessionFile = async (
       continue;
     }
 
-    if (payload.role === 'user') {
-      firstUserText ||= text;
-      hasMeaningfulUserMessage = true;
-    } else {
-      if (!hasMeaningfulUserMessage) {
-        continue;
-      }
-      lastAssistantText = text;
-    }
-
-    messages.push({
-      id: randomUUID(),
+    appendImportedMessage({
       role: payload.role,
-      kind: 'message',
-      timestamp: toTimeLabel(lastTimestamp),
-      title:
-        payload.role === 'user'
-          ? 'User prompt'
-          : firstMeaningfulLine(text).slice(0, 42) || 'Codex response',
-      content: text,
-      status: 'complete',
+      text,
+      lineIndex,
+      id: getImportedCodexString(payload.id).trim(),
     });
   }
 
@@ -4844,6 +4946,48 @@ export const getProjectsForBootstrap = async () => {
   return summarizeProjectsForBootstrap(state.projects);
 };
 
+const refreshNativeSessionSource = async (session: SessionRecord) => {
+  const source = nativeSessionSources.get(session.id);
+  if (!source) {
+    return false;
+  }
+
+  try {
+    const fileStat = await stat(source.filePath);
+    const sourceRevision = `${fileStat.mtimeMs}:${fileStat.size}`;
+    if (
+      source.sourceRevision !== sourceRevision ||
+      session.nativeHistoryRevision !== sourceRevision
+    ) {
+      source.sourceRevision = sourceRevision;
+      nativeSessionsNeedingHydration.add(session.id);
+    }
+    return true;
+  } catch {
+    // The native task may have moved between active and archived storage.
+    // Fall back to a catalog refresh so its new path can be discovered.
+    return false;
+  }
+};
+
+export const getNativeSessionHistoryRevision = async (sessionId: string) => {
+  const state = await loadState();
+  let session = findSessionInProjects(state.projects, sessionId);
+  if (!session || !(await refreshNativeSessionSource(session))) {
+    await refreshNativeImports(state);
+    session = findSessionInProjects(state.projects, sessionId);
+    if (session) {
+      await refreshNativeSessionSource(session);
+    }
+  }
+
+  return {
+    revision:
+      nativeSessionSources.get(sessionId)?.sourceRevision ??
+      session?.nativeHistoryRevision,
+  };
+};
+
 const hydrateNativeSessionMessages = async (
   session: SessionRecord,
   options?: NativeClaudeSessionParseOptions,
@@ -5046,8 +5190,14 @@ export const getSessionRecordForBootstrap = async (
   options?: NativeClaudeSessionParseOptions,
 ) => {
   const state = await loadState();
-  await refreshNativeImports(state);
-  const session = findSessionInProjects(state.projects, sessionId);
+  let session = findSessionInProjects(state.projects, sessionId);
+  if (!session || !(await refreshNativeSessionSource(session))) {
+    await refreshNativeImports(state);
+    session = findSessionInProjects(state.projects, sessionId);
+    if (session) {
+      await refreshNativeSessionSource(session);
+    }
+  }
   if (!session) {
     return null;
   }

@@ -657,7 +657,8 @@ const parseNativeClaudeBackgroundTaskLine = (
   if (
     !trimmed ||
     (!lineMayContainRequestedTaskId(trimmed, requestedTaskIds) &&
-      !trimmed.includes('"toolUseResult"'))
+      !trimmed.includes('"toolUseResult"') &&
+      !(trimmed.includes('"stop_reason"') && trimmed.includes('"end_turn"')))
   ) {
     return;
   }
@@ -938,6 +939,17 @@ const registerBackgroundTaskOwner = (
     assistantMessageId,
     runState,
   });
+};
+
+const removeBackgroundTaskOwnersForRunState = (
+  resident: ResidentClaudeSession,
+  runState: ClaudeRunState,
+) => {
+  for (const [taskId, candidate] of resident.backgroundTaskOwners) {
+    if (candidate.runState === runState) {
+      resident.backgroundTaskOwners.delete(taskId);
+    }
+  }
 };
 
 export const recordUnownedResidentBackgroundTask = (
@@ -1512,6 +1524,27 @@ export const shouldFinalizeResidentAssistantEndTurn = (
 ) =>
   isClaudeAssistantEndTurnEvent(payload) &&
   Boolean(runState.content.trim() || runState.completedContent?.trim() || runState.lastResultContent?.trim());
+
+export const detachActiveBackgroundCommandsForCompletedTurn = (
+  runState: ClaudeRunState,
+) => {
+  const detachedTasks: BackgroundTaskRecord[] = [];
+
+  runState.backgroundTasks.forEach((task, taskId) => {
+    if (!isActiveBackgroundTask(task) || task.taskType !== 'command') {
+      return;
+    }
+
+    const detachedTask = {
+      ...task,
+      detached: true,
+    };
+    runState.backgroundTasks.set(taskId, detachedTask);
+    detachedTasks.push(detachedTask);
+  });
+
+  return detachedTasks;
+};
 
 export const shouldForkResidentClaudeSession = (input: {
   session: Pick<SessionSummary, 'claudeSessionId' | 'sessionKind'>;
@@ -2712,14 +2745,7 @@ const ensureResidentClaudeSession = async (
           }
         }
         if (!hasActiveBackgroundTasks(turn.runState)) {
-          for (const [ownedTaskId, candidate] of currentResident.backgroundTaskOwners) {
-            if (
-              candidate.assistantMessageId === turn.assistantMessageId &&
-              candidate.runState === turn.runState
-            ) {
-              currentResident.backgroundTaskOwners.delete(ownedTaskId);
-            }
-          }
+          removeBackgroundTaskOwnersForRunState(currentResident, turn.runState);
         }
         if (currentResident.currentTurn === turn) {
           currentResident.currentTurn = undefined;
@@ -2731,11 +2757,21 @@ const ensureResidentClaudeSession = async (
         }
       }
 
+      const shouldFinalizeAssistantTurn = shouldFinalizeResidentAssistantEndTurn(parsed, runState);
+      if (shouldFinalizeAssistantTurn) {
+        detachActiveBackgroundCommandsForCompletedTurn(runState).forEach((task) => {
+          ctx.broadcastEvent({
+            type: 'background-task',
+            sessionId: session.id,
+            task,
+          });
+        });
+      }
       const shouldFinalizeResidentTurn =
         (parsed.type === 'system' &&
           parsed.subtype === 'session_state_changed' &&
           parsed.state === 'idle') ||
-        shouldFinalizeResidentAssistantEndTurn(parsed, runState);
+        shouldFinalizeAssistantTurn;
       if (shouldFinalizeResidentTurn) {
         const matchedTurn =
           currentResident.currentTurn?.assistantMessageId === assistantMessageId &&
@@ -2776,6 +2812,7 @@ const ensureResidentClaudeSession = async (
           if (currentResident.activeOutputTurn === matchedTurn) {
             currentResident.activeOutputTurn = undefined;
           }
+          removeBackgroundTaskOwnersForRunState(currentResident, matchedTurn.runState);
           matchedTurn.releaseQueuedTurn();
           matchedTurn.resolveCompletion();
         }

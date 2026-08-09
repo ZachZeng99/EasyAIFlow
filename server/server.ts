@@ -42,6 +42,7 @@ import {
   createSession,
   createSessionInStreamwork,
   createStreamwork,
+  getNativeSessionHistoryRevision,
   getSessionMessagePage,
   getSessionRecordForBootstrap,
   renameEntity,
@@ -230,6 +231,8 @@ const rpcHandlers = {
       messagesLoaded: true,
     };
   },
+  getSessionHistoryRevision: async (payload: { sessionId: string }) =>
+    getNativeSessionHistoryRevision(payload.sessionId),
   getSessionMessagePage: async (payload: { sessionId: string; before?: string }) =>
     getSessionMessagePage(payload.sessionId, payload.before),
   getGitSnapshot: async (payload: { cwd: string }) => getGitSnapshot(payload.cwd),
