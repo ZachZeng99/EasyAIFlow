@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   mergeNativeConversationMessages,
+  mergeNativeHydrationMessages,
   mergeNativeSessionIntoExisting,
   shouldRecoverSessionFromNative,
   type ParsedNativeSession,
@@ -309,6 +310,75 @@ run('mergeNativeConversationMessages compacts repeated normalized recovery impor
     merged.map((message) => message.content),
     normalizedOnce.map((message) => message.content),
   );
+});
+
+run('mergeNativeHydrationMessages preserves a queued local turn missing from native history', () => {
+  const existing = [
+    makeMessage({ id: 'user-old', role: 'user', content: 'Run the APT comparison.' }),
+    makeMessage({ id: 'assistant-old', content: 'The first side is still running.' }),
+    makeMessage({ id: 'user-queued', role: 'user', content: '你现在再干嘛？' }),
+    makeMessage({
+      id: 'assistant-queued',
+      content: 'Queued. Claude will start this message after the current run completes.',
+      title: 'Claude queued',
+      status: 'queued',
+    }),
+  ];
+  const parsed = [
+    makeMessage({ id: 'native-user-old', role: 'user', content: 'Run the APT comparison.' }),
+    makeMessage({ id: 'native-assistant-new', content: 'The first side completed; starting the second.' }),
+  ];
+
+  const merged = mergeNativeHydrationMessages(existing, parsed);
+
+  assert.deepEqual(
+    merged.map((message) => message.id),
+    ['native-user-old', 'native-assistant-new', 'user-queued', 'assistant-queued'],
+  );
+});
+
+run('mergeNativeHydrationMessages uses prompt order when queued text repeats', () => {
+  const existing = [
+    makeMessage({ id: 'user-1', role: 'user', content: '继续' }),
+    makeMessage({ id: 'assistant-1', content: 'Continuing the first run.' }),
+    makeMessage({ id: 'user-2', role: 'user', content: '继续' }),
+    makeMessage({ id: 'assistant-2', content: 'Continuing the second run.' }),
+    makeMessage({ id: 'user-queued', role: 'user', content: '继续' }),
+    makeMessage({ id: 'assistant-queued', title: 'Claude queued', status: 'queued' }),
+  ];
+  const parsed = [
+    makeMessage({ id: 'native-user-1', role: 'user', content: '继续' }),
+    makeMessage({ id: 'native-assistant-1', content: 'Continuing the first run.' }),
+    makeMessage({ id: 'native-user-2', role: 'user', content: '继续' }),
+    makeMessage({ id: 'native-assistant-2', content: 'The second run produced new output.' }),
+  ];
+
+  const merged = mergeNativeHydrationMessages(existing, parsed);
+
+  assert.deepEqual(merged.slice(-2).map((message) => message.id), ['user-queued', 'assistant-queued']);
+});
+
+run('mergeNativeHydrationMessages drops the local pending pair once native history contains it', () => {
+  const existing = [
+    makeMessage({ id: 'user-old', role: 'user', content: 'Run the comparison.' }),
+    makeMessage({ id: 'assistant-old', content: 'Running.' }),
+    makeMessage({ id: 'user-queued', role: 'user', content: 'Summarize the current status.' }),
+    makeMessage({ id: 'assistant-queued', title: 'Claude queued', status: 'queued' }),
+  ];
+  const parsed = [
+    makeMessage({ id: 'native-user-old', role: 'user', content: 'Run the comparison.' }),
+    makeMessage({ id: 'native-assistant-old', content: 'Finished.' }),
+    makeMessage({
+      id: 'native-user-queued',
+      role: 'user',
+      content: 'Pinned project instructions.\n\nSummarize the current status.\n\nAttached local files:\n- result.csv',
+    }),
+  ];
+
+  const merged = mergeNativeHydrationMessages(existing, parsed);
+
+  assert.equal(merged, parsed);
+  assert.equal(merged.some((message) => message.id === 'assistant-queued'), false);
 });
 
 run('shouldRecoverSessionFromNative ignores cleanup-only assistant follow-ups when comparing final answers', () => {

@@ -199,7 +199,9 @@ app.whenReady().then(async () => {
   );
   ipcMain.handle('sessions:bootstrap', async () => handleBootstrapSessions(state));
   ipcMain.handle('sessions:get-record', async (_event, payload: { sessionId: string }) => {
-    const session = await getSessionRecordForBootstrap(payload.sessionId);
+    const session = await getSessionRecordForBootstrap(payload.sessionId, {
+      finalizeTrailingUserTurn: !state.residentSessions.has(payload.sessionId),
+    });
     if (!session) {
       throw new Error('Session not found.');
     }

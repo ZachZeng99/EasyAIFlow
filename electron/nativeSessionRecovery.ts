@@ -174,6 +174,87 @@ export const mergeNativeConversationMessages = (
   return normalizedParsedMessages;
 };
 
+const isPendingAssistantMessage = (message: ConversationMessage | undefined) =>
+  message?.role === 'assistant' &&
+  message.kind !== 'tool_use' &&
+  message.kind !== 'tool_result' &&
+  (message.status === 'queued' ||
+    message.status === 'streaming' ||
+    message.status === 'running' ||
+    message.status === 'background');
+
+const normalizePromptContent = (content: string) => content.replace(/\r\n/g, '\n').trim();
+
+const nativePromptContainsLocalPrompt = (
+  localMessage: ConversationMessage,
+  nativeMessage: ConversationMessage,
+) => {
+  const localContent = normalizePromptContent(localMessage.content);
+  const nativeContent = normalizePromptContent(nativeMessage.content);
+  if (!localContent || !nativeContent) {
+    return false;
+  }
+  if (localContent === nativeContent) {
+    return true;
+  }
+
+  // EasyAIFlow may prepend instructions/reference context and append attachment
+  // notes before writing the user line to Claude. The original visible prompt
+  // remains a double-newline-delimited block inside that resolved prompt.
+  return (
+    nativeContent.startsWith(`${localContent}\n\n`) ||
+    nativeContent.endsWith(`\n\n${localContent}`) ||
+    nativeContent.includes(`\n\n${localContent}\n\n`)
+  );
+};
+
+/**
+ * Native history is authoritative for turns already written to Claude, but it
+ * cannot contain prompts that EasyAIFlow has queued behind the current turn.
+ * Preserve those local pending pairs while the native snapshot catches up.
+ */
+export const mergeNativeHydrationMessages = (
+  existingMessages: ConversationMessage[] | undefined,
+  parsedMessages: ConversationMessage[],
+) => {
+  const currentMessages = existingMessages ?? [];
+  const parsedUserMessages = parsedMessages.filter(
+    (message) => message.role === 'user' && message.kind !== 'tool_result',
+  );
+  const pendingLocalMessages: ConversationMessage[] = [];
+  let parsedUserCursor = 0;
+
+  for (let index = 0; index < currentMessages.length; index += 1) {
+    const message = currentMessages[index];
+    if (message?.role !== 'user' || message.kind === 'tool_result') {
+      continue;
+    }
+
+    let matchingParsedIndex = -1;
+    for (let candidate = parsedUserCursor; candidate < parsedUserMessages.length; candidate += 1) {
+      if (nativePromptContainsLocalPrompt(message, parsedUserMessages[candidate]!)) {
+        matchingParsedIndex = candidate;
+        break;
+      }
+    }
+
+    if (matchingParsedIndex >= 0) {
+      parsedUserCursor = matchingParsedIndex + 1;
+      continue;
+    }
+
+    const assistant = currentMessages[index + 1];
+    if (isPendingAssistantMessage(assistant)) {
+      pendingLocalMessages.push(cloneMessage(message), cloneMessage(assistant!));
+      index += 1;
+    }
+  }
+
+  return pendingLocalMessages.length > 0
+    ? [...parsedMessages, ...pendingLocalMessages]
+    : parsedMessages;
+};
+
 export const shouldRecoverSessionFromNative = (
   existing: SessionRecord,
   parsed: ParsedNativeSession,

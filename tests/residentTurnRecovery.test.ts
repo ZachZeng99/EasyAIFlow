@@ -75,6 +75,50 @@ run('getResidentIdleTurnOutcome completes turns that reached idle with visible a
   });
 });
 
+run('getResidentIdleTurnOutcome rejects partial text when Claude goes idle after tool use', () => {
+  const outcome = getResidentIdleTurnOutcome(
+    makeRunState({
+      content: 'I found the likely cause. Let me verify the final mechanism.',
+      lastAssistantStopReason: 'tool_use',
+    }),
+  );
+
+  assert.deepEqual(outcome, {
+    kind: 'error',
+    content: 'Claude stopped after tool use without returning a final response.',
+  });
+});
+
+run('getResidentIdleTurnOutcome accepts a successful result after tool use', () => {
+  const outcome = getResidentIdleTurnOutcome(
+    makeRunState({
+      receivedResult: true,
+      content: 'The completed answer arrived in the result packet.',
+      lastAssistantStopReason: 'tool_use',
+    }),
+  );
+
+  assert.deepEqual(outcome, {
+    kind: 'complete',
+    content: 'The completed answer arrived in the result packet.',
+  });
+});
+
+run('getResidentIdleTurnOutcome preserves a terminal result error across idle', () => {
+  const outcome = getResidentIdleTurnOutcome(
+    makeRunState({
+      receivedResult: true,
+      content: 'Partial answer before the provider error.',
+      terminalError: 'Upstream request failed.',
+    }),
+  );
+
+  assert.deepEqual(outcome, {
+    kind: 'error',
+    content: 'Upstream request failed.',
+  });
+});
+
 run('getResidentIdleTurnOutcome reports an error when Claude goes idle without any visible reply', () => {
   const outcome = getResidentIdleTurnOutcome(makeRunState());
 

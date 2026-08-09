@@ -21,13 +21,18 @@ import {
   parseBackgroundTaskNotificationContent,
 } from './backgroundTaskNotification.js';
 import {
+  CLAUDE_INCOMPLETE_TOOL_TURN_ERROR,
+  CLAUDE_NO_VISIBLE_RESPONSE_ERROR,
+  formatClaudeIncompleteResponse,
   isIgnorableBackgroundTaskFollowupText,
   stripLeadingBackgroundTaskFollowupText as stripLeadingBackgroundTaskFollowupFromAssistantText,
 } from './claudeRunState.js';
+import { getClaudeResultError } from './claudeErrors.js';
 import { isClaudeSyntheticModel, normalizeClaudeModelSelection } from './claudeModel.js';
 import { mergeNativeImportedSessions } from './nativeSessionMerge.js';
 import {
   mergeNativeConversationMessages,
+  mergeNativeHydrationMessages,
   mergeNativeSessionIntoExisting,
   shouldRecoverSessionFromNative,
 } from './nativeSessionRecovery.js';
@@ -1716,7 +1721,68 @@ const toTimeLabel = (timestamp: string | number | undefined) => {
   }).format(date);
 };
 
-const parseNativeClaudeSessionFile = async (filePath: string) => {
+const nativeClaudeSettledBackgroundStatuses = new Set([
+  'completed',
+  'failed',
+  'killed',
+  'stopped',
+  'cancelled',
+]);
+
+const getNativeClaudeBackgroundTaskState = (payload: unknown, toolUseId: string) => {
+  if (!payload || typeof payload !== 'object') {
+    return null;
+  }
+
+  const structured = payload as {
+    agentId?: unknown;
+    backgroundTaskId?: unknown;
+    isAsync?: unknown;
+    status?: unknown;
+  };
+  const backgroundTaskId =
+    typeof structured.backgroundTaskId === 'string' && structured.backgroundTaskId.trim()
+      ? structured.backgroundTaskId.trim()
+      : undefined;
+  const agentId =
+    typeof structured.agentId === 'string' && structured.agentId.trim()
+      ? structured.agentId.trim()
+      : undefined;
+  const status =
+    typeof structured.status === 'string' ? structured.status.trim().toLowerCase() : undefined;
+
+  if (backgroundTaskId) {
+    return {
+      taskId: backgroundTaskId,
+      active: !status || !nativeClaudeSettledBackgroundStatuses.has(status),
+    };
+  }
+
+  if (structured.isAsync === true && status === 'async_launched') {
+    return {
+      taskId: agentId ?? `tool-${toolUseId}`,
+      active: true,
+    };
+  }
+
+  if (agentId && status && nativeClaudeSettledBackgroundStatuses.has(status)) {
+    return {
+      taskId: agentId,
+      active: false,
+    };
+  }
+
+  return null;
+};
+
+export type NativeClaudeSessionParseOptions = {
+  finalizeTrailingUserTurn?: boolean;
+};
+
+export const parseNativeClaudeSessionFile = async (
+  filePath: string,
+  options?: NativeClaudeSessionParseOptions,
+) => {
   const raw = await readFile(filePath, 'utf8');
   const lines = raw.split(/\r?\n/).filter(Boolean);
   const messages: ConversationMessage[] = [];
@@ -1734,6 +1800,68 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
   let backgroundTaskNotificationPending = false;
   let pendingBackgroundTaskResult = '';
   let recoveryContext: ImportedEasyAIFlowRecoveryContext | undefined;
+  let currentTurnLastAssistantStopReason: string | undefined;
+  let currentTurnLastAssistantMessage: ConversationMessage | undefined;
+  let currentTurnLastTimestamp: string | number | undefined;
+  let currentTurnSawToolResult = false;
+  let currentTurnHasUserPrompt = false;
+  const currentTurnActiveBackgroundTaskIds = new Set<string>();
+  const importedQueuedCommandIds = new Set<string>();
+
+  const finalizeIncompleteNativeTurn = (explicitError?: string) => {
+    const error =
+      explicitError ??
+      (currentTurnLastAssistantStopReason === 'tool_use' &&
+      currentTurnSawToolResult &&
+      interactiveQuestionToolIds.size === 0 &&
+      currentTurnActiveBackgroundTaskIds.size === 0
+        ? CLAUDE_INCOMPLETE_TOOL_TURN_ERROR
+        : undefined);
+    if (!error) {
+      return;
+    }
+
+    if (currentTurnLastAssistantMessage) {
+      currentTurnLastAssistantMessage.content = formatClaudeIncompleteResponse(
+        currentTurnLastAssistantMessage.content,
+        error,
+      );
+      currentTurnLastAssistantMessage.status = 'error';
+      currentTurnLastAssistantMessage.title = 'Claude incomplete response';
+      return;
+    }
+
+    const message: ConversationMessage = {
+      id: randomUUID(),
+      role: 'assistant',
+      kind: 'message',
+      timestamp: toTimeLabel(currentTurnLastTimestamp ?? lastTimestamp),
+      title: 'Claude incomplete response',
+      content: error,
+      status: 'error',
+    };
+    messages.push(message);
+    currentTurnLastAssistantMessage = message;
+  };
+
+  const beginNativeUserTurn = (timestamp: string | number | undefined) => {
+    const missingVisibleResponse =
+      currentTurnHasUserPrompt &&
+      !currentTurnLastAssistantMessage &&
+      currentTurnLastAssistantStopReason !== 'end_turn' &&
+      interactiveQuestionToolIds.size === 0 &&
+      currentTurnActiveBackgroundTaskIds.size === 0;
+    finalizeIncompleteNativeTurn(
+      missingVisibleResponse ? CLAUDE_NO_VISIBLE_RESPONSE_ERROR : undefined,
+    );
+    currentTurnLastAssistantStopReason = undefined;
+    currentTurnLastAssistantMessage = undefined;
+    currentTurnLastTimestamp = timestamp;
+    currentTurnSawToolResult = false;
+    currentTurnHasUserPrompt = true;
+    currentTurnActiveBackgroundTaskIds.clear();
+    interactiveQuestionToolIds.clear();
+  };
 
   const noteRecoveryContext = (content: string) => {
     const parsed = parseImportedEasyAIFlowRecoveryContext(content);
@@ -1801,8 +1929,63 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
       }
     }
 
+    if (parsed.type === 'attachment') {
+      const attachment = parsed.attachment as {
+        type?: unknown;
+        prompt?: unknown;
+        source_uuid?: unknown;
+      } | undefined;
+      const queuedPrompt =
+        attachment?.type === 'queued_command' && typeof attachment.prompt === 'string'
+          ? attachment.prompt.trim()
+          : '';
+      if (queuedPrompt) {
+        const sourceId =
+          typeof attachment?.source_uuid === 'string' && attachment.source_uuid.trim()
+            ? attachment.source_uuid.trim()
+            : typeof parsed.uuid === 'string' && parsed.uuid.trim()
+              ? parsed.uuid.trim()
+              : `${String(parsed.timestamp ?? '')}:${queuedPrompt}`;
+        if (!importedQueuedCommandIds.has(sourceId)) {
+          importedQueuedCommandIds.add(sourceId);
+          beginNativeUserTurn(parsed.timestamp as string | number | undefined);
+          if (pendingBackgroundTaskResult) {
+            flushPendingBackgroundTaskResult(parsed.timestamp as string | number | undefined);
+          }
+          if (!firstUserText) {
+            firstUserText = firstMeaningfulLine(queuedPrompt);
+          }
+          messages.push({
+            id: sourceId,
+            role: 'user',
+            kind: 'message',
+            timestamp: toTimeLabel(parsed.timestamp as string | number | undefined),
+            title: firstMeaningfulLine(queuedPrompt).slice(0, 42),
+            content: queuedPrompt,
+            status: 'complete',
+          });
+        }
+        continue;
+      }
+    }
+
     if (parsed.type === 'user' && parsed.isMeta !== true) {
       const contentValue = (parsed.message as { content?: unknown })?.content;
+      const hasUserPromptContent = Array.isArray(contentValue)
+        ? contentValue.some((block) => {
+            if (
+              block &&
+              typeof block === 'object' &&
+              (block as { type?: string }).type === 'tool_result'
+            ) {
+              return false;
+            }
+            return Boolean(firstMeaningfulLine(extractTextFromMessageBlock(block)));
+          })
+        : Boolean(firstMeaningfulLine(extractTextFromContent(contentValue)));
+      if (hasUserPromptContent) {
+        beginNativeUserTurn(parsed.timestamp as string | number | undefined);
+      }
       if (Array.isArray(contentValue)) {
         for (const block of contentValue) {
           if (
@@ -1813,13 +1996,31 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
           ) {
             const resultText = extractTextFromContent((block as { content?: unknown }).content);
             const toolUseId = (block as { tool_use_id?: string }).tool_use_id;
+            currentTurnSawToolResult = true;
+            if (toolUseId) {
+              const backgroundTaskState = getNativeClaudeBackgroundTaskState(
+                (parsed as { toolUseResult?: unknown }).toolUseResult,
+                toolUseId,
+              );
+              if (backgroundTaskState?.active) {
+                currentTurnActiveBackgroundTaskIds.add(backgroundTaskState.taskId);
+              } else if (backgroundTaskState) {
+                currentTurnActiveBackgroundTaskIds.delete(backgroundTaskState.taskId);
+              }
+            }
             const interactiveAnswer = toolUseId
               ? formatImportedAskUserQuestionAnswer(
                   (parsed as { toolUseResult?: unknown }).toolUseResult,
                   resultText || 'User completed the interactive question.',
                 )
               : null;
-            if (toolUseId && interactiveQuestionToolIds.has(toolUseId) && interactiveAnswer) {
+            const answeredInteractiveQuestion = Boolean(
+              toolUseId && interactiveQuestionToolIds.has(toolUseId),
+            );
+            if (toolUseId && answeredInteractiveQuestion) {
+              interactiveQuestionToolIds.delete(toolUseId);
+            }
+            if (answeredInteractiveQuestion && interactiveAnswer) {
               messages.push({
                 id: randomUUID(),
                 role: 'user',
@@ -1913,7 +2114,17 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
     }
 
     if (parsed.type === 'assistant') {
-      const messageObj = parsed.message as { model?: string; content?: unknown };
+      const messageObj = parsed.message as { model?: string; stop_reason?: string; content?: unknown };
+      const assistantStopReason =
+        typeof messageObj?.stop_reason === 'string'
+          ? messageObj.stop_reason
+          : typeof parsed.stop_reason === 'string'
+            ? parsed.stop_reason
+            : undefined;
+      if (assistantStopReason) {
+        currentTurnLastAssistantStopReason = assistantStopReason;
+      }
+      currentTurnLastTimestamp = parsed.timestamp as string | number | undefined;
       if (typeof messageObj?.model === 'string' && !isClaudeSyntheticModel(messageObj.model)) {
         model = messageObj.model;
       }
@@ -1942,7 +2153,7 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
           pendingBackgroundTaskResult = '';
         }
         lastAssistantText = text;
-        messages.push({
+        const assistantMessage: ConversationMessage = {
           id: randomUUID(),
           role: 'assistant',
           kind: 'message',
@@ -1950,7 +2161,9 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
           title: text.slice(0, 42),
           content,
           status: 'complete',
-        });
+        };
+        messages.push(assistantMessage);
+        currentTurnLastAssistantMessage = assistantMessage;
         continue;
       }
 
@@ -1989,7 +2202,7 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
             continue;
           }
           lastAssistantText = text;
-          messages.push({
+          const assistantMessage: ConversationMessage = {
             id: randomUUID(),
             role: 'assistant',
             kind: 'message',
@@ -1997,7 +2210,9 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
             title: text.slice(0, 42),
             content,
             status: 'complete',
-          });
+          };
+          messages.push(assistantMessage);
+          currentTurnLastAssistantMessage = assistantMessage;
           continue;
         }
 
@@ -2090,9 +2305,33 @@ const parseNativeClaudeSessionFile = async (filePath: string) => {
         error?.error?.message?.trim?.() ||
         error?.message?.trim?.() ||
         'API error';
+      finalizeIncompleteNativeTurn(lastErrorText);
+      currentTurnLastAssistantStopReason = 'error';
       continue;
     }
+
+    if (parsed.type === 'result') {
+      const resultError = getClaudeResultError(parsed);
+      if (resultError) {
+        lastErrorText = resultError;
+        finalizeIncompleteNativeTurn(resultError);
+        currentTurnLastAssistantStopReason = 'error';
+      } else {
+        currentTurnLastAssistantStopReason = 'end_turn';
+      }
+    }
   }
+
+  const trailingTurnMissingVisibleResponse =
+    options?.finalizeTrailingUserTurn === true &&
+    currentTurnHasUserPrompt &&
+    !currentTurnLastAssistantMessage &&
+    currentTurnLastAssistantStopReason !== 'end_turn' &&
+    interactiveQuestionToolIds.size === 0 &&
+    currentTurnActiveBackgroundTaskIds.size === 0;
+  finalizeIncompleteNativeTurn(
+    trailingTurnMissingVisibleResponse ? CLAUDE_NO_VISIBLE_RESPONSE_ERROR : undefined,
+  );
 
   if (pendingBackgroundTaskResult) {
     flushPendingBackgroundTaskResult(lastTimestamp);
@@ -4605,7 +4844,10 @@ export const getProjectsForBootstrap = async () => {
   return summarizeProjectsForBootstrap(state.projects);
 };
 
-const hydrateNativeSessionMessages = async (session: SessionRecord) => {
+const hydrateNativeSessionMessages = async (
+  session: SessionRecord,
+  options?: NativeClaudeSessionParseOptions,
+) => {
   if (!v2Store || !cachedState) {
     return;
   }
@@ -4621,11 +4863,17 @@ const hydrateNativeSessionMessages = async (session: SessionRecord) => {
 
   const hydration = (async () => {
     const parsed = source.provider === 'claude'
-      ? await parseNativeClaudeSessionFile(source.filePath)
+      ? await parseNativeClaudeSessionFile(source.filePath, options)
       : await parseCodexSessionFile(source.filePath, await readCodexThreadNameIndex());
     if (!parsed) {
       return;
     }
+    const messages = source.provider === 'claude'
+      ? mergeNativeHydrationMessages(
+          await readAllV2SessionMessages(session.id),
+          parsed.messages,
+        )
+      : parsed.messages;
     session.title = parsed.title || session.title;
     session.preview = parsed.preview || session.preview;
     session.timeLabel = parsed.timeLabel || session.timeLabel;
@@ -4640,7 +4888,7 @@ const hydrateNativeSessionMessages = async (session: SessionRecord) => {
       sessionMutations: [{
         type: 'replace-messages',
         sessionId: session.id,
-        messages: parsed.messages,
+        messages,
       }],
       immediateIndex: true,
     });
@@ -4793,7 +5041,10 @@ export const materializeSessionHistoryForRuntime = async (sessionId: string) => 
   return session;
 };
 
-export const getSessionRecordForBootstrap = async (sessionId: string) => {
+export const getSessionRecordForBootstrap = async (
+  sessionId: string,
+  options?: NativeClaudeSessionParseOptions,
+) => {
   const state = await loadState();
   await refreshNativeImports(state);
   const session = findSessionInProjects(state.projects, sessionId);
@@ -4818,11 +5069,22 @@ export const getSessionRecordForBootstrap = async (sessionId: string) => {
     await repairGroupRoomFromNativeHistory(session);
   }
   let page = await v2Store.readMessagePage(sessionId);
+  const lastConversationMessage = [...page.messages]
+    .reverse()
+    .find((message) => message.kind === 'message' && (message.role === 'user' || message.role === 'assistant'));
+  const shouldFinalizeTrailingUserTurn =
+    options?.finalizeTrailingUserTurn === true &&
+    nativeSessionSources.get(sessionId)?.provider === 'claude' &&
+    lastConversationMessage?.role === 'user';
   if (
     nativeSessionSources.has(sessionId) &&
-    (page.messages.length === 0 || nativeSessionsNeedingHydration.has(sessionId))
+    (page.messages.length === 0 ||
+      nativeSessionsNeedingHydration.has(sessionId) ||
+      shouldFinalizeTrailingUserTurn)
   ) {
-    await hydrateNativeSessionMessages(session);
+    await hydrateNativeSessionMessages(session, {
+      finalizeTrailingUserTurn: shouldFinalizeTrailingUserTurn,
+    });
     page = await v2Store.readMessagePage(sessionId);
   }
   page = {

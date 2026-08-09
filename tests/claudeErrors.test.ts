@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { getClaudeSyntheticApiError } from '../electron/claudeErrors.js';
+import { getClaudeResultError, getClaudeSyntheticApiError } from '../electron/claudeErrors.js';
 
 const run = (name: string, fn: () => void) => {
   try {
@@ -34,4 +34,28 @@ run('getClaudeSyntheticApiError ignores normal assistant messages', () => {
   });
 
   assert.equal(error, undefined);
+});
+
+run('getClaudeResultError extracts stream-json result errors', () => {
+  assert.equal(
+    getClaudeResultError({
+      type: 'result',
+      subtype: 'error_during_execution',
+      is_error: true,
+      errors: ['Upstream request ended before Claude returned a final response.'],
+    }),
+    'Upstream request ended before Claude returned a final response.',
+  );
+});
+
+run('getClaudeResultError ignores successful results', () => {
+  assert.equal(
+    getClaudeResultError({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      result: 'Done.',
+    }),
+    undefined,
+  );
 });

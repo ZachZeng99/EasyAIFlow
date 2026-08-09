@@ -19,3 +19,42 @@ export const getClaudeSyntheticApiError = (parsed: Record<string, unknown>) => {
 
   return text || 'Claude API error';
 };
+
+const readClaudeResultErrorDetail = (value: unknown) => {
+  if (typeof value === 'string' && value.trim()) {
+    return value.trim();
+  }
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+
+  const record = value as { message?: unknown; error?: unknown };
+  return (
+    (typeof record.message === 'string' && record.message.trim()) ||
+    (typeof record.error === 'string' && record.error.trim()) ||
+    undefined
+  );
+};
+
+export const getClaudeResultError = (parsed: Record<string, unknown>) => {
+  if (parsed.type !== 'result' || parsed.is_error !== true) {
+    return undefined;
+  }
+
+  const errors = Array.isArray(parsed.errors)
+    ? parsed.errors.map(readClaudeResultErrorDetail).filter((value): value is string => Boolean(value))
+    : [];
+  if (errors.length > 0) {
+    return errors.join('\n');
+  }
+
+  const result = readClaudeResultErrorDetail(parsed.result);
+  if (result) {
+    return result;
+  }
+
+  const subtype = typeof parsed.subtype === 'string' ? parsed.subtype.trim() : '';
+  return subtype
+    ? `Claude returned an error result (${subtype}).`
+    : 'Claude returned an error result.';
+};

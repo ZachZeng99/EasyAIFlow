@@ -97,6 +97,7 @@ Each interaction type has a pending-request registry in the backend, a parser in
 ## Conventions
 
 - No ESLint or Prettier is configured; TypeScript strict mode is the primary quality gate.
+- For repository pull, commit, and push requests, use native `git` commands directly. Do not require GitHub CLI (`gh`) or a pull-request workflow unless the user explicitly asks for a PR or for `gh`.
 - The Vite dev server defaults to port `4173`; the web server defaults to port `8887`.
 - Session persistence path is platform-specific via `electron/sessionStore.ts` (typically `~/.EasyAIFlow/`).
 - Claude Code source reference is available at `D:\AIAgent\claude-code-sourcemap`; all Claude-related changes must be reviewed against that project before implementation.

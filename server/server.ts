@@ -218,7 +218,9 @@ const rpcHandlers = {
     };
   },
   getSessionRecord: async (payload: { sessionId: string }) => {
-    const session = await getSessionRecordForBootstrap(payload.sessionId);
+    const session = await getSessionRecordForBootstrap(payload.sessionId, {
+      finalizeTrailingUserTurn: !state.residentSessions.has(payload.sessionId),
+    });
     if (!session) {
       throw new Error('Session not found.');
     }

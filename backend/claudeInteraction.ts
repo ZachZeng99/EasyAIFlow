@@ -53,11 +53,14 @@ import {
   updateSessionContextReferences,
   upsertSessionMessage,
 } from '../electron/sessionStore.js';
-import { getClaudeSyntheticApiError } from '../electron/claudeErrors.js';
+import { getClaudeResultError, getClaudeSyntheticApiError } from '../electron/claudeErrors.js';
 import { applyParsedSessionMetadata } from '../electron/claudeSessionId.js';
 import {
+  CLAUDE_INCOMPLETE_TOOL_TURN_ERROR,
+  CLAUDE_NO_VISIBLE_RESPONSE_ERROR,
   applyAssistantTextToRunState,
   createClaudeRunState,
+  formatClaudeIncompleteResponse,
   getRunSessionRuntimeUpdate,
   markClaudeRunCompleted,
   markRunSessionRuntimePersisted,
@@ -1448,8 +1451,22 @@ export const getAssistantMessageSnapshot = (runState: ClaudeRunState) => {
 };
 
 export const getResidentIdleTurnOutcome = (runState: ClaudeRunState) => {
+  if (runState.terminalError?.trim()) {
+    return {
+      kind: 'error' as const,
+      content: runState.terminalError.trim(),
+    };
+  }
+
   if (hasActiveBackgroundTasks(runState)) {
     return null;
+  }
+
+  if (!runState.receivedResult && runState.lastAssistantStopReason === 'tool_use') {
+    return {
+      kind: 'error' as const,
+      content: CLAUDE_INCOMPLETE_TOOL_TURN_ERROR,
+    };
   }
 
   const content = resolveResidentIdleVisibleContent(runState);
@@ -1468,7 +1485,7 @@ export const getResidentIdleTurnOutcome = (runState: ClaudeRunState) => {
 
   return {
     kind: 'error' as const,
-    content: 'Claude finished without returning a visible response.',
+    content: CLAUDE_NO_VISIBLE_RESPONSE_ERROR,
   };
 };
 
@@ -1544,6 +1561,37 @@ export const completeAssistantRun = async (
     content,
     claudeSessionId: runState.claudeSessionId,
     tokenUsage: runState.tokenUsage,
+  });
+};
+
+const failAssistantRun = async (
+  ctx: ClaudeInteractionContext,
+  sessionId: string,
+  assistantMessageId: string,
+  runState: ClaudeRunState,
+  error: string,
+) => {
+  const content = formatClaudeIncompleteResponse(runState.content, error);
+  runState.terminalError = error;
+  await finalizeToolTraces(ctx, sessionId, runState);
+
+  await updateAssistantMessage(sessionId, assistantMessageId, (message) => {
+    message.content = content;
+    message.status = 'error';
+    message.title = 'Claude incomplete response';
+  });
+  await setSessionRuntime(sessionId, {
+    claudeSessionId: runState.claudeSessionId,
+    model: runState.model,
+    preview: content,
+    timeLabel: 'Just now',
+    tokenUsage: runState.tokenUsage,
+  });
+  ctx.broadcastEvent({
+    type: 'error',
+    sessionId,
+    messageId: assistantMessageId,
+    error: content,
   });
 };
 
@@ -1848,6 +1896,7 @@ export const handleClaudeLine = async (
   if (parsed.type === 'assistant') {
     const message = parsed.message as {
       model?: string;
+      stop_reason?: string;
       content?: Array<{ type?: string; text?: string; name?: string; input?: unknown }>;
       usage?: {
         input_tokens?: number;
@@ -1855,6 +1904,15 @@ export const handleClaudeLine = async (
         cache_creation_input_tokens?: number;
       };
     };
+    const assistantStopReason =
+      typeof message?.stop_reason === 'string'
+        ? message.stop_reason
+        : typeof parsed.stop_reason === 'string'
+          ? parsed.stop_reason
+          : undefined;
+    if (assistantStopReason) {
+      runState.lastAssistantStopReason = assistantStopReason;
+    }
     if (typeof message?.model === 'string' && message.model.trim()) {
       runState.model = message.model.trim();
     }
@@ -2031,8 +2089,20 @@ export const handleClaudeLine = async (
 
   if (parsed.type === 'result') {
     runState.receivedResult = true;
-    runState.lastResultContent = String(parsed.result ?? '');
     runState.tokenUsage = mapTokenUsage(parsed, runState.lastAssistantUsage);
+    const resultError = getClaudeResultError(parsed);
+    if (resultError) {
+      await failAssistantRun(ctx, sessionId, assistantMessageId, runState, resultError);
+      if (options?.persistentSession) {
+        emitRuntimeState(ctx, sessionId, 'idle', true, options?.appliedEffort);
+      }
+      if (!options?.persistentSession && isWritableStdin(activeRun.child) && activeRun.child.stdin) {
+        activeRun.child.stdin.end();
+      }
+      return;
+    }
+
+    runState.lastResultContent = String(parsed.result ?? '');
     const visibleContent = resolveAssistantVisibleContent(runState);
     if (!hasActiveBackgroundTasks(runState)) {
       await completeAssistantRun(
@@ -2690,6 +2760,14 @@ const ensureResidentClaudeSession = async (
             );
           } else if (idleTurnOutcome.kind === 'silent') {
             await finalizeToolTraces(ctx, session.id, matchedTurn.runState);
+          } else {
+            await failAssistantRun(
+              ctx,
+              session.id,
+              matchedTurn.assistantMessageId,
+              matchedTurn.runState,
+              idleTurnOutcome.content,
+            );
           }
 
           if (currentResident.currentTurn === matchedTurn) {

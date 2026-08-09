@@ -4,6 +4,7 @@ export type ClaudeRunStateCompletion = {
   content: string;
   receivedResult: boolean;
   completedContent?: string;
+  lastAssistantStopReason?: string;
   needsCompletionRefresh: boolean;
   backgroundTaskNotificationPending: boolean;
 };
@@ -19,9 +20,28 @@ export const createClaudeRunState = (): ClaudeRunStateCompletion => ({
   content: '',
   receivedResult: false,
   completedContent: undefined,
+  lastAssistantStopReason: undefined,
   needsCompletionRefresh: false,
   backgroundTaskNotificationPending: false,
 });
+
+export const CLAUDE_INCOMPLETE_TOOL_TURN_ERROR =
+  'Claude stopped after tool use without returning a final response.';
+export const CLAUDE_NO_VISIBLE_RESPONSE_ERROR =
+  'Claude finished without returning a visible response.';
+
+export const formatClaudeIncompleteResponse = (content: string, error: string) => {
+  const normalizedContent = content.trim();
+  const normalizedError = error.trim();
+  if (!normalizedContent) {
+    return normalizedError;
+  }
+  if (!normalizedError || normalizedContent.includes(normalizedError)) {
+    return content;
+  }
+
+  return `${content.trimEnd()}\n\n---\n${normalizedError}`;
+};
 
 export const getRunSessionRuntimeUpdate = (state: ClaudeRunSessionRuntimeState) => {
   const update: {
