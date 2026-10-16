@@ -12,7 +12,7 @@ import {
 import { unlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import type { ConversationMessage, ProjectRecord, SessionMessagePage, SessionRecord } from '../src/data/types.js';
+import type { ConversationMessage, ProjectRecord, SessionMessagePage, SessionMessagesCommittedEvent, SessionRecord } from '../src/data/types.js';
 import type { SessionStoreAppState } from './sessionStoreMerge.js';
 import {
   applySessionStoreV2EventsToPages,
@@ -55,6 +55,7 @@ export type SessionStoreV2Options = {
   compactionEventCount?: number;
   compactionBytes?: number;
   indexDebounceMs?: number;
+  onMessagesCommitted?: (event: SessionMessagesCommittedEvent) => void;
 };
 
 export type SessionStoreV2SessionMutation =
@@ -79,6 +80,20 @@ export type SessionStoreV2PersistRequest = {
   deletedSessionIds?: string[];
   immediateIndex?: boolean;
 };
+
+// Copy mutable containers without duplicating potentially large immutable strings.
+const captureMessage = (message: ConversationMessage): ConversationMessage => ({
+  ...message,
+  ...(message.attachments ? { attachments: message.attachments.map((item) => ({ ...item })) } : {}),
+  ...(message.contextReferences ? { contextReferences: message.contextReferences.map((item) => ({ ...item })) } : {}),
+  ...(message.steps ? { steps: message.steps.map((item) => ({ ...item })) } : {}),
+  ...(message.recordedDiff ? { recordedDiff: { ...message.recordedDiff } } : {}),
+});
+
+const captureMutation = (mutation: SessionStoreV2SessionMutation): SessionStoreV2SessionMutation =>
+  mutation.type === 'upsert-message'
+    ? { ...mutation, message: captureMessage(mutation.message) }
+    : { ...mutation, messages: mutation.messages.map(captureMessage) };
 
 type SessionStoreV2Paths = {
   rootPath: string;
@@ -547,6 +562,7 @@ const buildIndex = (state: SessionStoreAppState, revision: number): SessionStore
 });
 
 export class SessionStoreV2 {
+  private readonly onMessagesCommitted?: SessionStoreV2Options['onMessagesCommitted'];
   private readonly maxMessages: number;
   private readonly compactionEventCount: number;
   private readonly compactionBytes: number;
@@ -571,6 +587,7 @@ export class SessionStoreV2 {
     sessionEventCounts = new Map<string, number>(),
     knownSessionIds = new Set<string>(),
   ) {
+    this.onMessagesCommitted = options.onMessagesCommitted;
     this.maxMessages = options.maxMessages;
     this.compactionEventCount = options.compactionEventCount ?? 64;
     this.compactionBytes = options.compactionBytes ?? 1024 * 1024;
@@ -705,6 +722,7 @@ export class SessionStoreV2 {
       this.sessionEventCounts.set(sessionId, 0);
       this.dirtySessionIds.delete(sessionId);
       this.knownSessionIds.add(sessionId);
+      this.publishMutation(mutation, revision);
       return;
     }
     const event: SessionStoreV2Event = mutation.type === 'upsert-message'
@@ -724,7 +742,7 @@ export class SessionStoreV2 {
         };
     const paths = pathsForRoot(this.rootPath, sessionId);
     await mkdir(paths.sessionPath, { recursive: true });
-    await appendFile(paths.eventsPath, `${JSON.stringify(event)}\n`, 'utf8');
+    await appendFile(paths.eventsPath, `${JSON.stringify(event)}\n`, { encoding: 'utf8', flush: true });
     this.sessionRevisions.set(sessionId, revision);
     this.dirtySessionIds.add(sessionId);
     const eventCount = (this.sessionEventCounts.get(sessionId) ?? 0) + 1;
@@ -734,6 +752,26 @@ export class SessionStoreV2 {
     const eventBytes = (await stat(paths.eventsPath)).size;
     if (eventCount >= this.compactionEventCount || eventBytes >= this.compactionBytes) {
       await this.compactSession(sessionId);
+    }
+    this.publishMutation(mutation, revision);
+  }
+
+  private publishMutation(mutation: SessionStoreV2SessionMutation, revision: number) {
+    try {
+      this.onMessagesCommitted?.({
+        type: 'messages-committed',
+        sessionId: mutation.sessionId,
+        revision,
+        updatedAt: Date.now(),
+        mutation: mutation.type === 'replace-messages'
+          ? { type: 'replace-messages' }
+          : mutation.type === 'upsert-message'
+            ? { type: 'upsert-message', message: mutation.message }
+            : { type: 'append-messages', messages: mutation.messages },
+      });
+    } catch (error) {
+      // Delivery failure must not turn a committed write into a retriable write.
+      console.warn('[SESSION_STORE] Message commit delivery failed', mutation.sessionId, error);
     }
   }
 
@@ -792,6 +830,9 @@ export class SessionStoreV2 {
   }
 
   async persist(state: SessionStoreAppState, request: SessionStoreV2PersistRequest = {}) {
+    // Capture before the first await: callers may mutate a resident message
+    // while another queued write is still running.
+    const mutations = (request.sessionMutations ?? []).map(captureMutation);
     if (this.backgroundError) {
       const error = this.backgroundError;
       this.backgroundError = null;
@@ -807,9 +848,6 @@ export class SessionStoreV2 {
         this.knownSessionIds.add(session.id);
       });
     }
-    // Persist awaits every session queue before returning, so a deep clone here
-    // only duplicates potentially multi-megabyte content without adding safety.
-    const mutations = request.sessionMutations ?? [];
     for (const mutation of mutations) {
       await this.enqueueSession(mutation.sessionId, () => this.appendMutation(mutation));
     }

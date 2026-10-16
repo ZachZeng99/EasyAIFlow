@@ -62,6 +62,7 @@ import type {
 } from '../src/data/types.js';
 import type { PlanModeResponsePayload } from '../src/data/planMode.js';
 import { createSseClientRegistry } from './sseClients.js';
+import { onSessionMessagesCommitted } from '../backend/sessionMessageEvents.js';
 import { startMemoryDiagnostics } from '../backend/memoryDiagnostics.js';
 
 // ---------------------------------------------------------------------------
@@ -81,6 +82,7 @@ configureRuntimePaths({
 // ---------------------------------------------------------------------------
 
 const eventClients = createSseClientRegistry();
+onSessionMessagesCommitted((event) => eventClients.broadcastEvent(event));
 
 const ctx: ClaudeInteractionContext = {
   broadcastEvent: (event: ClaudeStreamEvent) => {

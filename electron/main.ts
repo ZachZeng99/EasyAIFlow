@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stopAllCodexRuns } from '../backend/codexInteraction.js';
 import { configureRuntimePaths } from '../backend/runtimePaths.js';
+import { onSessionMessagesCommitted } from '../backend/sessionMessageEvents.js';
 import type { ClaudeInteractionContext } from '../backend/claudeInteractionContext.js';
 import { createClaudeInteractionState } from '../backend/claudeInteractionState.js';
 import { getGitSnapshot } from '../backend/claudeHelpers.js';
@@ -59,6 +60,14 @@ import type { PlanModeResponsePayload } from '../src/data/planMode.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const devServerUrl = 'http://127.0.0.1:4173';
+
+onSessionMessagesCommitted((event) => {
+  BrowserWindow.getAllWindows().forEach((window) => {
+    if (!window.webContents.isDestroyed()) {
+      window.webContents.send('claude:event', event);
+    }
+  });
+});
 
 const ctx: ClaudeInteractionContext = {
   broadcastEvent: (event: ClaudeStreamEvent) => {

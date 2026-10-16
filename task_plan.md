@@ -1,3 +1,25 @@
+# Current Task: EAF 2.0 P0 — Committed message synchronization
+
+Approved design: `docs/superpowers/specs/2026-10-16-eaf-2.0-design.md`.
+
+- [x] Inspect persistence, native adapters, IPC/SSE and frontend merging; consult Claude reference schemas.
+- [x] Publish committed V2 message mutations with durable per-session revisions.
+- [x] Consume revisions consistently in live updates, snapshots and reconnect recovery.
+- [x] Cover duplicate/gap/race/restart scenarios and run relevant regressions plus type checks.
+- [x] Record the delivered slice and remaining P0 work (daemon ownership, command ledger, provider integration trials).
+
+Use the existing V2 journal; do not introduce a competing message store. Keep legacy sessions compatible. SDK selection remains subject to an isolated compatibility trial; this slice is provider-neutral.
+
+## Current Investigation Notes
+
+- Indexed search briefly timed out on the Claude reference tree; read the known schema files directly.
+- `backend/rpcSessionHandlers.ts` does not exist; RPC entry points are in the server and Electron files.
+- New regressions first failed as expected before implementation. Two-client comparison exposed injected undefined fields in captured messages; preserve optional-property presence.
+- Codex tests initially hit ENOTEMPTY during cleanup because new streaming persistence had a pending index write. Flush the test store before deleting its verified temporary directory.
+- `git diff --no-index --check` returned the normal difference exit code for untracked files; validate their whitespace directly rather than treating that code as a source failure.
+
+---
+
 # Task Plan: Fix renderer Out of Memory crash
 
 ## Goal

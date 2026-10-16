@@ -1,5 +1,6 @@
 import type { ConversationMessage, ProjectRecord, SessionRecord } from './types.js';
 import { sanitizeConversationMessagesForDisplay } from './traceContent.js';
+import { usesCommittedMessages } from './committedSessionMessages.js';
 
 const getMessageStatusRank = (status: ConversationMessage['status']) => {
   switch (status) {
@@ -158,16 +159,37 @@ export const mergeSessionSnapshot = (
   }
 
   if (incomingSession.messagesLoaded === false) {
-    if (existingSession.messagesLoaded === false) {
-      return incomingSession;
-    }
-
     return {
       ...incomingSession,
       messages: existingSession.messages ?? [],
       messagesLoaded: existingSession.messagesLoaded,
       historyPage: existingSession.historyPage,
+      messageRevision: existingSession.messageRevision,
+      requiredMessageRevision: existingSession.requiredMessageRevision,
     };
+  }
+
+  if (incomingSession.messageRevision !== undefined) {
+    if (incomingSession.messageRevision < (existingSession.messageRevision ?? -1)) {
+      return existingSession;
+    }
+    const required = existingSession.requiredMessageRevision;
+    const keepLoadedPages = existingSession.messagesLoaded !== false &&
+      required === undefined &&
+      existingSession.messageRevision === incomingSession.messageRevision;
+    return {
+      ...incomingSession,
+      messages: keepLoadedPages ? existingSession.messages : incomingSession.messages,
+      historyPage: keepLoadedPages ? existingSession.historyPage : incomingSession.historyPage,
+      requiredMessageRevision: required !== undefined && required > incomingSession.messageRevision
+        ? required
+        : undefined,
+    };
+  }
+  // Unversioned responses from legacy send/stop paths must not overwrite an
+  // authoritative history. The next commit or snapshot will supply its content.
+  if (usesCommittedMessages(existingSession)) {
+    return existingSession;
   }
 
   if (existingSession.messagesLoaded === false) {

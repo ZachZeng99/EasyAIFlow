@@ -18,6 +18,13 @@ const run = async (name: string, fn: () => Promise<void>) => {
 const importSessionStore = async () =>
   import(pathToFileURL(path.resolve('electron/sessionStore.ts')).href);
 
+const cleanupTestRoot = async (tempRoot: string) => {
+  const resolved = path.resolve(tempRoot);
+  assert.ok(resolved.startsWith(`${path.resolve('.tmp-tests')}${path.sep}`));
+  await (await importSessionStore()).flushPendingSave();
+  await rm(resolved, { recursive: true, force: true });
+};
+
 const importCodexAppServer = async () =>
   import(pathToFileURL(path.resolve('backend/codexAppServer.ts')).href);
 
@@ -159,6 +166,10 @@ await run('handleAppServerNotification streams Codex agent message deltas into t
     streamedAssistant = session?.messages.find((message: ConversationMessage) => message.id === assistantMessage.id);
     assert.equal(streamedAssistant?.content, 'hello world');
     assert.equal(events.at(-1)?.content, 'hello world');
+    const persisted = await sessionStore.getSessionRecordForBootstrap(sessionId);
+    assert.equal(persisted?.messages.find((message: ConversationMessage) => message.id === assistantMessage.id)?.content, 'hello world');
+    assert.equal(persisted?.messageRevision, persisted?.historyPage?.sessionRevision);
+    assert.ok((persisted?.messageRevision ?? 0) > 0);
 
     await codexAppServerTurn.handleAppServerNotification(
       ctx as never,
@@ -190,7 +201,7 @@ await run('handleAppServerNotification streams Codex agent message deltas into t
       process.env.USERPROFILE = previousUserProfile;
     }
 
-    await rm(tempRoot, { recursive: true, force: true });
+    await cleanupTestRoot(tempRoot);
   }
 });
 
@@ -291,7 +302,7 @@ await run('handleAppServerNotification ignores item notifications from a differe
       process.env.USERPROFILE = previousUserProfile;
     }
 
-    await rm(tempRoot, { recursive: true, force: true });
+    await cleanupTestRoot(tempRoot);
   }
 });
 
@@ -660,7 +671,7 @@ await run('handleAppServerNotification keeps commentary out of the final assista
       process.env.USERPROFILE = previousUserProfile;
     }
 
-    await rm(tempRoot, { recursive: true, force: true });
+    await cleanupTestRoot(tempRoot);
   }
 });
 
@@ -762,7 +773,7 @@ await run('runCodexAppServerTurn names the native thread after the current sessi
       process.env.USERPROFILE = previousUserProfile;
     }
 
-    await rm(tempRoot, { recursive: true, force: true });
+    await cleanupTestRoot(tempRoot);
   }
 });
 
@@ -884,7 +895,7 @@ await run('runCodexAppServerTurn finalizes started command traces when the turn 
       process.env.USERPROFILE = previousUserProfile;
     }
 
-    await rm(tempRoot, { recursive: true, force: true });
+    await cleanupTestRoot(tempRoot);
   }
 });
 
@@ -975,7 +986,7 @@ await run('runResidentCodexAppServerTurn keeps the Codex app-server session onli
       process.env.USERPROFILE = previousUserProfile;
     }
 
-    await rm(tempRoot, { recursive: true, force: true });
+    await cleanupTestRoot(tempRoot);
   }
 });
 
@@ -1050,7 +1061,7 @@ await run('disconnectCodexAppServerTurn releases the resident Codex app-server s
       process.env.USERPROFILE = previousUserProfile;
     }
 
-    await rm(tempRoot, { recursive: true, force: true });
+    await cleanupTestRoot(tempRoot);
   }
 });
 
@@ -1168,7 +1179,7 @@ await run('runCodexAppServerTurn uses a dedicated client for nonresident turns o
       process.env.USERPROFILE = previousUserProfile;
     }
 
-    await rm(tempRoot, { recursive: true, force: true });
+    await cleanupTestRoot(tempRoot);
   }
 });
 

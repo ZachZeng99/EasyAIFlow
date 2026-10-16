@@ -242,6 +242,9 @@ await run('recovers stale pending messages lazily when a session is first opened
     const opened = await store.getSessionRecordForBootstrap(target.id);
     assert.equal(opened?.messages[0]?.status, 'error');
     assert.equal(opened?.messages[0]?.content, 'Queued Codex run did not resume after restart.');
+    const recoveredPage = await store.getSessionMessagePage(target.id);
+    assert.equal(opened?.messageRevision, recoveredPage.sessionRevision);
+    assert.equal(opened?.historyPage?.sessionRevision, recoveredPage.sessionRevision);
     await store.flushPendingSave();
 
     const reloaded = await importFreshSessionStore();

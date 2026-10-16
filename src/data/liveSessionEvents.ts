@@ -1,4 +1,5 @@
 import { reconcileLiveTraceMessage } from './optimisticSend.js';
+import { applyCommittedSessionMessages, invalidateCommittedSessionMessages, usesCommittedMessages } from './committedSessionMessages.js';
 import { hydrateSessionRecordInProjects } from './projectSnapshots.js';
 import { getProviderDisplayName } from './sessionProvider.js';
 import { sanitizeConversationMessageTraceContent } from './traceContent.js';
@@ -125,10 +126,25 @@ const createFallbackAssistantMessage = (
 
 export const applyClaudeEventToProjects = (projects: ProjectRecord[], event: ClaudeStreamEvent) =>
   event.type === 'interaction-sync'
-    ? projects
+    ? invalidateCommittedSessionMessages(projects)
     : event.type === 'session-sync'
       ? hydrateSessionRecordInProjects(projects, event.session)
       : updateSessionInProjects(projects, event.sessionId, (session) => {
+          if (event.type === 'messages-committed') {
+            return applyCommittedSessionMessages(session, event);
+          }
+          // Providers still emit these events for group routing and interaction
+          // notifications. A revisioned client gets message bodies only from the store.
+          if (usesCommittedMessages(session)) {
+            if (event.type === 'complete' && (event.tokenUsage || event.claudeSessionId)) {
+              return {
+                ...session,
+                tokenUsage: event.tokenUsage ?? session.tokenUsage,
+                claudeSessionId: event.claudeSessionId ?? session.claudeSessionId,
+              };
+            }
+            return session;
+          }
           const updatedAt = Date.now();
           const providerName = session.sessionKind === 'group'
             ? 'Group room'

@@ -16,7 +16,6 @@ import {
   getProjects,
   renameNativeCodexThread,
   setSessionRuntime,
-  updateAssistantMessageInMemory,
   updateAssistantMessage,
 } from '../electron/sessionStore.js';
 import { stopPendingSessionMessages } from '../electron/sessionStop.js';
@@ -400,7 +399,7 @@ const syncStreamingAssistantMessage = async (
   content: string,
 ) => {
   const title = buildMessageTitle(content, 'Codex response');
-  await updateAssistantMessageInMemory(sessionId, assistantMessageId, (message) => {
+  await updateAssistantMessage(sessionId, assistantMessageId, (message) => {
     message.title = title;
     message.content = content;
     message.status = 'streaming';
@@ -438,7 +437,7 @@ const syncCommentaryTraceMessage = async (
     status,
   };
   state.traceMessages.set(itemId, trace);
-  await emitTraceMessage(ctx, sessionId, trace, { persist: status !== 'running' });
+  await emitTraceMessage(ctx, sessionId, trace);
 };
 
 const syncCommandTraceMessage = async (
@@ -460,7 +459,7 @@ const syncCommandTraceMessage = async (
   }
 
   state.traceMessages.set(itemId, trace);
-  await emitTraceMessage(ctx, sessionId, trace, { persist: trace.status !== 'running' });
+  await emitTraceMessage(ctx, sessionId, trace);
 };
 
 const syncFunctionTraceMessage = async (
@@ -489,7 +488,7 @@ const syncFunctionTraceMessage = async (
   }
 
   state.traceMessages.set(itemId, trace);
-  await emitTraceMessage(ctx, sessionId, trace, { persist: trace.status !== 'running' });
+  await emitTraceMessage(ctx, sessionId, trace);
 };
 
 export const handleAppServerNotification = async (

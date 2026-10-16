@@ -1,3 +1,16 @@
+# EAF 2.0 P0 Findings — 2026-10-16
+
+- V2 already serializes writes per session and persists monotonic revisions. Reuse its commit boundary for UI message events.
+- The current UI appends raw deltas and compares server snapshots against client wall-clock timestamps. These are independent from persistence revisions.
+- Native hydration also persists through V2; replacement mutations must invalidate the UI snapshot instead of sending entire histories over SSE/IPC.
+- Snapshot messages and their revision must be read together; crash-recovery writes can advance the revision during bootstrap.
+- Claude reference core/control schemas were inspected. Provider protocol changes and SDK migration are outside this provider-neutral synchronization slice.
+- Codex streaming replies and running traces were memory-only; these now persist before publication so a refreshed client can recover in-progress output.
+- Replacements emit a small invalidation rather than an entire imported history. Unknown upsert positions and missed revisions trigger a bounded snapshot; no client-side text matching is used for revisioned sends.
+- Verified two clients converge after a missed SSE event and after missing the final event with no subsequent output. Durable revisions survive a V2 store reopen.
+
+---
+
 # Findings & Decisions
 
 ## Requirements

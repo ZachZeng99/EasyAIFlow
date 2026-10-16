@@ -241,6 +241,22 @@ export type SessionMessagePage = SessionHistoryPageState & {
 export type SessionRecord = SessionSummary & {
   messages: ConversationMessage[];
   historyPage?: SessionHistoryPageState;
+  /** Durable V2 message revision represented by this client's loaded history. */
+  messageRevision?: number;
+  /** Client-only high-water mark awaiting an authoritative snapshot. */
+  requiredMessageRevision?: number;
+};
+
+export type SessionMessagesCommittedEvent = {
+  type: 'messages-committed';
+  sessionId: string;
+  revision: number;
+  updatedAt: number;
+  mutation:
+    | { type: 'append-messages'; messages: ConversationMessage[] }
+    | { type: 'upsert-message'; message: ConversationMessage }
+    // Replacements can contain an entire imported history. Fetch a bounded page instead.
+    | { type: 'replace-messages' };
 };
 
 export type GitSnapshot = BranchSnapshot & {
@@ -292,6 +308,7 @@ export type DeleteEntityResult = {
 };
 
 export type ClaudeStreamEvent =
+  | SessionMessagesCommittedEvent
   | {
       type: 'interaction-sync';
     }

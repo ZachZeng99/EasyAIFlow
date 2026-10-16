@@ -12,6 +12,7 @@ import {
   reconcileOptimisticSendMessages,
 } from './data/optimisticSend';
 import { applyClaudeEventToProjects, coalesceClaudeDeltaEvents } from './data/liveSessionEvents';
+import { usesCommittedMessages } from './data/committedSessionMessages';
 import {
   hydrateSessionRecordInProjects,
   mergeProjectSnapshots,
@@ -1260,6 +1261,39 @@ export default function App() {
     };
   }, [playReplyCompleteTone, resyncActiveSessionFromBridge]);
 
+  // Depend on the session ID, not the changing high-water mark: continuous
+  // output must not repeatedly cancel a snapshot that is already in flight.
+  const messageResyncSessionId = selectedSession?.requiredMessageRevision !== undefined
+    ? selectedSession.id
+    : undefined;
+  useEffect(() => {
+    if (!messageResyncSessionId) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const refresh = async () => {
+      try {
+        const snapshot = await withTimeout(
+          bridge.getSessionRecord({ sessionId: messageResyncSessionId }),
+          SESSION_HISTORY_TIMEOUT_MS,
+          'Message synchronization timed out.',
+        );
+        if (!cancelled) hydrateSessionRecord(snapshot);
+      } catch (error) {
+        if (!cancelled) {
+          setUiError(error instanceof Error ? error.message : 'Failed to synchronize messages.');
+        }
+      }
+      // A newer commit may have overtaken this response. The merge retains its
+      // required revision and we retry until a snapshot covers that revision.
+      if (!cancelled) timer = setTimeout(() => void refresh(), 1000);
+    };
+    timer = setTimeout(() => void refresh(), 50);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [messageResyncSessionId, hydrateSessionRecord]);
+
   useEffect(() => {
     if (!activeSelectedSessionId) {
       return;
@@ -1597,7 +1631,7 @@ export default function App() {
       selectedSession.sessionKind === 'group' || hasGroupMentions(outgoingPrompt);
 
     const optimisticSend =
-      requestsGroupMode
+      requestsGroupMode || usesCommittedMessages(selectedSession)
         ? null
         : buildOptimisticSendState({
             projects,

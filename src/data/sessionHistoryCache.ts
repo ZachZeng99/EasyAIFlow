@@ -1,5 +1,7 @@
 import type { ProjectRecord, SessionMessagePage, SessionRecord } from './types.js';
 import { sanitizeConversationMessagesForDisplay } from './traceContent.js';
+import { requireMessageSnapshot } from './committedSessionMessages.js';
+import { mergeSessionSnapshot } from './projectSnapshots.js';
 
 export const touchSessionHistory = (recency: string[], sessionId: string) => [
   sessionId,
@@ -12,6 +14,11 @@ export const mergeOlderSessionMessagePage = (
 ): SessionRecord => {
   if (page.sessionId !== session.id) {
     return session;
+  }
+  if (session.messageRevision !== undefined && page.sessionRevision !== session.messageRevision) {
+    return page.sessionRevision > session.messageRevision
+      ? requireMessageSnapshot(session, page.sessionRevision)
+      : session;
   }
   const messages = new Map(
     sanitizeConversationMessagesForDisplay(page.messages).map(
@@ -62,6 +69,9 @@ export const replaceSessionHistoryAfterStaleCursor = (
 ): SessionRecord => {
   if (session.id !== reloaded.id) {
     return session;
+  }
+  if (reloaded.messageRevision !== undefined) {
+    return mergeSessionSnapshot(session, reloaded);
   }
   const messages = new Map(
     (reloaded.messages ?? []).map((message) => [message.id, message] as const),

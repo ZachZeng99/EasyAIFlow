@@ -4,6 +4,7 @@ import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { getRuntimePaths } from '../backend/runtimePaths.js';
+import { publishSessionMessagesCommitted } from '../backend/sessionMessageEvents.js';
 import { allSessions, projectTree } from '../src/data/mockSessions.js';
 import { findImportedSessionTarget } from './importedSessionMatch.js';
 import { cleanupProjectSessions } from './projectSessionCleanup.js';
@@ -4593,6 +4594,7 @@ const hydrateLoadedState = async (state: AppState) => {
 };
 
 const getSessionStoreV2Options = () => ({
+  onMessagesCommitted: publishSessionMessagesCommitted,
   // V2 writes and compacts one session at a time, so the legacy global-save
   // message cap is no longer needed. Preserve every migrated message.
   maxMessages: 0,
@@ -5175,7 +5177,7 @@ const recoverLoadedMessagesAfterCrash = async (
       immediateIndex: false,
     });
   }
-  return recovered;
+  return changed.length > 0 ? recovered : messages;
 };
 
 const repairGroupRoomFromNativeHistory = async (roomSession: SessionRecord) => {
@@ -5321,16 +5323,17 @@ export const getSessionRecordForBootstrap = async (
     });
     page = await v2Store.readMessagePage(sessionId);
   }
-  page = {
-    ...page,
-    messages: sanitizeConversationMessagesForDisplay(
-      await recoverLoadedMessagesAfterCrash(session, page.messages),
-    ),
-  };
+  const recoveredMessages = await recoverLoadedMessagesAfterCrash(session, page.messages);
+  if (recoveredMessages !== page.messages) {
+    // Recovery is itself a committed mutation. Read content and revision
+    // together again instead of labeling recovered text with the old revision.
+    page = await v2Store.readMessagePage(sessionId);
+  }
   return {
     ...cloneSessionRecord(session),
-    messages: page.messages,
+    messages: sanitizeConversationMessagesForDisplay(page.messages),
     messagesLoaded: true,
+    messageRevision: page.sessionRevision,
     historyPage: {
       nextBefore: page.nextBefore,
       hasMoreBefore: page.hasMoreBefore,
@@ -5510,6 +5513,8 @@ export const ensureSessionRecord = async (session: SessionSummary): Promise<Sess
 
   const record: SessionRecord = {
     ...session,
+    messageRevision: undefined,
+    requiredMessageRevision: undefined,
     updatedAt: session.updatedAt ?? Date.now(),
     group: normalizeGroupMetadata(session.group),
     contextReferences: normalizeContextReferences(session.contextReferences),

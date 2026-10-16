@@ -1,3 +1,9 @@
+# EAF 2.0 Progress — 2026-10-16
+
+P0 message synchronization implemented. Reused V2 persistence revisions for committed messages in IPC/SSE, revision-based snapshots, duplicate/gap handling and reconnect recovery. Persisted Codex streaming text and traces. Added 17 regressions including real local HTTP/SSE transport; related store, frontend, group and Codex regressions pass. Type checks and Web production build pass. Broader P0 remains open; see `docs/v2/p0-progress.md`.
+
+---
+
 # Progress Log
 
 ## Session: 2026-07-23
