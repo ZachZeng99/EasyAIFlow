@@ -528,3 +528,8 @@ The frontend replaces the entire interaction map after awaited getProjects, whil
 - Added configurable stable participant IDs with per-member provider/model/effort/role and preserved backing sessions. Existing participants can be disabled without losing history; provider/ID stay fixed.
 - Native transcript recovery's legacy Claude/Codex title heuristic cannot identify arbitrary same-provider members. Configured rooms retain their durable EAF journal and are excluded from that lossy reconstruction; legacy room recovery remains unchanged.
 - Pure routing/validation and store-restart tests passed. Fixed initial UI model-options call against its actual array/value API. Source CSS is `src/styles/app.css`; a guessed `src/styles.css` lookup was corrected.
+# 2026-10-16 Codex model catalog root cause
+
+- Live force-refresh at 8887 was genuinely calling model/list, but cmd.exe resolved the npm shim (0.144.6) before the desktop codex.exe (0.162.0-alpha.17.2). Old CLI returned only three GPT-5.6 entries; desktop CLI returned seven, including GPT-6.1 Sol and GPT-6 Astra, using the same clientInfo and account environment.
+- Original validation proved RPC success, not agreement with the current installed runtime. Fix executable selection and show provenance; do not fabricate a newer model list.
+- Official model/list contract: https://learn.chatgpt.com/docs/app-server#list-models-modellist . Account/client controls the returned catalog; a successful inference verifies execution access separately.

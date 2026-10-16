@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { normalizeSessionProvider } from '../data/sessionProvider';
 import type { ContextReference, ContextReferenceMode, SessionProvider, TokenUsage } from '../data/types';
 import { getKnownModelContextWindow } from '../data/modelSelection';
-import { modelEffortOptions, modelOptionsWithCurrent, type ProviderModelCatalog } from '../data/providerModels';
+import { describeModelCatalog, modelEffortOptions, modelOptionsWithCurrent, type ProviderModelCatalog } from '../data/providerModels';
 
 export type ComposerAttachment = {
   id: string;
@@ -304,6 +304,7 @@ export function ChatComposer({
           {hasKnownContextWindow ? <span>{usagePercentNum}%</span> : null}
         </div>
       </div>
+      {!isGroupSession && modelCatalog ? <div className="composer-reminder" title={modelCatalog.runtimePath}>{describeModelCatalog(modelCatalog)}</div> : null}
       {notice || appliedEffort ? (
         <div className="composer-reminder">
           {notice ?? null}

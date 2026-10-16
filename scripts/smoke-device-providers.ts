@@ -60,7 +60,7 @@ try {
     const retry = await client.request<{ queued: { assistantMessageId: string } }>('sendMessage', request, `smoke-${provider}`);
     assert.equal(retry.queued.assistantMessageId, queued.queued.assistantMessageId);
     await client.request('disconnectSession', { sessionId: created.session.id });
-    console.log(`PASS real ${provider} reply survives client close/reopen and duplicate submission`);
+    console.log(`PASS real ${provider} (${request.model}) reply survives client close/reopen and duplicate submission`);
   }
   console.log(`Smoke artifacts: ${root}`);
 } finally {

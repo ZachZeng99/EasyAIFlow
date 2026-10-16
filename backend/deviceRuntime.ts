@@ -77,6 +77,14 @@ export const createDeviceRuntime = (broadcast: (event: ClaudeStreamEvent) => voi
   });
   const initializeSessionModel = async <T extends { session: SessionRecord }>(result: T): Promise<T> => {
     const session = result.session;
+    if (session.group?.kind === 'room' && session.messages.length === 0 && !(session.group.configurationRevision ?? 0)) {
+      const defaults = new Map(await Promise.all([...new Set(session.group.participants.map((participant) => participant.provider))]
+        .map(async (provider) => [provider, (await models.get(provider, session.workspace)).models.find((model) => model.isDefault)?.id] as const)));
+      const initialized = await updateGroupParticipants(ctx, state, { sessionId: session.id, expectedRevision: 0,
+        participants: session.group.participants.map((participant) => ({ ...participant, model: defaults.get(participant.provider) || participant.model, effort: 'default' })),
+      });
+      return { ...result, projects: initialized.projects, session: initialized.session };
+    }
     if (!session.provider || session.sessionKind === 'group' || session.claudeSessionId || session.codexThreadId || session.messages.length > 0) return result;
     const catalog = await models.get(session.provider, session.workspace);
     const recommended = catalog.models.find((model) => model.isDefault);

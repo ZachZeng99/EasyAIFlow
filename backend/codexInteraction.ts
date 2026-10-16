@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { codexRuntimeResolver, codexRuntimeSpawnSpec, type CodexRuntime } from './codexRuntime.js';
 import type { ClaudeInteractionContext } from './claudeInteractionContext.js';
 import {
   buildAttachmentFileName,
@@ -654,20 +655,8 @@ export const buildCodexArgs = (
 
 export const buildCodexSpawnSpec = (
   args: string[],
-  platform = process.platform,
-  comspec = process.env.ComSpec,
-) =>
-  platform === 'win32'
-    ? {
-        command: comspec?.trim() || 'cmd.exe',
-        args: ['/d', '/s', '/c', 'codex', ...args],
-        shell: false,
-      }
-    : {
-        command: 'codex',
-        args,
-        shell: false,
-      };
+  runtime: CodexRuntime,
+) => codexRuntimeSpawnSpec(runtime, args);
 
 export const runCodexPrint = async (
   ctx: ClaudeInteractionContext,
@@ -694,7 +683,7 @@ export const runCodexPrint = async (
     options?.disabledFeatures ?? [],
     options?.outputSchemaPath,
   );
-  const codexSpawn = buildCodexSpawnSpec(codexArgs);
+  const codexSpawn = buildCodexSpawnSpec(codexArgs, await codexRuntimeResolver.resolve());
   const child = spawn(codexSpawn.command, codexSpawn.args, {
     cwd: prepared.session.workspace,
     shell: codexSpawn.shell,

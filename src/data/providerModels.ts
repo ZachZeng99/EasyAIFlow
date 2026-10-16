@@ -20,7 +20,15 @@ export type ProviderModelCatalog = {
   stale: boolean;
   error?: string;
   runtimeVersion?: string;
+  runtimePath?: string;
+  runtimeSource?: 'path' | 'desktop' | 'override';
   commands?: string[];
+};
+
+export const describeModelCatalog = (catalog: ProviderModelCatalog | null | undefined) => {
+  if (!catalog) return '';
+  const source = catalog.runtimeSource === 'desktop' ? '桌面安装' : catalog.runtimeSource === 'override' ? '指定运行时' : catalog.runtimeSource === 'path' ? 'PATH 安装' : undefined;
+  return [catalog.runtimeVersion, source, `${catalog.models.length} 个模型`, catalog.stale ? '缓存' : '运行时获取'].filter(Boolean).join(' · ');
 };
 
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' ? value as Record<string, unknown> : {};

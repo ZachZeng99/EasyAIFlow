@@ -8,24 +8,26 @@ import { CodexAppServerClient } from './codexAppServer.js';
 import { getClaudeSpawnOptions } from '../electron/claudeSpawn.js';
 import { normalizeProviderModels, type ProviderModel, type ProviderModelCatalog } from '../src/data/providerModels.js';
 import type { SessionProvider } from '../src/data/types.js';
+import { codexRuntimeResolver } from './codexRuntime.js';
 
 const execFileAsync = promisify(execFile);
 const TTL_MS = 15 * 60 * 1000;
 
-type RuntimeModelCatalog = { models: ProviderModel[]; commands?: string[] };
+type RuntimeModelCatalog = { models: ProviderModel[]; commands?: string[] } & Pick<ProviderModelCatalog, 'runtimeVersion' | 'runtimePath' | 'runtimeSource'>;
 
 export const queryRuntimeCatalog = async (provider: SessionProvider, cwd: string): Promise<RuntimeModelCatalog> => {
   if (provider === 'codex') {
     let client: CodexAppServerClient | undefined;
     let timeout: ReturnType<typeof setTimeout>;
     try {
+      client = await CodexAppServerClient.create(cwd, { timeoutMs: 15000 });
+      const connected = client;
       const response = await Promise.race([
         (async () => {
-          client = await CodexAppServerClient.create(cwd, { timeoutMs: 15000 });
           const models: unknown[] = [];
           let cursor: string | undefined;
           do {
-            const page = await client.request<{ data: unknown[]; nextCursor?: string | null }>('model/list', { limit: 100, cursor });
+            const page = await connected.request<{ data: unknown[]; nextCursor?: string | null }>('model/list', { limit: 100, cursor });
             models.push(...page.data);
             cursor = page.nextCursor ?? undefined;
           } while (cursor && models.length < 1000);
@@ -33,7 +35,8 @@ export const queryRuntimeCatalog = async (provider: SessionProvider, cwd: string
         })(),
         new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error('Codex model discovery timed out.')), 15000); }),
       ]);
-      return { models: normalizeProviderModels(provider, response) };
+      return { models: normalizeProviderModels(provider, response), runtimeVersion: client?.runtime.version,
+        runtimePath: client?.runtime.path, runtimeSource: client?.runtime.source };
     } finally { clearTimeout(timeout!); await client?.close(); }
   }
   return new Promise((resolve, reject) => {
@@ -81,11 +84,10 @@ export const queryRuntimeCatalog = async (provider: SessionProvider, cwd: string
 
 export const queryRuntimeModels = async (provider: SessionProvider, cwd: string) => (await queryRuntimeCatalog(provider, cwd)).models;
 
-export const readProviderVersion = async (provider: SessionProvider, cwd: string) => {
-  const windowsCodex = provider === 'codex' && process.platform === 'win32';
+export const readProviderVersion = async (provider: SessionProvider, cwd: string, force = false) => {
   try {
-    const version = await execFileAsync(windowsCodex ? process.env.ComSpec || 'cmd.exe' : provider,
-      windowsCodex ? ['/d', '/s', '/c', 'codex', '--version'] : ['--version'], { cwd, windowsHide: true, timeout: 5000 });
+    if (provider === 'codex') return (await codexRuntimeResolver.resolve(force)).version;
+    const version = await execFileAsync(provider, ['--version'], { cwd, windowsHide: true, timeout: 5000 });
     return version.stdout.trim();
   } catch { return undefined; }
 };
@@ -100,7 +102,7 @@ export const runtimeModelScope = async (provider: SessionProvider, cwd: string, 
   // Secrets influence isolation, but are never persisted or returned to clients.
   const environment = provider === 'claude'
     ? [process.env.ANTHROPIC_API_KEY, process.env.ANTHROPIC_AUTH_TOKEN, process.env.ANTHROPIC_BASE_URL]
-    : [process.env.OPENAI_API_KEY, process.env.OPENAI_BASE_URL, process.env.CODEX_HOME];
+    : [process.env.OPENAI_API_KEY, process.env.OPENAI_BASE_URL, process.env.CODEX_HOME, (await codexRuntimeResolver.resolve()).identity];
   return createHash('sha256').update(JSON.stringify([signatures, environment])).digest('hex');
 };
 
@@ -115,8 +117,8 @@ export class ProviderModelCatalogStore {
   }) {}
 
   async get(provider: SessionProvider, cwd: string, force = false): Promise<ProviderModelCatalog> {
+    const runtimeVersion = await this.options.version?.(provider, cwd, force);
     const scope = await this.options.scope(provider, cwd);
-    const runtimeVersion = await this.options.version?.(provider, cwd);
     const key = createHash('sha256').update(JSON.stringify([provider, path.resolve(cwd), scope])).digest('hex');
     const filename = path.join(this.directory, `${key}.json`);
     let cached = this.cache.get(key);
@@ -142,7 +144,10 @@ export class ProviderModelCatalogStore {
         const result = await this.options.load(provider, cwd);
         const models = Array.isArray(result) ? result : result.models;
         if (models.length === 0) throw new Error('运行时没有返回可用模型，请检查 CLI 版本或配置。');
-        const catalog: ProviderModelCatalog = { provider, models, updatedAt: this.options.now?.() ?? Date.now(), stale: false, runtimeVersion,
+        const catalog: ProviderModelCatalog = { provider, models, updatedAt: this.options.now?.() ?? Date.now(), stale: false,
+          runtimeVersion: !Array.isArray(result) && result.runtimeVersion || runtimeVersion,
+          runtimePath: Array.isArray(result) ? undefined : result.runtimePath,
+          runtimeSource: Array.isArray(result) ? undefined : result.runtimeSource,
           commands: Array.isArray(result) ? undefined : result.commands };
         this.cache.set(key, catalog);
         if (this.cache.size > 64) this.cache.delete(this.cache.keys().next().value!);
@@ -154,7 +159,7 @@ export class ProviderModelCatalogStore {
         } catch { return { ...catalog, error: '模型已更新，但本地缓存写入失败。' }; }
         return catalog;
       } catch (error) {
-        return { provider, models: cached?.models ?? [], commands: cached?.commands, updatedAt: cached?.updatedAt ?? null, stale: true, error: error instanceof Error ? error.message : String(error) };
+        return { ...cached, provider, models: cached?.models ?? [], commands: cached?.commands, updatedAt: cached?.updatedAt ?? null, stale: true, error: error instanceof Error ? error.message : String(error) };
       }
     })().finally(() => this.pending.delete(key));
     this.pending.set(key, refresh);

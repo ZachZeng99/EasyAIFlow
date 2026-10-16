@@ -63,7 +63,8 @@ try {
 
   const group = await desktop.request<SessionCreateResult>('createSessionInStreamwork', { streamworkId: a.streamwork.id, name: 'Configurable team', sessionKind: 'group' });
   assert.ok(group.session.group?.kind === 'room');
-  const groupPayload = { sessionId: group.session.id, expectedRevision: 0, participants: [
+  const initialGroupRevision = group.session.group.configurationRevision ?? 0;
+  const groupPayload = { sessionId: group.session.id, expectedRevision: initialGroupRevision, participants: [
     ...group.session.group.participants,
     { id: 'reviewer', label: 'Reviewer', provider: 'codex', model: 'future-model', effort: 'ultra', instructions: 'Review only.', enabled: true },
   ] };
@@ -72,7 +73,7 @@ try {
     web.request<{ session: SessionRecord }>('updateGroupParticipants', groupPayload, 'configure-group'),
   ]);
   assert.ok(configured.session.group?.kind === 'room' && sameConfig.session.group?.kind === 'room');
-  assert.equal(configured.session.group.configurationRevision, 1);
+  assert.equal(configured.session.group.configurationRevision, initialGroupRevision + 1);
   assert.deepEqual(configured.session.group, sameConfig.session.group);
   assert.equal(configured.session.group.participants.length, 3);
   await assert.rejects(web.request('updateGroupParticipants', groupPayload, 'stale-config'), /EAF_OPERATION_REJECTED/);

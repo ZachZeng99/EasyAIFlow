@@ -79,11 +79,6 @@ const normalizeProviderModelSelectionValue = (
   return trimmed;
 };
 
-const getKnownProviderModelValues = (provider: SessionProvider | string | undefined) =>
-  normalizeSessionProvider(provider) === 'claude'
-    ? ['fable', 'opus[1m]', 'sonnet', 'haiku[1m]']
-    : ['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.5-mini'];
-
 export const syncModelSelectionForSession = (
   currentModel: string,
   currentSource: ModelSelectionSource,
@@ -97,13 +92,11 @@ export const syncModelSelectionForSession = (
 
   const normalizedCurrent = normalizeProviderModelSelectionValue(currentModel, provider)?.toLowerCase();
   const normalizedSession = normalizeProviderModelSelectionValue(sessionModel, provider)?.toLowerCase();
-  const knownValues = new Set(
-    (availableModelIds ?? getKnownProviderModelValues(provider)).map((value) => value.toLowerCase()),
-  );
+  const knownValues = availableModelIds === undefined ? undefined : new Set(availableModelIds.map((value) => value.toLowerCase()));
 
   if (
     normalizedCurrent &&
-    (knownValues.has(normalizedCurrent) || normalizedCurrent === normalizedSession)
+    (!knownValues || knownValues.has(normalizedCurrent) || normalizedCurrent === normalizedSession)
   ) {
     return {
       model: normalizeProviderModelSelectionValue(currentModel, provider) ?? currentModel,

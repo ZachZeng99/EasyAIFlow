@@ -528,3 +528,10 @@ Completed scoped recovery through supported API; no code changes or global serve
 - Preserved legacy room recovery while protecting configured teams from provider/title-based reconstruction. Added definitive preflight rejection receipts so busy/conflicting edits can be retried safely with a fresh operation ID.
 - Unit/lifecycle/store restart tests and real browser + two Codex turns passed. Saved configuration and exact reply ownership survived reload; mobile-width dialog checked.
 - Service API idempotence/conflict regressions, build and idle-only server upgrade passed. The 8887 endpoint reports `2.0.0-alpha.1` / `development` with all five existing projects intact. Multi-device management, native-agent trees and autonomous messaging remain outstanding.
+# 2026-10-16 Codex dynamic catalog correction
+
+- Confirmed the defect by querying both installed CLIs with identical app-server initialization: the npm PATH shim exposed only three old models; the newer desktop binary exposed seven.
+- Unified runtime selection for model discovery and actual execution, with explicit-path override, version comparison, automatic re-detection and cache isolation by binary identity. Existing active processes remain pinned; idle resident sessions upgrade on their next turn.
+- Added visible runtime provenance, removed the frontend version whitelist, and made new group members use provider-recommended defaults.
+- Resolver, shell-argument, cache, app-server, device-service and selection regressions passed. Real gpt-6.1-sol smoke passed reply/reconnect/idempotence; the running 8887 service and browser selector both show seven models.
+- No global npm installation, credentials or Codex settings changed. Existing session model choices remain intact.

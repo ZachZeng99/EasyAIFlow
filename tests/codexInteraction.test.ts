@@ -181,20 +181,15 @@ run('buildCodexArgs can ignore a stored thread id for stateless chat turns', () 
   ]);
 });
 
-run('buildCodexSpawnSpec wraps codex in cmd.exe on Windows so prompts are not split by shell parsing', () => {
+run('buildCodexSpawnSpec uses the selected executable and passes prompts without shell parsing', () => {
   const spec = buildCodexSpawnSpec(
     ['exec', '--json', '--full-auto', 'Host behavior note: some UI mode transitions may be handled automatically.'],
-    'win32',
-    'C:\\Windows\\System32\\cmd.exe',
+    { path: 'C:\\Codex App\\codex.exe', command: 'C:\\Codex App\\codex.exe', prefixArgs: [], source: 'desktop', version: 'codex-cli 1.0.0', identity: 'test-runtime' },
   );
 
   assert.deepEqual(spec, {
-    command: 'C:\\Windows\\System32\\cmd.exe',
+    command: 'C:\\Codex App\\codex.exe',
     args: [
-      '/d',
-      '/s',
-      '/c',
-      'codex',
       'exec',
       '--json',
       '--full-auto',

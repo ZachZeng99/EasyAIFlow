@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 import { captureProviderFrame } from './protocolCapture.js';
+import { codexRuntimeResolver, codexRuntimeSpawnSpec, type CodexRuntime } from './codexRuntime.js';
 
 type PendingRequest = {
   method: string;
@@ -17,7 +18,7 @@ type JsonRpcNotification = {
 type NotificationHandler = (notification: JsonRpcNotification) => void;
 type ExitHandler = (error: Error) => void;
 
-const CLIENT_INFO = { title: 'EasyAIFlow', name: 'EasyAIFlow', version: '0.1.0' };
+const CLIENT_INFO = { title: 'EasyAIFlow', name: 'EasyAIFlow', version: '2.0.0-alpha.1' };
 const CAPABILITIES = {
   experimentalApi: false,
   optOutNotificationMethods: [
@@ -26,11 +27,6 @@ const CAPABILITIES = {
     'item/reasoning/textDelta',
   ],
 };
-
-const buildAppServerSpawnSpec = (platform = process.platform, comspec = process.env.ComSpec) =>
-  platform === 'win32'
-    ? { command: comspec?.trim() || 'cmd.exe', args: ['/d', '/s', '/c', 'codex', 'app-server'], shell: false as const }
-    : { command: 'codex', args: ['app-server'], shell: false as const };
 
 export class CodexAppServerClient {
   private readonly captureId = randomUUID();
@@ -42,12 +38,13 @@ export class CodexAppServerClient {
   private exitError: Error | null = null;
   stderr = '';
 
-  private constructor(child: ChildProcess) {
+  private constructor(child: ChildProcess, readonly runtime: CodexRuntime) {
     this.child = child;
   }
 
-  static async create(cwd: string, options?: { timeoutMs?: number }): Promise<CodexAppServerClient> {
-    const spec = buildAppServerSpawnSpec();
+  static async create(cwd: string, options?: { timeoutMs?: number; runtime?: CodexRuntime }): Promise<CodexAppServerClient> {
+    const runtime = options?.runtime ?? await codexRuntimeResolver.resolve();
+    const spec = codexRuntimeSpawnSpec(runtime, ['app-server']);
     const child = spawn(spec.command, spec.args, {
       cwd,
       shell: spec.shell,
@@ -55,7 +52,7 @@ export class CodexAppServerClient {
       windowsHide: true,
     });
 
-    const client = new CodexAppServerClient(child);
+    const client = new CodexAppServerClient(child, runtime);
 
     child.stderr?.on('data', (chunk: Buffer | string) => {
       client.stderr += chunk.toString();
@@ -272,47 +269,55 @@ type ManagedAppServer = {
   cwd: string;
 };
 
-class CodexAppServerManager {
+export class CodexAppServerManager {
   private instances = new Map<string, ManagedAppServer>();
   private pendingCreates = new Map<string, Promise<ManagedAppServer>>();
+  constructor(
+    private readonly resolveRuntime = () => codexRuntimeResolver.resolve(),
+    private readonly createClient = (cwd: string, runtime: CodexRuntime) => CodexAppServerClient.create(cwd, { runtime }),
+  ) {}
 
   async acquire(cwd: string): Promise<CodexAppServerClient> {
-    const existing = this.instances.get(cwd);
+    const runtime = await this.resolveRuntime();
+    const key = JSON.stringify([cwd, runtime.identity]);
+    const existing = this.instances.get(key);
     if (existing) {
       existing.refCount++;
       return existing.client;
     }
 
-    const pendingCreate = this.pendingCreates.get(cwd);
+    const pendingCreate = this.pendingCreates.get(key);
     if (pendingCreate) {
       const managed = await pendingCreate;
       managed.refCount++;
       return managed.client;
     }
 
-    const createPromise = CodexAppServerClient.create(cwd)
+    const createPromise = this.createClient(cwd, runtime)
       .then((client) => {
         const managed = { client, refCount: 0, cwd };
-        this.instances.set(cwd, managed);
+        this.instances.set(key, managed);
         return managed;
       })
       .finally(() => {
-        this.pendingCreates.delete(cwd);
+        this.pendingCreates.delete(key);
       });
 
-    this.pendingCreates.set(cwd, createPromise);
+    this.pendingCreates.set(key, createPromise);
     const managed = await createPromise;
     managed.refCount++;
     return managed.client;
   }
 
-  release(cwd: string) {
-    const managed = this.instances.get(cwd);
-    if (!managed) return;
+  release(cwd: string, client?: CodexAppServerClient) {
+    const matches = [...this.instances].filter(([, managed]) => managed.cwd === cwd && (!client || managed.client === client));
+    if (!matches.length) return;
+    if (matches.length > 1) throw new Error('A client identity is required to release a replaced Codex runtime.');
+    const [key, managed] = matches[0];
 
     managed.refCount--;
     if (managed.refCount <= 0) {
-      this.instances.delete(cwd);
+      this.instances.delete(key);
       void managed.client.close();
     }
   }

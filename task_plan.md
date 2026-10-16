@@ -1,5 +1,18 @@
 # Current Task: EAF 2.0 P0 — Committed message synchronization
 
+## Current fix: Codex model discovery selects an obsolete CLI
+
+- [x] Reproduce the served catalog and compare installed runtimes: npm CLI 0.144.6 returns three GPT-5.6 models; desktop CLI 0.162.0-alpha.17.2 returns seven including GPT-6.1 Sol / GPT-6 Astra.
+- [x] Resolve a current installed Codex runtime consistently for discovery, version checks and execution; support an explicit executable override.
+- [x] Invalidate caches when the selected binary changes and expose source/version in model controls.
+- [x] Verify upgrade selection, cache behavior, real model enumeration and a real turn; update the running service when idle.
+
+Real isolated smoke passed with the discovered default `gpt-6.1-sol` (reply, reconnect, same-operation retry). Runtime selection, cache provenance, manager reference lifetime, native provider and device-service regressions passed. Removed an additional obsolete frontend model whitelist that could reset explicit new selections before the catalog arrived. New group defaults now use discovered recommendations too.
+
+The live 8887 service now returns the seven-model catalog with desktop runtime provenance. Browser inspection of an isolated real Codex session confirmed every option and the visible version/source label; screenshot `.tmp-run/eaf-v2-codex-models.jpg`. Final compile/commit follows.
+
+Source: official App Server model/list documentation and direct same-account probes of both local binaries. No model names will be hardcoded, no global CLI/config replacement is needed. A guessed electron/codexSpawn.ts path was absent; the actual spawn builders are in backend/codexAppServer.ts and backend/codexInteraction.ts.
+
 ## Current continuation: User-visible configurable group participants
 
 The running server is a development checkpoint, not the final 2.0 release. The user expects the agreed capabilities to be usable, not only backend groundwork.

@@ -21,6 +21,7 @@ import {
 import { stopPendingSessionMessages } from '../electron/sessionStop.js';
 import { createSerialAsyncQueue } from '../electron/serialAsyncQueue.js';
 import { appServerManager, CodexAppServerClient } from './codexAppServer.js';
+import { codexRuntimeResolver } from './codexRuntime.js';
 import type { SessionInteractionState } from '../src/data/sessionInteraction.js';
 import type {
   ConversationMessage,
@@ -82,6 +83,7 @@ type ResidentAppServerSession = {
 };
 
 const residentAppServerSessions = new Map<string, ResidentAppServerSession>();
+const pendingResidentConnections = new Map<string, Promise<ResidentAppServerSession>>();
 
 type TurnCaptureState = {
   turnId: string | null;
@@ -280,9 +282,26 @@ const connectResidentCodexSession = async (
   sessionId: string,
   fallbackSession?: SessionSummary,
 ) => {
+  const pending = pendingResidentConnections.get(sessionId);
+  if (pending) return pending;
+  const connection = connectResidentCodexSessionOnce(ctx, sessionId, fallbackSession)
+    .finally(() => pendingResidentConnections.delete(sessionId));
+  pendingResidentConnections.set(sessionId, connection);
+  return connection;
+};
+
+const connectResidentCodexSessionOnce = async (
+  ctx: ClaudeInteractionContext,
+  sessionId: string,
+  fallbackSession?: SessionSummary,
+) => {
   const existing = getResidentAppServerSession(sessionId);
   if (existing) {
-    return existing;
+    if (!existing.client.runtime || claimedAppServerTurns.has(sessionId) ||
+        existing.client.runtime.identity === (await codexRuntimeResolver.resolve()).identity) return existing;
+    if (claimedAppServerTurns.has(sessionId)) return existing;
+    // Keep running turns on their own process. Upgrade idle sessions on the next turn.
+    await disconnectResidentCodexSessionInternal(ctx, sessionId, false);
   }
 
   const session = await resolveResidentSession(sessionId, fallbackSession);
@@ -326,7 +345,7 @@ const disconnectResidentCodexSessionInternal = async (
 
   cleanupResidentAppServerSession(sessionId);
   resident.client.removeExitHandler(resident.exitHandler);
-  appServerManager.release(resident.cwd);
+  appServerManager.release(resident.cwd, resident.client);
   if (emitInactive) {
     emitRuntimeState(ctx, sessionId, 'inactive', false);
   }

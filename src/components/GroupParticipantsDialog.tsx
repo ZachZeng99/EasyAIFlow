@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { bridge } from '../bridge';
 import { MAX_GROUP_PARTICIPANTS, nextGroupParticipantId, validateGroupParticipantConfigs } from '../data/groupParticipants';
-import { modelEffortOptions, modelOptionsWithCurrent, type ProviderModelCatalog } from '../data/providerModels';
+import { describeModelCatalog, modelEffortOptions, modelOptionsWithCurrent, type ProviderModelCatalog } from '../data/providerModels';
 import type { GroupParticipantConfig, SessionProvider, SessionRecord } from '../data/types';
 
 type Props = { session: SessionRecord; busy: boolean; onClose: () => void; onSaved: (result: Awaited<ReturnType<typeof bridge.updateGroupParticipants>>) => void };
@@ -82,6 +82,7 @@ export function GroupParticipantsDialog({ session, busy, onClose, onSaved }: Pro
         })}
       </div>
       {catalogError ? <p role="status" className="group-members-notice">{catalogError}</p> : null}
+      {catalogs.codex ? <small title={catalogs.codex.runtimePath}>{describeModelCatalog(catalogs.codex)}</small> : null}
       {error ? <p role="alert" className="ui-error-banner">{error}</p> : null}
       <div className="group-members-add"><button type="button" className="dialog-button secondary" disabled={saving || participants.length >= MAX_GROUP_PARTICIPANTS} onClick={() => add('claude')}>+ Claude</button><button type="button" className="dialog-button secondary" disabled={saving || participants.length >= MAX_GROUP_PARTICIPANTS} onClick={() => add('codex')}>+ Codex</button><button type="button" className="dialog-button secondary" disabled={refreshing} onClick={() => void refreshModels()}>{refreshing ? '刷新中…' : '刷新模型'}</button><small>{participants.length} / {MAX_GROUP_PARTICIPANTS} 位成员</small></div>
       <div className="dialog-actions"><button type="button" className="dialog-button secondary" disabled={saving} onClick={onClose}>取消</button><button type="button" className="dialog-button primary" disabled={saving || busy} onClick={() => void save()}>{saving ? '保存中…' : '保存成员'}</button></div>

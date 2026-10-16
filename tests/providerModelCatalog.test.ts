@@ -81,3 +81,21 @@ await run('missing workspaces reject discovery without unhandled child-process e
   await assert.rejects(queryRuntimeModels('claude', missing));
   await assert.rejects(CodexAppServerClient.create(missing, { timeoutMs: 1000 }));
 });
+
+await run('catalog provenance survives disk cache fallback and is supplied by the queried runtime', async () => {
+  const provenanceDirectory = path.join(directory, 'provenance');
+  const runtime = { runtimePath: 'C:/Codex App/codex.exe', runtimeVersion: 'codex-cli 99.0.0', runtimeSource: 'desktop' as const };
+  let offline = false;
+  const options = { scope: async () => 'runtime-scope', version: async () => 'older-probe', load: async () => {
+    if (offline) throw new Error('offline');
+    return { models: [{ id: 'future-model', label: 'Future' }], ...runtime };
+  } };
+  const fresh = await new ProviderModelCatalogStore(provenanceDirectory, options).get('codex', directory, true);
+  assert.equal(fresh.runtimeVersion, runtime.runtimeVersion);
+  assert.equal(fresh.runtimePath, runtime.runtimePath);
+  offline = true;
+  const cached = await new ProviderModelCatalogStore(provenanceDirectory, options).get('codex', directory, true);
+  assert.equal(cached.stale, true);
+  assert.equal(cached.runtimeSource, 'desktop');
+  assert.equal(cached.runtimeVersion, runtime.runtimeVersion);
+});
