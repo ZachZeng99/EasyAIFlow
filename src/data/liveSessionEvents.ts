@@ -152,6 +152,7 @@ export const applyClaudeEventToProjects = (projects: ProjectRecord[], event: Cla
 
           if (
             event.type === 'permission-request' ||
+            event.type === 'interaction-resolved' ||
             event.type === 'ask-user-question' ||
             event.type === 'plan-mode-request' ||
             event.type === 'background-task' ||

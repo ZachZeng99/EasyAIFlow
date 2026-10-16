@@ -1,5 +1,6 @@
 import type { ClaudeInteractionContext } from './claudeInteractionContext.js';
 import type { ClaudeInteractionState } from './claudeInteractionState.js';
+import { answerClaudeQuestion } from './claudeQuestionInteraction.js';
 import { sendGroupMessage, stopGroupSessionRuns } from './groupChat.js';
 import { resolveProviderSessionRuntime } from './providerSessionRuntime.js';
 import {
@@ -16,7 +17,6 @@ import {
 import { getCodexAppServerInteractionSnapshots } from './codexAppServerTurn.js';
 import { isWritableStdin } from './claudeHelpers.js';
 import {
-  buildClaudeAskUserQuestionToolResultLine,
   buildClaudeControlResponseLine,
 } from '../electron/claudeControlMessages.js';
 import {
@@ -91,7 +91,7 @@ export const handleRespondToPermission = async (
 };
 
 export const handleRespondToAskUserQuestion = async (
-  _ctx: ClaudeInteractionContext,
+  ctx: ClaudeInteractionContext,
   state: ClaudeInteractionState,
   payload: {
     toolUseId: string;
@@ -99,32 +99,7 @@ export const handleRespondToAskUserQuestion = async (
     annotations?: Record<string, { notes?: string }>;
   },
 ) => {
-  const pending = state.pendingAskUserQuestions.get(payload.toolUseId);
-  if (!pending) {
-    return { mode: 'missing' as const };
-  }
-
-  state.pendingAskUserQuestions.delete(payload.toolUseId);
-  if (!isWritableStdin(pending.activeRun.child)) {
-    return { mode: 'missing' as const };
-  }
-
-  const stdin = pending.activeRun.child.stdin;
-  if (!stdin) {
-    return { mode: 'missing' as const };
-  }
-
-  stdin.write(
-    `${buildClaudeAskUserQuestionToolResultLine({
-      toolUseId: pending.toolUseId,
-      questions: pending.questions,
-      response: {
-        answers: payload.answers,
-        annotations: payload.annotations ?? {},
-      },
-    })}\n`,
-  );
-  return { mode: 'interactive' as const };
+  return answerClaudeQuestion(ctx, state, payload.toolUseId, { answers: payload.answers, annotations: payload.annotations ?? {} });
 };
 
 export const handleRespondToPlanMode = async (

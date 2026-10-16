@@ -35,6 +35,7 @@ export const startDeviceService = async (options: { dataDirectory: string; homeD
     for (const client of clients) send(client, { type: 'event', event });
   });
   let stopping = false;
+  let activeRequests = 0;
   let stopPromise: Promise<void> | null = null;
   const server = createServer((socket) => {
     socket.setEncoding('utf8');
@@ -60,6 +61,7 @@ export const startDeviceService = async (options: { dataDirectory: string; homeD
         return;
       }
       if (frame.type !== 'request' || typeof frame.id !== 'string' || typeof frame.method !== 'string') return;
+      activeRequests += 1;
       try {
         if (stopping) throw new Error('Device service is stopping.');
         const method = frame.method;
@@ -74,7 +76,7 @@ export const startDeviceService = async (options: { dataDirectory: string; homeD
           const record = await ledger.get(id);
           result = record ? { ...record, status: record.status === 'started' && !ledger.isRunning(id) ? 'uncertain' : record.status } : null;
         } else if (method === 'shutdownDeviceService') {
-          if (runtime.hasActiveWork() || ledger.pendingCount > 0) throw new Error('Device service still has active tasks or operations.');
+          if (runtime.hasActiveWork() || ledger.pendingCount > 0 || activeRequests > 1) throw new Error('Device service still has active tasks or operations.');
           stopping = true;
           send(socket, { type: 'response', id: frame.id, result: null });
           setImmediate(() => void stop().catch((error) => console.error('[DEVICE_SERVICE] Shutdown failed', error)));
@@ -86,7 +88,7 @@ export const startDeviceService = async (options: { dataDirectory: string; homeD
           if (MUTATING_RPC_METHODS.has(method)) {
             if (typeof frame.operationId !== 'string') throw new OperationError('EAF_INVALID_OPERATION', 'Operation ID is required.');
             const previous = await ledger.get(frame.operationId);
-            result = await ledger.execute(frame.operationId, method, payload, () => handler(payload as never));
+            result = await ledger.execute(frame.operationId, method, payload, (capturedPayload) => handler(capturedPayload as never));
             if (previous?.status === 'completed' && result && typeof result === 'object' && 'projects' in result) {
               const fresh = { ...result } as Record<string, unknown>;
               const { projects } = await runtime.handlers.getProjects();
@@ -117,7 +119,7 @@ export const startDeviceService = async (options: { dataDirectory: string; homeD
           code: error instanceof OperationError ? error.code : 'EAF_RPC_ERROR',
           operationId: error instanceof OperationError ? error.operationId : undefined,
         } });
-      }
+      } finally { activeRequests -= 1; }
     };
     socket.on('data', (chunk: string) => {
       buffer += chunk;

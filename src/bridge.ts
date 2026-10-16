@@ -103,7 +103,7 @@ export type EasyAIFlowBridge = {
     answers: Record<string, string>;
     annotations?: Record<string, { notes?: string }>;
   }) => Promise<{
-    mode: 'interactive' | 'missing';
+    mode: 'interactive' | 'missing' | 'already-handled';
   }>;
   respondToPlanMode: (payload: {
     toolUseId: string;

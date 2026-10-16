@@ -7,6 +7,8 @@
 - Runtime model catalog and UI now use full model IDs, discovered effort levels and an explicit provider-default effort. Legacy native IDs are no longer silently converted into newer family aliases.
 - Real runtime catalogs were queried and both providers completed the smoke probe using discovered model IDs. Claude command discovery now uses initialization rather than a paid inference probe.
 - Reduced renderer side-effect dependencies: message streaming no longer repeatedly launches Git and slash-command refreshes.
+- Real group `@all`, cross-provider follow-up and queued Claude turns passed. Real question handling exposed an existing protocol error: can_use_tool was allowed with empty answers and later responses were injected as user turns. Corrected and verified with recorded 2.1.284 frames and a live reconnect/answer test.
+- CLI stdout now uses `tool_use_result`; added a non-mutating alias normalization for existing consumers. Question resolution is broadcast across clients and mirrored room/backing states; stale replies no longer auto-start new work.
 
 - V2 already serializes writes per session and persists monotonic revisions. Reuse its commit boundary for UI message events.
 - The current UI appends raw deltas and compares server snapshots against client wall-clock timestamps. These are independent from persistence revisions.

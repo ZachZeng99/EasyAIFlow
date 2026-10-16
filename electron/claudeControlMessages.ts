@@ -218,6 +218,7 @@ export const buildClaudeControlResponseLine = (
     },
   });
 
+/** Historical transcript formatting; live can_use_tool answers use control_response.updatedInput. */
 export const buildClaudeAskUserQuestionToolResultLine = (payload: {
   toolUseId: string;
   questions: AskUserQuestion[];

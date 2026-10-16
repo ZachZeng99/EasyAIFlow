@@ -14,11 +14,19 @@ export type OperationRecord = {
   id: string;
   method: string;
   fingerprint: string;
+  payload?: unknown;
+  /** Completion acknowledges the RPC result; its agent task may still be running. */
   status: 'started' | 'completed' | 'uncertain';
   createdAt: string;
   updatedAt: string;
   result?: unknown;
   error?: string;
+};
+
+const cloneContainers = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(cloneContainers);
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cloneContainers(item)]));
+  return value;
 };
 
 export class OperationLedger {
@@ -63,21 +71,23 @@ export class OperationLedger {
     await rename(temporary, destination);
   }
 
-  execute(id: string, method: string, payload: unknown, operation: () => Promise<unknown>): Promise<unknown> {
-    const fingerprint = createHash('sha256').update(canonicalJson({ method, payload })).digest('hex');
+  execute(id: string, method: string, payload: unknown, operation: (capturedPayload: unknown) => Promise<unknown>): Promise<unknown> {
+    const serialized = canonicalJson({ method, payload });
+    const fingerprint = createHash('sha256').update(serialized).digest('hex');
+    const capturedPayload = JSON.parse(serialized).payload;
     const active = this.running.get(id);
     if (active) {
       return active.fingerprint === fingerprint
         ? active.promise
         : Promise.reject(new OperationError('EAF_OPERATION_CONFLICT', 'Operation ID was reused for different input.', id));
     }
-    const promise = this.executeOnce(id, method, fingerprint, operation);
+    const promise = this.executeOnce(id, method, fingerprint, capturedPayload, operation);
     this.running.set(id, { fingerprint, promise });
     void promise.finally(() => this.running.delete(id)).catch(() => undefined);
     return promise;
   }
 
-  private async executeOnce(id: string, method: string, fingerprint: string, operation: () => Promise<unknown>) {
+  private async executeOnce(id: string, method: string, fingerprint: string, payload: unknown, operation: (capturedPayload: unknown) => Promise<unknown>) {
     const previous = await this.get(id);
     if (previous) {
       if (previous.fingerprint !== fingerprint) {
@@ -87,10 +97,10 @@ export class OperationLedger {
       throw new OperationError('EAF_OPERATION_UNCERTAIN', `操作 ${id} 的执行状态待确认，未重新执行。${previous.error ?? ''}`, id);
     }
     const now = new Date().toISOString();
-    const record: OperationRecord = { id, method, fingerprint, status: 'started', createdAt: now, updatedAt: now };
+    const record: OperationRecord = { id, method, fingerprint, payload, status: 'started', createdAt: now, updatedAt: now };
     await this.save(record, true);
     try {
-      const result = (await operation()) ?? null;
+      const result = (await operation(cloneContainers(payload))) ?? null;
       await this.save({ ...record, status: 'completed', updatedAt: new Date().toISOString(), result: this.encodeResult(result) });
       return result;
     } catch (error) {

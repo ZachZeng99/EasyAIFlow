@@ -7,7 +7,7 @@ import type {
   TokenUsage,
 } from '../src/data/types.js';
 import type { ClaudePermissionControlRequest } from '../electron/claudeControlMessages.js';
-import type { AskUserQuestion } from '../src/data/askUserQuestion.js';
+import type { AskUserQuestion, AskUserQuestionResponsePayload } from '../src/data/askUserQuestion.js';
 import type { PlanModeRequest, PlanModeResponsePayload } from '../src/data/planMode.js';
 import type { ClaudeRunStateCompletion } from '../electron/claudeRunState.js';
 import {
@@ -31,6 +31,9 @@ export type PendingAskUserQuestion = {
   activeRun: ActiveClaudeRun;
   toolUseId: string;
   questions: AskUserQuestion[];
+  controlRequest?: { requestId: string; rawInput: Record<string, unknown> };
+  submittedResponse?: AskUserQuestionResponsePayload;
+  presented?: boolean;
 };
 
 export type PendingPlanModeRequest = {

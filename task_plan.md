@@ -14,6 +14,15 @@ Further checkpoints: `996e316` (runtime history ownership), `dcfc9a5` (independe
 - [x] Complete final build and commit the model catalog checkpoint.
 - [ ] Continue real group-chat and interactive-request verification, then native agent visibility and communication.
 
+## Interaction verification
+
+- [x] Real group fan-out, shared context and queued Claude replies passed.
+- [x] Reproduced and fixed AskUserQuestion prematurely receiving an empty approval and stopping the turn.
+- [x] Verify control responses, early-answer buffering, duplicate answers, snake-case tool results, and real reconnect/answer behavior.
+- [x] Persist original operation inputs before dispatch for review/recovery after uncertain outcomes.
+- [x] Finish question-interaction checkpoint build/commit.
+- [ ] Continue approval/background scenarios, interaction snapshot consistency, and native agent visibility.
+
 - [x] Extract shared runtime behind an authenticated local device service.
 - [x] Route Electron and Web clients to that service; client exit does not stop it.
 - [x] Persist operation identities/results and preserve IDs across transport retries and renderer reloads.
@@ -42,6 +51,7 @@ Use the existing V2 journal; do not introduce a competing message store. Keep le
 - IndexSearch missed known TypeScript symbols even after a Git refresh; use direct reads and rg for this affected source tree until its content index is repaired.
 - Model catalog implementation initially imported the spawn helper from the wrong module and placed an optional parameter on the wrong helper; both were corrected and type checks passed.
 - Existing model tests expected fixed aliases/version upgrades; updated them to assert exact-ID preservation and runtime catalogs. An old import test changed USERPROFILE without reconfiguring runtime paths; it now uses explicit isolated paths and fresh stores.
+- Real AskUserQuestion initially produced "The user did not answer the questions" then EAF killed the turn: the CLI control gate had been auto-approved before answers arrived, and the RPC injected a separate user tool-result. Corrected to updatedInput answers on the matching control response, verified against restored source and official SDK docs.
 
 ---
 

@@ -32,6 +32,19 @@ export type SessionInteractionState = {
   isSubmittingPlanMode?: boolean;
 };
 
+export const resolveAskUserQuestionState = (state: SessionInteractionState, toolUseId: string): SessionInteractionState => {
+  if (state.askUserQuestion?.toolUseId !== toolUseId) return state;
+  const stillWaiting = Boolean(state.permission || state.pendingPermissions?.length || state.planModeRequest);
+  return {
+    ...state,
+    askUserQuestion: undefined,
+    isSubmittingAskUserQuestion: false,
+    runtime: state.runtime?.phase === 'awaiting_reply' && !stillWaiting
+      ? { ...state.runtime, phase: 'running' }
+      : state.runtime,
+  };
+};
+
 export const isActiveBackgroundTask = (task: BackgroundTaskRecord) =>
   !task.detached && (task.status === 'pending' || task.status === 'running');
 

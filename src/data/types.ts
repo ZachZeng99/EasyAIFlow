@@ -313,6 +313,12 @@ export type DeleteEntityResult = {
 export type ClaudeStreamEvent =
   | SessionMessagesCommittedEvent
   | {
+      type: 'interaction-resolved';
+      sessionId: string;
+      interaction: 'ask';
+      requestId: string;
+    }
+  | {
       type: 'interaction-sync';
     }
   | {

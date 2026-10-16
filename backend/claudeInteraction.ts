@@ -6,6 +6,9 @@ import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import type { ClaudeInteractionContext } from './claudeInteractionContext.js';
 import { getRuntimePaths } from './runtimePaths.js';
+import { captureProviderFrame } from './protocolCapture.js';
+import { registerClaudeQuestion } from './claudeQuestionInteraction.js';
+import { normalizeClaudeProtocolMessage } from '../electron/claudeProtocol.js';
 import type {
   ActiveClaudeRun,
   ActiveClaudeTurn,
@@ -73,7 +76,6 @@ import {
 } from '../electron/backgroundTaskNotification.js';
 import { createClaudeTaskListCompletionTracker } from '../electron/claudeTaskListState.js';
 import {
-  buildClaudeAskUserQuestionToolResultLine,
   buildClaudeControlRequestLine,
   buildClaudeControlResponseLine,
   buildClaudePlanModeToolResultLine,
@@ -400,22 +402,7 @@ export const registerAskUserQuestion = (
   toolUseId: string,
   questions: AskUserQuestion[],
 ) => {
-  if (state.pendingAskUserQuestions.has(toolUseId)) {
-    return;
-  }
-
-  state.pendingAskUserQuestions.set(toolUseId, {
-    sessionId,
-    activeRun,
-    toolUseId,
-    questions,
-  });
-  ctx.broadcastEvent({
-    type: 'ask-user-question',
-    sessionId,
-    toolUseId,
-    questions,
-  });
+  registerClaudeQuestion(ctx, state, sessionId, activeRun, toolUseId, questions);
 };
 
 export const registerPlanModeRequest = (
@@ -1239,6 +1226,7 @@ export const getSessionInteractionSnapshots = (
   });
 
   state.pendingAskUserQuestions.forEach((pending) => {
+    if (pending.submittedResponse || !pending.controlRequest) return;
     const snapshot = ensureSnapshot(pending.sessionId);
     snapshot.askUserQuestion = {
       sessionId: pending.sessionId,
@@ -1744,7 +1732,7 @@ export const handleClaudeLine = async (
     return;
   }
 
-  const parsed = JSON.parse(line) as Record<string, unknown>;
+  const parsed = normalizeClaudeProtocolMessage(JSON.parse(line) as Record<string, unknown>);
   const missingClaudeSessionId = extractMissingClaudeConversationSessionId(parsed);
   if (missingClaudeSessionId) {
     options?.onMissingClaudeConversation?.(missingClaudeSessionId);
@@ -1825,11 +1813,8 @@ export const handleClaudeLine = async (
   }
   const askUserQuestionRequest = parseClaudeAskUserQuestionControlRequest(parsed);
   if (askUserQuestionRequest) {
-    emitRuntimeState(ctx, sessionId, 'awaiting_reply', true, options?.appliedEffort);
-    const stdin = activeRun.child.stdin;
-    if (isWritableStdin(activeRun.child) && stdin) {
-      stdin.write(`${buildClaudeControlResponseLine(askUserQuestionRequest, 'allow')}\n`);
-    }
+    registerClaudeQuestion(ctx, state, sessionId, activeRun, askUserQuestionRequest.toolUseId, askUserQuestionRequest.questions, askUserQuestionRequest);
+    emitRuntimeState(ctx, sessionId, state.pendingAskUserQuestions.has(askUserQuestionRequest.toolUseId) ? 'awaiting_reply' : 'running', true, options?.appliedEffort);
     return;
   }
 
@@ -2641,6 +2626,8 @@ const ensureResidentClaudeSession = async (
       } catch {
         return;
       }
+      captureProviderFrame('claude', session.id, parsed);
+      parsed = normalizeClaudeProtocolMessage(parsed);
 
       if (parsed.type === 'system' && parsed.subtype === 'init') {
         resolveResidentReady();
@@ -3491,9 +3478,12 @@ export const runBtwPrompt = async (
         const parsed = JSON.parse(line) as Record<string, unknown>;
         const askUserQuestionRequest = parseClaudeAskUserQuestionControlRequest(parsed);
         if (askUserQuestionRequest) {
-          const stdin = child.stdin;
-          if (isWritableStdin(child) && stdin) {
-            stdin.write(`${buildClaudeControlResponseLine(askUserQuestionRequest, 'allow')}\n`);
+          if (options?.sessionId) {
+            registerClaudeQuestion(ctx, state, options.sessionId, {
+              runId: randomUUID(), sessionId: options.sessionId, child, projectRoot: cwd,
+            }, askUserQuestionRequest.toolUseId, askUserQuestionRequest.questions, askUserQuestionRequest);
+          } else if (isWritableStdin(child) && child.stdin) {
+            child.stdin.write(`${buildClaudeControlResponseLine(askUserQuestionRequest, 'deny', 'Ask the question in text in this side conversation.')}\n`);
           }
           return;
         }

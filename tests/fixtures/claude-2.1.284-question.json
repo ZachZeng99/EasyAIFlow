@@ -1,0 +1,78 @@
+{
+  "provider": "claude",
+  "cliVersion": "2.1.284",
+  "capturedOn": "2026-10-16",
+  "note": "Real isolated question round trip; session/request/tool identifiers anonymized. Only control request and answered tool-result frames retained.",
+  "frames": [
+    {
+      "type": "control_request",
+      "request_id": "fixture-request",
+      "request": {
+        "subtype": "can_use_tool",
+        "tool_name": "AskUserQuestion",
+        "display_name": "AskUserQuestion",
+        "input": {
+          "questions": [
+            {
+              "question": "Which choice do you pick: A or B?",
+              "header": "Choice",
+              "options": [
+                {
+                  "label": "A",
+                  "description": "Choice A"
+                },
+                {
+                  "label": "B",
+                  "description": "Choice B"
+                }
+              ],
+              "multiSelect": false
+            }
+          ]
+        },
+        "tool_use_id": "fixture-tool",
+        "requires_user_interaction": true
+      }
+    },
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "content": "Your questions have been answered: \"Which choice do you pick: A or B?\"=\"A\". You can now continue with these answers in mind.",
+            "tool_use_id": "fixture-tool"
+          }
+        ]
+      },
+      "parent_tool_use_id": null,
+      "session_id": "fixture-session",
+      "uuid": "fixture-frame",
+      "timestamp": "2026-10-16T05:29:31.582Z",
+      "tool_use_result": {
+        "questions": [
+          {
+            "question": "Which choice do you pick: A or B?",
+            "header": "Choice",
+            "options": [
+              {
+                "label": "A",
+                "description": "Choice A"
+              },
+              {
+                "label": "B",
+                "description": "Choice B"
+              }
+            ],
+            "multiSelect": false
+          }
+        ],
+        "answers": {
+          "Which choice do you pick: A or B?": "A"
+        },
+        "annotations": {}
+      }
+    }
+  ]
+}

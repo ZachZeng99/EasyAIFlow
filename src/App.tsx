@@ -28,7 +28,6 @@ import {
   touchSessionHistory,
 } from './data/sessionHistoryCache';
 import {
-  buildAskUserQuestionFollowUpPrompt,
   buildAskUserQuestionResponsePayload,
   type AskUserQuestionDraft,
 } from './data/askUserQuestion';
@@ -37,6 +36,7 @@ import {
   mergeGroupRoomAskUserQuestionState,
   mergeGroupRoomRuntimeState,
   setSessionRuntimeState,
+  resolveAskUserQuestionState,
   upsertSessionBackgroundTask,
   type SessionInteractionState,
 } from './data/sessionInteraction';
@@ -1197,6 +1197,10 @@ export default function App() {
       setProjects((current) => batch.reduce(applyClaudeEventToProjects, current));
     };
 
+    const updateEventInteraction = (event: { sessionId: string; sourceSessionId?: string }, updater: (state: SessionInteractionState) => SessionInteractionState) => {
+      updateSessionInteraction(event.sessionId, updater);
+      if (event.sourceSessionId && event.sourceSessionId !== event.sessionId) updateSessionInteraction(event.sourceSessionId, updater);
+    };
     const processEvent = (event: ClaudeStreamEvent) => {
       if (event.type === 'interaction-sync') {
         setSessionInteractions(new Map());
@@ -1208,8 +1212,14 @@ export default function App() {
       if (event.type === 'session-sync') {
         return;
       }
+      if (event.type === 'interaction-resolved') {
+        setSessionInteractions((current) => new Map([...current].map(([id, interaction]) =>
+          [id, resolveAskUserQuestionState(interaction, event.requestId)],
+        )));
+        return;
+      }
       if (event.type === 'permission-request') {
-        updateSessionInteraction(event.sessionId, (state) => ({
+        updateEventInteraction(event, (state) => ({
           ...state,
           permission: {
             path: event.targetPath ?? event.command ?? event.description ?? event.toolName,
@@ -1220,7 +1230,7 @@ export default function App() {
         }));
       }
       if (event.type === 'ask-user-question') {
-        updateSessionInteraction(event.sessionId, (state) => ({
+        updateEventInteraction(event, (state) => ({
           ...state,
           askUserQuestion: {
             sessionId: event.sourceSessionId ?? event.sessionId,
@@ -1231,7 +1241,7 @@ export default function App() {
         }));
       }
       if (event.type === 'plan-mode-request') {
-        updateSessionInteraction(event.sessionId, (state) => ({
+        updateEventInteraction(event, (state) => ({
           ...state,
           planModeRequest: {
             sessionId: event.sourceSessionId ?? event.sessionId,
@@ -1240,12 +1250,12 @@ export default function App() {
         }));
       }
       if (event.type === 'background-task') {
-        updateSessionInteraction(event.sessionId, (state) =>
+        updateEventInteraction(event, (state) =>
           upsertSessionBackgroundTask(state, event.task),
         );
       }
       if (event.type === 'runtime-state') {
-        updateSessionInteraction(event.sessionId, (state) =>
+        updateEventInteraction(event, (state) =>
           setSessionRuntimeState(state, event.runtime),
         );
       }
@@ -2037,28 +2047,11 @@ export default function App() {
         annotations: response.annotations,
       });
 
-      if (mode.mode !== 'interactive') {
-        const targetSession = allSessions.find((session) => session.id === askQuestion.sessionId);
-        if (!targetSession) {
-          throw new Error('Unable to resume the session for the answered questions.');
-        }
-
-        const followUpPrompt = buildAskUserQuestionFollowUpPrompt(askQuestion.questions, response);
-        await bridge.sendMessage({
-          sessionId: targetSession.id,
-          prompt: followUpPrompt,
-          session: targetSession,
-          references: targetSession.contextReferences ?? [],
-          model: resolveRequestedModelArg(model, modelSelectionSource),
-          effort,
-        });
-      }
-
       clearAskUserQuestion(sessionId);
       if (askQuestion.sessionId !== sessionId) {
         clearAskUserQuestion(askQuestion.sessionId);
       }
-      setUiError(null);
+      setUiError(mode.mode === 'missing' ? '该问题已失效，未自动启动新任务。请重新发送消息继续。' : null);
     } catch (error) {
       setUiError(error instanceof Error ? error.message : 'Failed to answer the pending question.');
       setAskUserQuestionSubmitting(sessionId, false);

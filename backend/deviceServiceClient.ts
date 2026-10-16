@@ -59,9 +59,17 @@ export class DeviceServiceClient {
     }
     await this.startDetached();
     const deadline = Date.now() + 30000;
+    let nextStart = Date.now() + 2000;
     let lastError: unknown;
     while (!this.disposed && Date.now() < deadline) {
-      try { await this.connectOnce(); return; } catch (error) { lastError = error; }
+      try { await this.connectOnce(); return; } catch (error) {
+        lastError = error;
+        const code = (error as NodeJS.ErrnoException).code;
+        if (Date.now() >= nextStart && (code === 'ENOENT' || code === 'ECONNREFUSED')) {
+          await this.startDetached();
+          nextStart = Date.now() + 2000;
+        }
+      }
       await delay(150);
     }
     throw transportError(`Cannot connect to device service. ${lastError instanceof Error ? lastError.message : ''}`);

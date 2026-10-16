@@ -1,5 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { randomUUID } from 'node:crypto';
+import { captureProviderFrame } from './protocolCapture.js';
 
 type PendingRequest = {
   method: string;
@@ -31,6 +33,7 @@ const buildAppServerSpawnSpec = (platform = process.platform, comspec = process.
     : { command: 'codex', args: ['app-server'], shell: false as const };
 
 export class CodexAppServerClient {
+  private readonly captureId = randomUUID();
   private child: ChildProcess;
   private nextId = 1;
   private pending = new Map<number, PendingRequest>();
@@ -104,6 +107,7 @@ export class CodexAppServerClient {
     } catch {
       return;
     }
+    captureProviderFrame('codex', this.captureId, parsed);
 
     // Response to a request we sent.
     if (typeof parsed.id === 'number' && (parsed.result !== undefined || parsed.error !== undefined)) {

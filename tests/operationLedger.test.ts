@@ -59,6 +59,20 @@ await run('invalid operation paths are rejected before executing', async () => {
   assert.equal(called, false);
 });
 
+await run('the original input is durable before dispatch and is isolated from caller mutation', async () => {
+  const input = { sessionId: 's', prompt: 'original input' };
+  const submitted = ledger.execute('captured-input', 'sendMessage', input, async (captured) => {
+    const record = await ledger.get('captured-input');
+    assert.deepEqual(record?.payload, { sessionId: 's', prompt: 'original input' });
+    assert.deepEqual(captured, record?.payload);
+    (captured as { prompt: string }).prompt = 'handler mutation';
+    return 'accepted';
+  });
+  input.prompt = 'mutated by caller';
+  await submitted;
+  assert.deepEqual((await new OperationLedger(directory).get('captured-input'))?.payload, { sessionId: 's', prompt: 'original input' });
+});
+
 await run('renderer retries and reloads reuse operation IDs without storing prompt content', async () => {
   const values = new Map<string, string>();
   const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } };

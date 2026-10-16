@@ -1,5 +1,7 @@
 # EAF 2.0 Progress — 2026-10-16
 
+Model checkpoint committed as `ac7c8c1`. Interaction follow-up: real group tests passed; AskUserQuestion initially stopped the turn and has now been fixed. Seven focused question tests and a sanitized real-protocol fixture pass, including live reconnect and late duplicate-answer rejection. Operation inputs now persist before dispatch and are isolated from caller/handler mutations. Preparing this checkpoint, then continuing broader interaction and agent work.
+
 Independent service and operation ledger are implemented and verified. Electron and Web now share the same authenticated local service, detached from client lifetime. Duplicate operations coalesce and replay persisted results with fresh catalog state. Native-history ownership regression is fixed and committed as `996e316`. Real Claude/Codex, Electron Node-mode service startup, local HTTP gateway restart and related regression tests passed. Work continues on model discovery and remaining P0 interaction cases.
 
 Model catalog checkpoint verified: dynamic provider catalogs, scoped disk caches, auto/manual refresh, recommended new-session models, exact-ID preservation and runtime reasoning levels are implemented. Claude command discovery uses initialize metadata. Model/cache/UI/import tests, real discovered-model smoke, and frontend/Electron/server builds passed. Continuing group/interaction verification without ending at this checkpoint.
