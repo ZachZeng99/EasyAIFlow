@@ -23,6 +23,7 @@ import type {
 import type { PlanModeResponsePayload } from './data/planMode.js';
 import type { SessionInteractionState } from './data/sessionInteraction.js';
 import { withOperationIdentity } from './data/operationIdentity.js';
+import type { ProviderModelCatalog } from './data/providerModels.js';
 
 type RpcErrorShape = {
   error?: string;
@@ -60,7 +61,7 @@ export type EasyAIFlowBridge = {
     cwd: string;
     prompt: string;
     model?: string;
-    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    effort?: string;
     baseClaudeSessionId?: string;
   }) => Promise<BtwResponse>;
   discardBtwSession: (payload: { cwd: string; claudeSessionId?: string }) => Promise<void>;
@@ -71,6 +72,7 @@ export type EasyAIFlowBridge = {
     interactions?: Record<string, SessionInteractionState>;
   }>;
   getSessionRecord: (payload: { sessionId: string }) => Promise<SessionRecord>;
+  getProviderModels: (payload: { provider: SessionProvider; cwd: string; force?: boolean }) => Promise<ProviderModelCatalog>;
   getOperationStatus: (payload: { operationId: string }) => Promise<{
     id: string; method: string; status: 'started' | 'completed' | 'uncertain'; result?: unknown; error?: string;
   } | null>;
@@ -152,7 +154,7 @@ export type EasyAIFlowBridge = {
     session?: SessionSummary;
     references?: ContextReference[];
     model?: string;
-    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    effort?: string;
   }) => Promise<{
     projects: ProjectRecord[];
     queued: {
@@ -165,14 +167,14 @@ export type EasyAIFlowBridge = {
     sessionId: string;
     session?: SessionSummary;
     model: string;
-    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    effort?: string;
   }) => Promise<{
     projects: ProjectRecord[];
   }>;
   switchEffort: (payload: {
     sessionId: string;
     session?: SessionSummary;
-    effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    effort: string;
   }) => Promise<{
     projects: ProjectRecord[];
   }>;
@@ -239,6 +241,7 @@ const webBridge: EasyAIFlowBridge = {
   getPathForFile: () => '',
   getProjects: () => callWebRpc('getProjects'),
   getSessionRecord: (payload) => callWebRpc('getSessionRecord', payload),
+  getProviderModels: (payload) => callWebRpc('getProviderModels', payload),
   getOperationStatus: (payload) => callWebRpc('getOperationStatus', payload),
   getSessionHistoryRevision: (payload) => callWebRpc('getSessionHistoryRevision', payload),
   getSessionMessagePage: (payload) => callWebRpc('getSessionMessagePage', payload),

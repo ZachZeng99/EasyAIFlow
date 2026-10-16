@@ -21,19 +21,7 @@ export const normalizeModelSelectionValue = (value: string | undefined) => {
   if (normalized === 'claude') {
     return 'fable';
   }
-  if (normalized.includes('fable')) {
-    return 'fable';
-  }
-  if (normalized.includes('opus')) {
-    return 'opus[1m]';
-  }
-  if (normalized.includes('sonnet')) {
-    return 'sonnet';
-  }
-  if (normalized.includes('haiku')) {
-    return 'haiku[1m]';
-  }
-
+  // Exact runtime model IDs are stable selections, not family-name guesses.
   return trimmed;
 };
 
@@ -44,7 +32,7 @@ export const getKnownModelContextWindow = (value: string | undefined) => {
     return undefined;
   }
 
-  if (selected === 'fable' || selected.includes('fable') || selected.includes('[1m]')) {
+  if (selected === 'fable' || selected === 'claude-fable' || selected.includes('[1m]')) {
     return MILLION_TOKEN_CONTEXT_WINDOW;
   }
 
@@ -101,6 +89,7 @@ export const syncModelSelectionForSession = (
   currentSource: ModelSelectionSource,
   sessionModel: string | undefined,
   provider: SessionProvider | string | undefined,
+  availableModelIds?: readonly string[],
 ) => {
   if (currentSource !== 'explicit') {
     return syncImplicitModelSelection(currentModel, currentSource, sessionModel);
@@ -109,7 +98,7 @@ export const syncModelSelectionForSession = (
   const normalizedCurrent = normalizeProviderModelSelectionValue(currentModel, provider)?.toLowerCase();
   const normalizedSession = normalizeProviderModelSelectionValue(sessionModel, provider)?.toLowerCase();
   const knownValues = new Set(
-    getKnownProviderModelValues(provider).map((value) => value.toLowerCase()),
+    (availableModelIds ?? getKnownProviderModelValues(provider)).map((value) => value.toLowerCase()),
   );
 
   if (

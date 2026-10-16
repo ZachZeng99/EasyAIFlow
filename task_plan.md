@@ -4,6 +4,16 @@
 
 Branch: `codex/eaf-v2`. Checkpoints: `c02d008` (design), `19392d5` (message synchronization).
 
+Further checkpoints: `996e316` (runtime history ownership), `dcfc9a5` (independent service and operation ledger).
+
+## Current continuation: Runtime model catalogs and interaction verification
+
+- [x] Discover models and Claude commands from real runtime initialization; cache by login/workspace scope and refresh automatically.
+- [x] Render discovered models/efforts, preserve exact selections, and use recommended defaults for new empty sessions.
+- [x] Verify cached/offline behavior, CLI version invalidation, model selection and real provider smoke runs.
+- [x] Complete final build and commit the model catalog checkpoint.
+- [ ] Continue real group-chat and interactive-request verification, then native agent visibility and communication.
+
 - [x] Extract shared runtime behind an authenticated local device service.
 - [x] Route Electron and Web clients to that service; client exit does not stop it.
 - [x] Persist operation identities/results and preserve IDs across transport retries and renderer reloads.
@@ -29,6 +39,9 @@ Use the existing V2 journal; do not introduce a competing message store. Keep le
 - `git diff --no-index --check` returned the normal difference exit code for untracked files; validate their whitespace directly rather than treating that code as a source failure.
 - Live Codex smoke initially timed out: its native importer replaced EAF message IDs even though the reply had completed. Added durable runtime history ownership; both real providers now pass close/reconnect/retry smoke tests.
 - A replay test used a project creation result whose initial empty session had subsequently been removed. The service correctly rejected the removed entity; the fresh-catalog test now replays an entity that still exists.
+- IndexSearch missed known TypeScript symbols even after a Git refresh; use direct reads and rg for this affected source tree until its content index is repaired.
+- Model catalog implementation initially imported the spawn helper from the wrong module and placed an optional parameter on the wrong helper; both were corrected and type checks passed.
+- Existing model tests expected fixed aliases/version upgrades; updated them to assert exact-ID preservation and runtime catalogs. An old import test changed USERPROFILE without reconfiguring runtime paths; it now uses explicit isolated paths and fresh stores.
 
 ---
 

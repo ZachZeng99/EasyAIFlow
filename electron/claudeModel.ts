@@ -3,9 +3,8 @@ type ClaudeSettings = {
   _env?: Record<string, unknown>;
 };
 
-const DEFAULT_OPUS_MODEL = 'claude-opus-5-5';
-const DEFAULT_SONNET_MODEL = 'claude-sonnet-4-6';
-const DEFAULT_HAIKU_MODEL = 'claude-haiku-4-5';
+// Compatibility for the historical EAF-only "fable" alias. New catalogs use
+// exact IDs. Native opus/sonnet/haiku aliases are resolved by the installed CLI.
 const DEFAULT_FABLE_MODEL = 'claude-fable-5-1';
 
 export const isClaudeSyntheticModel = (value: string | undefined) =>
@@ -29,19 +28,7 @@ export const normalizeClaudeModelSelection = (value: string | undefined) => {
   if (normalized === 'claude') {
     return 'fable';
   }
-  if (normalized.includes('fable')) {
-    return 'fable';
-  }
-  if (normalized.includes('opus')) {
-    return 'opus[1m]';
-  }
-  if (normalized.includes('sonnet')) {
-    return 'sonnet';
-  }
-  if (normalized.includes('haiku')) {
-    return 'haiku[1m]';
-  }
-
+  // Preserve exact provider model IDs across persistence and resume.
   return trimmed;
 };
 
@@ -66,19 +53,19 @@ export const resolveClaudeModelArg = (requestedModel: string | undefined, settin
     return with1m(
       readEnvModel(settings, 'ANTHROPIC_DEFAULT_OPUS_MODEL') ??
         readEnvModel(settings, 'ANTHROPIC_MODEL') ??
-        DEFAULT_OPUS_MODEL,
+        'opus',
     );
   }
   if (modelString === 'sonnet') {
     return readEnvModel(settings, 'ANTHROPIC_DEFAULT_SONNET_MODEL') ??
       readEnvModel(settings, 'ANTHROPIC_MODEL') ??
-      DEFAULT_SONNET_MODEL;
+      with1m('sonnet');
   }
   if (modelString === 'haiku') {
     return with1m(
       readEnvModel(settings, 'ANTHROPIC_DEFAULT_HAIKU_MODEL') ??
         readEnvModel(settings, 'ANTHROPIC_MODEL') ??
-        DEFAULT_HAIKU_MODEL,
+        'haiku',
     );
   }
 

@@ -4,6 +4,9 @@
 - Actual Codex smoke exposed native import rewriting runtime message IDs. `historyAuthority: runtime` preserves IDs after EAF takes over and avoids duplicate imports into overlapping projects.
 - Both real CLI providers passed a no-tool reply after closing/reopening all clients; repeated operation IDs returned the same assistant ID. Electron's executable also runs the compiled service successfully in Node mode.
 - Claude's verified `initialize` control response exposes models and commands without a model turn. It can replace hardcoded catalogs without relying on internal `list_models` requests.
+- Runtime model catalog and UI now use full model IDs, discovered effort levels and an explicit provider-default effort. Legacy native IDs are no longer silently converted into newer family aliases.
+- Real runtime catalogs were queried and both providers completed the smoke probe using discovered model IDs. Claude command discovery now uses initialization rather than a paid inference probe.
+- Reduced renderer side-effect dependencies: message streaming no longer repeatedly launches Git and slash-command refreshes.
 
 - V2 already serializes writes per session and persists monotonic revisions. Reuse its commit boundary for UI message events.
 - The current UI appends raw deltas and compares server snapshots against client wall-clock timestamps. These are independent from persistence revisions.

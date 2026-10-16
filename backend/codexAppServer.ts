@@ -43,7 +43,7 @@ export class CodexAppServerClient {
     this.child = child;
   }
 
-  static async create(cwd: string): Promise<CodexAppServerClient> {
+  static async create(cwd: string, options?: { timeoutMs?: number }): Promise<CodexAppServerClient> {
     const spec = buildAppServerSpawnSpec();
     const child = spawn(spec.command, spec.args, {
       cwd,
@@ -63,8 +63,9 @@ export class CodexAppServerClient {
       client.handleLine(line);
     });
 
-    child.on('close', () => {
-      client.exitError = client.exitError ?? new Error('codex app-server process exited.');
+    const fail = (error: Error) => {
+      if (client.exitError) return;
+      client.exitError = error;
       for (const handler of client.exitHandlers) {
         handler(client.exitError);
       }
@@ -72,9 +73,23 @@ export class CodexAppServerClient {
         req.reject(client.exitError);
       }
       client.pending.clear();
-    });
+    };
+    child.on('error', fail);
+    child.stdin?.on('error', fail);
+    child.on('close', () => fail(new Error('codex app-server process exited.')));
 
-    await client.request('initialize', { clientInfo: CLIENT_INFO, capabilities: CAPABILITIES });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const initialized = client.request('initialize', { clientInfo: CLIENT_INFO, capabilities: CAPABILITIES });
+      if (options?.timeoutMs) {
+        await Promise.race([initialized, new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('Codex initialization timed out.')), options.timeoutMs);
+        })]);
+      } else await initialized;
+    } catch (error) {
+      await client.close();
+      throw error;
+    } finally { clearTimeout(timer); }
     client.notify('initialized', {});
     return client;
   }
@@ -170,6 +185,7 @@ export class CodexAppServerClient {
   }
 
   async close(): Promise<void> {
+    if (this.child.exitCode !== null || this.child.signalCode !== null) return;
     if (this.child.stdin?.writable) {
       this.child.stdin.end();
     }

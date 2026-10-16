@@ -117,12 +117,16 @@ run('ChatComposer renders an inline notice when the host provides one', () => {
   assert.match(html, /session restarts/);
 });
 
-run('ChatComposer includes the current Claude model options', () => {
+run('ChatComposer renders discovered Claude models and preserves the current selection', () => {
   const html = renderToStaticMarkup(
     createElement(ChatComposer, {
       draft: '继续这个需求',
       tokenUsage,
       sessionModel: 'fable',
+      modelCatalog: { provider: 'claude', stale: false, updatedAt: 1, models: [
+        { id: 'claude-future-99', label: 'Future Claude', isDefault: true },
+        { id: 'claude-other-100', label: 'Another Claude' },
+      ] },
       contextReferences: [],
       slashCommands: [],
       attachments: [],
@@ -143,18 +147,21 @@ run('ChatComposer includes the current Claude model options', () => {
     }),
   );
 
-  assert.ok(html.includes('opus5.5[1M]'));
+  assert.ok(html.includes('Future Claude'));
   assert.match(html, /value="fable"/);
-  assert.match(html, />fable5\.1\[1M\]</);
+  assert.match(html, /value="claude-future-99"/);
+  assert.match(html, /value="claude-other-100"/);
 });
 
-run('ChatComposer offers GPT-5.6 Sol while retaining older Codex models', () => {
+run('ChatComposer offers newly discovered Codex models while retaining an older session model', () => {
   const html = renderToStaticMarkup(
     createElement(ChatComposer, {
       provider: 'codex',
       draft: '继续这个需求',
       tokenUsage,
       sessionModel: 'gpt-5.5',
+      modelCatalog: { provider: 'codex', stale: true, updatedAt: 1, models: [{ id: 'gpt-future', label: 'Future Codex' }] },
+      onRefreshModels: () => undefined,
       contextReferences: [],
       slashCommands: [],
       attachments: [],
@@ -175,9 +182,9 @@ run('ChatComposer offers GPT-5.6 Sol while retaining older Codex models', () => 
     }),
   );
 
-  assert.match(html, /value="gpt-5\.6-sol"/);
+  assert.match(html, /value="gpt-future"/);
   assert.match(html, /value="gpt-5\.5"/);
-  assert.match(html, /value="gpt-5\.5-mini"/);
+  assert.match(html, /刷新模型（缓存）/);
 });
 
 run('ChatComposer uses the known fable million-token context window for usage display', () => {

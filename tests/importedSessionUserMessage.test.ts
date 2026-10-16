@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { configureRuntimePaths } from '../backend/runtimePaths.ts';
+import { getDefaultModelForProvider } from '../src/data/sessionProvider.ts';
+
+const importFreshStore = async () => {
+  configureRuntimePaths({
+    userDataPath: path.join(process.env.APPDATA!, 'EasyAIFlow'),
+    homePath: process.env.USERPROFILE!,
+  });
+  return import(`${pathToFileURL(path.resolve('electron/sessionStore.ts')).href}?import-test=${Math.random()}`);
+};
 
 const run = async (name: string, fn: () => Promise<void>) => {
   try {
@@ -78,7 +89,7 @@ await run('createProject imports native user text blocks and skips synthetic no-
     'utf8',
   );
 
-  const { createProject, getSessionRecordForBootstrap } = await import('../electron/sessionStore.ts');
+  const { createProject, getSessionRecordForBootstrap } = await importFreshStore();
   const result = await createProject('Imported User Project', rootPath);
   assert.equal(result.session.messages.length, 0);
   assert.equal(result.session.messagesLoaded, false);
@@ -176,7 +187,7 @@ await run('createProject ignores background task cleanup follow-ups after queue 
     'utf8',
   );
 
-  const { createProject, getSessionRecordForBootstrap } = await import('../electron/sessionStore.ts');
+  const { createProject, getSessionRecordForBootstrap } = await importFreshStore();
   const result = await createProject('Imported Background Task Project', rootPath);
   assert.equal(result.session.messages.length, 0);
   assert.equal(result.session.messagesLoaded, false);
@@ -248,7 +259,7 @@ await run('createProject skips native Claude local-command sessions that contain
     'utf8',
   );
 
-  const { createProject } = await import('../electron/sessionStore.ts');
+  const { createProject } = await importFreshStore();
   const result = await createProject('Imported Command Project', rootPath);
   const importedTitles = result.projects[0]?.dreams[0]?.sessions.map((session) => session.title) ?? [];
 
@@ -325,8 +336,8 @@ await run('createProject ignores synthetic API error models when importing nativ
     'utf8',
   );
 
-  const { createProject } = await import('../electron/sessionStore.ts');
+  const { createProject } = await importFreshStore();
   const result = await createProject('Imported Synthetic API Model Project', rootPath);
 
-  assert.equal(result.session.model, 'opus[1m]');
+  assert.equal(result.session.model, getDefaultModelForProvider('claude'));
 });

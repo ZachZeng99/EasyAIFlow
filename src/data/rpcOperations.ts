@@ -10,7 +10,7 @@ export const MUTATING_RPC_METHODS = new Set([
 const READ_RPC_METHODS = new Set([
   'getAppMeta', 'getProjects', 'getSessionRecord', 'getSessionHistoryRevision',
   'getSessionMessagePage', 'getGitSnapshot', 'getSlashCommands', 'getFileDiff',
-  'getOperationStatus', 'getDeviceStatus', 'clipboard:write-text',
+  'getOperationStatus', 'getDeviceStatus', 'getProviderModels', 'clipboard:write-text',
 ]);
 export const isUiRpcMethod = (method: string) => MUTATING_RPC_METHODS.has(method) || READ_RPC_METHODS.has(method);
 

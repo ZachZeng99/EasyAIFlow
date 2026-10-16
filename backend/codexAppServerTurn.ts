@@ -32,13 +32,14 @@ import type {
   TokenUsage,
 } from '../src/data/types.js';
 
-type CodexReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+type CodexReasoningEffort = string;
 
 const DEFAULT_CODEX_REASONING_EFFORT: CodexReasoningEffort = 'xhigh';
 
-const resolveCodexReasoningEffort = (effort?: SessionEffort | null): CodexReasoningEffort => {
-  if (effort === 'low' || effort === 'medium' || effort === 'high' || effort === 'xhigh') {
-    return effort;
+const resolveCodexReasoningEffort = (effort?: SessionEffort | null): CodexReasoningEffort | null => {
+  if (effort === 'default') return null;
+  if (effort?.trim()) {
+    return effort.trim();
   }
   return DEFAULT_CODEX_REASONING_EFFORT;
 };

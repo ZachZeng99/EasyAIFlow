@@ -1,6 +1,6 @@
 type ClaudePrintArgOptions = {
   model?: string;
-  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  effort?: string;
   sessionArgs?: string[];
   tools?: string;
   permissionMode?: 'acceptEdits' | 'bypassPermissions' | 'default' | 'dontAsk' | 'plan' | 'auto';
@@ -43,7 +43,7 @@ export const buildClaudePrintArgs = ({
     args.push('--model', model);
   }
 
-  if (effort) {
+  if (effort && effort !== 'default') {
     args.push('--effort', effort);
   }
 

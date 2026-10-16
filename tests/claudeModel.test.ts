@@ -37,12 +37,12 @@ run('resolveClaudeModelArg maps sonnet alias to env-configured backend model', (
   assert.equal(resolved, 'kimi-k2.5');
 });
 
-run('resolveClaudeModelArg expands sonnet alias to a canonical Claude model when env overrides are absent', () => {
-  assert.equal(resolveClaudeModelArg('sonnet[1m]'), 'claude-sonnet-4-6');
+run('resolveClaudeModelArg lets the CLI resolve the native sonnet alias', () => {
+  assert.equal(resolveClaudeModelArg('sonnet[1m]'), 'sonnet[1m]');
 });
 
-run('resolveClaudeModelArg expands opus alias to the latest default Claude Opus model when env overrides are absent', () => {
-  assert.equal(resolveClaudeModelArg('opus[1m]'), 'claude-opus-5-5[1m]');
+run('resolveClaudeModelArg lets the CLI resolve the native opus alias', () => {
+  assert.equal(resolveClaudeModelArg('opus[1m]'), 'opus[1m]');
 });
 
 run('resolveClaudeModelArg treats bare claude as the default fable alias', () => {
@@ -62,7 +62,7 @@ run('resolveClaudeModelArg ignores Claude synthetic placeholder models', () => {
 });
 
 run('resolveClaudeSessionModelArg falls back to the session model when no model is requested', () => {
-  assert.equal(resolveClaudeSessionModelArg(undefined, 'opus[1m]'), 'claude-opus-5-5[1m]');
+  assert.equal(resolveClaudeSessionModelArg(undefined, 'opus[1m]'), 'opus[1m]');
 });
 
 run('resolveClaudeSessionModelArg falls back to fable for bare Claude sessions', () => {
@@ -73,25 +73,25 @@ run('resolveClaudeSessionModelArg ignores synthetic session model fallbacks', ()
   assert.equal(resolveClaudeSessionModelArg(undefined, '<synthetic>'), undefined);
 });
 
-run('resolveClaudeSessionModelArg upgrades legacy native Opus session models through the UI alias', () => {
-  assert.equal(resolveClaudeSessionModelArg(undefined, 'claude-opus-4-8[1m]'), 'claude-opus-5-5[1m]');
+run('resolveClaudeSessionModelArg preserves pinned native model versions', () => {
+  assert.equal(resolveClaudeSessionModelArg(undefined, 'claude-opus-4-8[1m]'), 'claude-opus-4-8[1m]');
 });
 
 run('resolveClaudeSessionModelArg keeps explicit model requests ahead of the session fallback', () => {
-  assert.equal(resolveClaudeSessionModelArg('sonnet', 'claude-opus-4-7[1m]'), 'claude-sonnet-4-6');
+  assert.equal(resolveClaudeSessionModelArg('sonnet', 'claude-opus-4-7[1m]'), 'sonnet');
 });
 
-run('normalizeClaudeModelSelection maps native sonnet model names back to UI alias', () => {
-  assert.equal(normalizeClaudeModelSelection('claude-sonnet-4-6'), 'sonnet');
+run('normalizeClaudeModelSelection preserves native sonnet IDs', () => {
+  assert.equal(normalizeClaudeModelSelection('claude-sonnet-4-6'), 'claude-sonnet-4-6');
 });
 
-run('normalizeClaudeModelSelection maps native opus model names back to UI alias', () => {
-  assert.equal(normalizeClaudeModelSelection('claude-opus-5'), 'opus[1m]');
+run('normalizeClaudeModelSelection preserves native opus IDs', () => {
+  assert.equal(normalizeClaudeModelSelection('claude-opus-5'), 'claude-opus-5');
 });
 
-run('normalizeClaudeModelSelection maps fable names back to the UI alias', () => {
+run('normalizeClaudeModelSelection preserves distinct fable names', () => {
   assert.equal(normalizeClaudeModelSelection('fable'), 'fable');
-  assert.equal(normalizeClaudeModelSelection('claude-fable'), 'fable');
+  assert.equal(normalizeClaudeModelSelection('claude-fable'), 'claude-fable');
 });
 
 run('normalizeClaudeModelSelection maps bare claude back to the default UI alias', () => {

@@ -210,7 +210,7 @@ export const handleSendMessage = async (
     session?: SessionSummary;
     references?: ContextReference[];
     model?: string;
-    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    effort?: string;
   },
 ) => {
   const resolvedKind = await resolveSessionKind(payload.sessionId, payload.session);
@@ -236,7 +236,7 @@ export const handleSwitchModel = async (
     sessionId: string;
     session?: SessionSummary;
     model: string;
-    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    effort?: string;
   },
 ) => {
   const runtime = await resolveProviderSessionRuntime(payload.sessionId, payload.session);
@@ -249,7 +249,7 @@ export const handleSwitchEffort = async (
   payload: {
     sessionId: string;
     session?: SessionSummary;
-    effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    effort: string;
   },
 ) => {
   const runtime = await resolveProviderSessionRuntime(payload.sessionId, payload.session);
@@ -264,7 +264,7 @@ export const handleBtwMessage = async (
     cwd: string;
     prompt: string;
     model?: string;
-    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    effort?: string;
     baseClaudeSessionId?: string;
   },
 ) => runBtwPrompt(ctx, state, payload.prompt, payload.cwd, payload);

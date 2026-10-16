@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { normalizeSessionProvider } from '../data/sessionProvider';
 import type { ContextReference, ContextReferenceMode, SessionProvider, TokenUsage } from '../data/types';
-import { getKnownModelContextWindow, normalizeModelSelectionValue } from '../data/modelSelection';
+import { getKnownModelContextWindow } from '../data/modelSelection';
+import { modelEffortOptions, modelOptionsWithCurrent, type ProviderModelCatalog } from '../data/providerModels';
 
 export type ComposerAttachment = {
   id: string;
@@ -23,6 +24,9 @@ type ChatComposerProps = {
   draft: string;
   tokenUsage: TokenUsage;
   sessionModel: string;
+  modelCatalog?: ProviderModelCatalog | null;
+  modelsRefreshing?: boolean;
+  onRefreshModels?: () => void;
   contextReferences: ContextReference[];
   slashCommands: string[];
   mentionOptions?: ComposerMentionOption[];
@@ -31,8 +35,8 @@ type ChatComposerProps = {
   isResponding: boolean;
   allowSendWhileResponding?: boolean;
   model: string;
-  effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-  appliedEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  effort: string;
+  appliedEffort?: string;
   notice?: string | null;
   isGroupSession?: boolean;
   supportsPathDrop?: boolean;
@@ -41,7 +45,7 @@ type ChatComposerProps = {
   onAttachFiles: (files: FileList | null) => void;
   onRemoveAttachment: (attachmentId: string) => void;
   onModelChange: (value: string) => void;
-  onEffortChange: (value: 'low' | 'medium' | 'high' | 'xhigh' | 'max') => void;
+  onEffortChange: (value: string) => void;
   onUpdateContextReferenceMode: (referenceId: string, mode: ContextReferenceMode) => void;
   onRemoveContextReference: (referenceId: string) => void;
   onSend: () => void;
@@ -71,24 +75,15 @@ const formatSize = (value: number) => {
   return `${value} B`;
 };
 const isImageAttachment = (attachment: ComposerAttachment) => attachment.mimeType.startsWith('image/');
-const MODEL_OPTIONS = {
-  claude: [
-    { value: 'fable', label: 'fable5.1[1M]' },
-    { value: 'opus[1m]', label: 'opus5.5[1M]' },
-    { value: 'sonnet', label: 'sonnet4.6' },
-  ],
-  codex: [
-    { value: 'gpt-5.6-sol', label: 'gpt-5.6-sol' },
-    { value: 'gpt-5.5', label: 'gpt-5.5' },
-    { value: 'gpt-5.5-mini', label: 'gpt-5.5-mini' },
-  ],
-} as const;
 
 export function ChatComposer({
   provider,
   draft,
   tokenUsage,
   sessionModel,
+  modelCatalog,
+  modelsRefreshing = false,
+  onRefreshModels,
   contextReferences,
   slashCommands,
   mentionOptions = [],
@@ -114,9 +109,16 @@ export function ChatComposer({
   onStop,
 }: ChatComposerProps) {
   const normalizedProvider = normalizeSessionProvider(provider);
+  const modelCapabilities = modelCatalog?.provider === normalizedProvider
+    ? modelCatalog.models.find((entry) => entry.id === model || entry.aliases?.includes(model))
+    : undefined;
+  const effortOptions = modelCapabilities
+    ? modelEffortOptions(modelCapabilities)
+    : [...new Set(['default', effort])];
   const canSend = draft.trim().length > 0 || attachments.length > 0;
   const showStopAction = isSending || (isResponding && !allowSendWhileResponding);
   const knownModelContextWindow = Math.max(
+    modelCatalog?.models.find((entry) => entry.id === model)?.contextWindow ?? 0,
     getKnownModelContextWindow(model) ?? 0,
     getKnownModelContextWindow(sessionModel) ?? 0,
   );
@@ -186,25 +188,8 @@ export function ChatComposer({
     if (isGroupSession) {
       return [];
     }
-    const baseOptions: Array<{ value: string; label: string }> = [...MODEL_OPTIONS[normalizedProvider]];
-    const knownValues = new Set(baseOptions.map((option) => option.value));
-    [model, sessionModel].forEach((value) => {
-      const trimmed = value.trim();
-      const normalizedValue =
-        normalizedProvider === 'claude'
-          ? normalizeModelSelectionValue(trimmed) ?? trimmed
-          : trimmed;
-      if (!trimmed || knownValues.has(normalizedValue)) {
-        return;
-      }
-      baseOptions.unshift({
-        value: normalizedValue,
-        label: normalizedValue,
-      });
-      knownValues.add(normalizedValue);
-    });
-    return baseOptions;
-  }, [isGroupSession, model, normalizedProvider, sessionModel]);
+    return modelOptionsWithCurrent(modelCatalog?.models ?? [], [model, sessionModel]);
+  }, [isGroupSession, model, modelCatalog, sessionModel]);
 
   useEffect(() => {
     setActiveSlashIndex(0);
@@ -284,22 +269,24 @@ export function ChatComposer({
             <strong>@claude / @codex / @all</strong>
           </div>
         )}
-        {!isGroupSession && normalizedProvider === 'claude' ? (
+        {!isGroupSession && onRefreshModels ? (
+          <button type="button" className="composer-control" disabled={modelsRefreshing} onClick={onRefreshModels}
+            title={modelCatalog?.error ?? (modelCatalog?.updatedAt ? `模型列表更新于 ${new Date(modelCatalog.updatedAt).toLocaleString()}` : '自动从运行时获取模型列表')}>
+            {modelsRefreshing ? '更新中…' : modelCatalog?.stale ? '刷新模型（缓存）' : '刷新模型'}
+          </button>
+        ) : null}
+        {!isGroupSession ? (
           <label className="composer-control">
             <span>Thinking</span>
             <select
               value={effort}
               onChange={(event) =>
                 onEffortChange(
-                  event.target.value as 'low' | 'medium' | 'high' | 'xhigh' | 'max',
+                  event.target.value as string,
                 )
               }
             >
-              <option value="low">Low</option>
-              <option value="medium">Medium</option>
-              <option value="high">High</option>
-              <option value="xhigh">XHigh</option>
-              <option value="max">Max</option>
+              {effortOptions.map((value) => <option key={value} value={value}>{value === 'default' ? '模型默认' : value}</option>)}
             </select>
           </label>
         ) : null}

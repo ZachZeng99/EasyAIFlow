@@ -850,7 +850,7 @@ const emitRuntimeState = (
   sessionId: string,
   phase: import('../src/data/types.js').SessionRuntimePhase,
   processActive: boolean,
-  appliedEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max',
+  appliedEffort?: string,
 ) => {
   ctx.broadcastEvent({
     type: 'runtime-state',
@@ -1734,7 +1734,7 @@ export const handleClaudeLine = async (
     onBackgroundTaskOwner?: (taskId: string, assistantMessageId: string, runState: ClaudeRunState) => void;
     onBackgroundActivated?: (assistantMessageId: string, runState: ClaudeRunState) => void;
     onMissingClaudeConversation?: (claudeSessionId: string) => void;
-    appliedEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    appliedEffort?: string;
   },
 ) => {
   if (!line.trim()) {
@@ -2965,7 +2965,7 @@ export const switchClaudeSessionModel = async (
     sessionId: string;
     session?: SessionSummary;
     model: string;
-    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    effort?: string;
   },
 ) => {
   const requestedModel = payload.model.trim();
@@ -3019,7 +3019,7 @@ export const switchClaudeSessionEffort = async (
   payload: {
     sessionId: string;
     session?: SessionSummary;
-    effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    effort: string;
   },
 ) => {
   const session =
@@ -3390,7 +3390,7 @@ export const runBtwPrompt = async (
   options?: {
     sessionId?: string;
     model?: string;
-    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    effort?: string;
     baseClaudeSessionId?: string;
   },
 ): Promise<BtwResponse> =>

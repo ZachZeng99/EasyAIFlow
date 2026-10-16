@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { stopAllCodexRuns } from './codexInteraction.js';
 import { appServerManager } from './codexAppServer.js';
+import { ProviderModelCatalogStore, queryRuntimeCatalog, readProviderVersion, runtimeModelScope } from './providerModelCatalog.js';
 import { settleClaudeSessionsForShutdown } from '../electron/appShutdown.js';
 import {
   getRuntimePaths,
@@ -24,7 +25,6 @@ import {
   handleSwitchModel,
   handleBtwMessage,
   handleBtwDiscard,
-  handleGetSlashCommands,
   handleBootstrapSessions,
   handleCloseProject,
   handleDeleteStreamwork,
@@ -40,6 +40,8 @@ import {
   getNativeSessionHistoryRevision,
   getSessionMessagePage,
   getSessionRecordForBootstrap,
+  getProjectsForBootstrap,
+  setSessionRuntime,
   renameEntity,
   reorderStreamworks,
   setSessionPinned,
@@ -59,6 +61,20 @@ import type { PlanModeResponsePayload } from '../src/data/planMode.js';
 import { onSessionMessagesCommitted } from './sessionMessageEvents.js';
 
 export const createDeviceRuntime = (broadcast: (event: ClaudeStreamEvent) => void) => {
+  const models = new ProviderModelCatalogStore(path.join(getRuntimePaths().userDataPath, 'model-catalogs'), {
+    load: queryRuntimeCatalog,
+    scope: (provider, cwd) => runtimeModelScope(provider, cwd, getRuntimePaths().homePath),
+    version: readProviderVersion,
+  });
+  const initializeSessionModel = async <T extends { session: SessionRecord }>(result: T): Promise<T> => {
+    const session = result.session;
+    if (!session.provider || session.sessionKind === 'group' || session.claudeSessionId || session.codexThreadId || session.messages.length > 0) return result;
+    const catalog = await models.get(session.provider, session.workspace);
+    const recommended = catalog.models.find((model) => model.isDefault);
+    if (!recommended) return result;
+    await setSessionRuntime(session.id, { model: recommended.id });
+    return { ...result, session: { ...session, model: recommended.id } };
+  };
   const ctx: ClaudeInteractionContext = {
     broadcastEvent: broadcast,
     attachmentRoot: () => path.join(getRuntimePaths().userDataPath, 'attachments'),
@@ -166,6 +182,10 @@ export const createDeviceRuntime = (broadcast: (event: ClaudeStreamEvent) => voi
   });
 
   const rpcHandlers = {
+    getProviderModels: (payload: { provider: 'claude' | 'codex'; cwd: string; force?: boolean }) => {
+      if (!['claude', 'codex'].includes(payload.provider) || typeof payload.cwd !== 'string') throw new Error('Invalid provider or workspace.');
+      return models.get(payload.provider, payload.cwd, payload.force);
+    },
     'clipboard:write-text': async (payload: { value: string }) => {
       await writeTextToSystemClipboard(payload.value);
       return null;
@@ -202,14 +222,17 @@ export const createDeviceRuntime = (broadcast: (event: ClaudeStreamEvent) => voi
     getSessionMessagePage: async (payload: { sessionId: string; before?: string }) =>
       getSessionMessagePage(payload.sessionId, payload.before),
     getGitSnapshot: async (payload: { cwd: string }) => getGitSnapshot(payload.cwd),
-    getSlashCommands: async (payload: { cwd: string; model?: string }) =>
-      handleGetSlashCommands(ctx, state, payload),
+    getSlashCommands: async (payload: { cwd: string; model?: string }) => {
+      let catalog = await models.get('claude', payload.cwd);
+      if (catalog.commands === undefined && !catalog.stale) catalog = await models.get('claude', payload.cwd, true);
+      return { commands: catalog.commands ?? [] };
+    },
     sendBtwMessage: async (payload: {
       sessionId?: string;
       cwd: string;
       prompt: string;
       model?: string;
-      effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+      effort?: string;
       baseClaudeSessionId?: string;
     }) => handleBtwMessage(ctx, state, payload),
     discardBtwSession: async (payload: { cwd: string; claudeSessionId?: string }) => {
@@ -255,14 +278,15 @@ export const createDeviceRuntime = (broadcast: (event: ClaudeStreamEvent) => voi
       selectedPromptIndex?: number;
       notes?: string;
     }) => handleRespondToPlanMode(ctx, state, payload),
-    createProject: async (payload: { name?: string; rootPath: string }) =>
-      summarizeProjectsInResult(
-        await createProject(payload.name?.trim() || deriveProjectNameFromPath(payload.rootPath), payload.rootPath),
-      ),
+    createProject: async (payload: { name?: string; rootPath: string }) => {
+      const before = new Set((await getProjectsForBootstrap()).map((project) => project.id));
+      const result = await createProject(payload.name?.trim() || deriveProjectNameFromPath(payload.rootPath), payload.rootPath);
+      return summarizeProjectsInResult(before.has(result.project.id) ? result : await initializeSessionModel(result));
+    },
     closeProject: async (payload: { projectId: string }) =>
       summarizeProjectsInResult(await handleCloseProject(ctx, state, payload)),
     createStreamwork: async (payload: { projectId: string; name: string }) =>
-      summarizeProjectsInResult(await createStreamwork(payload.projectId, payload.name)),
+      summarizeProjectsInResult(await initializeSessionModel(await createStreamwork(payload.projectId, payload.name))),
     deleteStreamwork: async (payload: { streamworkId: string }) =>
       summarizeProjectsInResult(await handleDeleteStreamwork(ctx, state, payload)),
     reorderStreamworks: async (payload: { projectId: string; sourceId: string; targetId: string }) =>
@@ -276,12 +300,12 @@ export const createDeviceRuntime = (broadcast: (event: ClaudeStreamEvent) => voi
       sessionKind?: import('../src/data/types.js').SessionKind;
     }) =>
       summarizeProjectsInResult(
-        await createSession(
+        await initializeSessionModel(await createSession(
           payload?.sourceSessionId,
           Boolean(payload?.includeStreamworkSummary),
           payload?.provider,
           payload?.sessionKind,
-        ),
+        )),
       ),
     createSessionInStreamwork: async (payload: {
       streamworkId: string;
@@ -291,13 +315,13 @@ export const createDeviceRuntime = (broadcast: (event: ClaudeStreamEvent) => voi
       sessionKind?: import('../src/data/types.js').SessionKind;
     }) =>
       summarizeProjectsInResult(
-        await createSessionInStreamwork(
+        await initializeSessionModel(await createSessionInStreamwork(
           payload.streamworkId,
           payload.name,
           Boolean(payload.includeStreamworkSummary),
           payload.provider,
           payload.sessionKind,
-        ),
+        )),
       ),
     deleteSession: async (payload: { sessionId: string }) =>
       summarizeProjectsInResult(await handleDeleteSession(ctx, state, payload)),
@@ -314,18 +338,18 @@ export const createDeviceRuntime = (broadcast: (event: ClaudeStreamEvent) => voi
       session?: SessionSummary;
       references?: ContextReference[];
       model?: string;
-      effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+      effort?: string;
     }) => handleSendMessage(ctx, state, payload),
     switchModel: async (payload: {
       sessionId: string;
       session?: SessionSummary;
       model: string;
-      effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+      effort?: string;
     }) => handleSwitchModel(ctx, state, payload),
     switchEffort: async (payload: {
       sessionId: string;
       session?: SessionSummary;
-      effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+      effort: string;
     }) => handleSwitchEffort(ctx, state, payload),
     stopSessionRun: async (payload: { sessionId: string }) =>
       handleStopSession(ctx, state, payload),

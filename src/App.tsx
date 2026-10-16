@@ -13,6 +13,7 @@ import {
 } from './data/optimisticSend';
 import { applyClaudeEventToProjects, coalesceClaudeDeltaEvents } from './data/liveSessionEvents';
 import { usesCommittedMessages } from './data/committedSessionMessages';
+import { modelEffortOptions, type ProviderModelCatalog } from './data/providerModels';
 import {
   hydrateSessionRecordInProjects,
   mergeProjectSnapshots,
@@ -345,7 +346,12 @@ export default function App() {
   const [sendingSessionIds, setSendingSessionIds] = useState<string[]>([]);
   const [model, setModel] = useState('opus[1m]');
   const [modelSelectionSource, setModelSelectionSource] = useState<ModelSelectionSource>('implicit');
-  const [effort, setEffort] = useState<'low' | 'medium' | 'high' | 'xhigh' | 'max'>('max');
+  const [modelCatalog, setModelCatalog] = useState<ProviderModelCatalog | null>(null);
+  const [modelsRefreshing, setModelsRefreshing] = useState(false);
+  const refreshModelsRef = useRef<() => void>(() => undefined);
+  const modelSelectionSessionRef = useRef('');
+  const effortSessionRef = useRef('');
+  const [effort, setEffort] = useState<string>('max');
   const [composerNotice, setComposerNotice] = useState<string | null>(null);
   const [isResizingPane, setIsResizingPane] = useState(false);
   const [leftPaneWidth, setLeftPaneWidth] = useState(338);
@@ -436,6 +442,55 @@ export default function App() {
     () => allSessions.find((session) => session.id === selectedSessionId) ?? visibleSessions[0] ?? allSessions[0],
     [allSessions, selectedSessionId, visibleSessions],
   );
+  useEffect(() => {
+    const provider = selectedSession?.provider;
+    const cwd = selectedSession?.workspace;
+    setModelCatalog(null);
+    if (!provider || !cwd || selectedSession?.sessionKind === 'group') {
+      refreshModelsRef.current = () => undefined;
+      setModelsRefreshing(false);
+      return;
+    }
+    let cancelled = false;
+    let latestRequest = 0;
+    const load = async (force = false) => {
+      const request = ++latestRequest;
+      setModelsRefreshing(true);
+      try {
+        const catalog = await bridge.getProviderModels({ provider, cwd, force });
+        if (!cancelled && request === latestRequest) {
+          setModelCatalog(catalog);
+          if (provider === 'claude' && catalog.commands) setSlashCommands(['btw', ...catalog.commands.filter((command) => command !== 'btw')]);
+        }
+      } catch (error) {
+        if (!cancelled && request === latestRequest) {
+          setModelCatalog((current) => ({ provider, models: current?.models ?? [], updatedAt: current?.updatedAt ?? null,
+            stale: true, error: error instanceof Error ? error.message : '模型列表更新失败' }));
+        }
+      } finally {
+        if (!cancelled && request === latestRequest) setModelsRefreshing(false);
+      }
+    };
+    refreshModelsRef.current = () => void load(true);
+    void load(true);
+    const timer = setInterval(() => void load(true), 15 * 60 * 1000);
+    const focus = () => void load();
+    window.addEventListener('focus', focus);
+    return () => { cancelled = true; clearInterval(timer); window.removeEventListener('focus', focus); };
+  }, [selectedSession?.provider, selectedSession?.workspace, selectedSession?.sessionKind]);
+  useEffect(() => {
+    if (selectedSession && effortSessionRef.current !== selectedSession.id) {
+      effortSessionRef.current = selectedSession.id;
+      setEffort(sessionInteractions.get(selectedSession.id)?.runtime?.appliedEffort ?? 'default');
+    }
+  }, [selectedSession?.id]);
+  useEffect(() => {
+    if (!modelCatalog || modelCatalog.provider !== selectedSession?.provider) return;
+    const capabilities = modelCatalog.models.find((entry) => entry.id === model || entry.aliases?.includes(model));
+    if (!capabilities) return;
+    const options = modelEffortOptions(capabilities);
+    if (!options.includes(effort)) setEffort('default');
+  }, [modelCatalog, model, effort, selectedSession?.provider]);
   const draft = selectedSession ? draftsBySessionId[selectedSession.id] ?? '' : '';
   const setSessionDraft = useCallback((sessionId: string, value: string) => {
     setDraftsBySessionId((current) => setSessionDraftValue(current, sessionId, value));
@@ -1346,19 +1401,28 @@ export default function App() {
       return;
     }
 
+    const selectionSource = modelSelectionSessionRef.current === selectedSession.id ? modelSelectionSource : 'implicit';
+    modelSelectionSessionRef.current = selectedSession.id;
     setModel((current) => {
       const next = syncModelSelectionForSession(
         current,
-        modelSelectionSource,
+        selectionSource,
         selectedSession.model,
         selectedSession.provider,
+        modelCatalog && modelCatalog.provider === selectedSession.provider && modelCatalog.models.length > 0
+          ? modelCatalog.models.map((entry) => entry.id)
+          : undefined,
       );
       if (next.source !== modelSelectionSource) {
         setModelSelectionSource(next.source);
       }
       return next.model;
     });
+  }, [selectedSession?.id, selectedSession?.model, selectedSession?.provider, modelCatalog]);
 
+  useEffect(() => {
+    if (!selectedSession) return;
+    let cancelled = false;
     setGitSnapshot({
       ...selectedSession.branchSnapshot,
       source: 'mock',
@@ -1366,13 +1430,14 @@ export default function App() {
 
     const loadGitSnapshot = async () => {
       const liveSnapshot = await bridge.getGitSnapshot(selectedSession.workspace);
-      if (liveSnapshot) {
+      if (liveSnapshot && !cancelled) {
         setGitSnapshot(liveSnapshot);
       }
     };
 
     void loadGitSnapshot().catch(() => undefined);
-  }, [selectedSession]);
+    return () => { cancelled = true; };
+  }, [selectedSession?.id, selectedSession?.workspace, selectedSession?.branchSnapshot]);
 
   useEffect(() => {
     if (!selectedSession) {
@@ -1404,7 +1469,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [model, modelSelectionSource, selectedSession]);
+  }, [model, modelSelectionSource, selectedSession?.workspace, selectedSession?.provider, selectedSession?.sessionKind]);
 
   useEffect(() => {
     attachmentsRef.current = attachments;
@@ -2496,6 +2561,9 @@ export default function App() {
                 draft={draft}
                 tokenUsage={selectedSession.tokenUsage}
                 sessionModel={selectedSession.model}
+                modelCatalog={modelCatalog?.provider === selectedProvider ? modelCatalog : null}
+                modelsRefreshing={modelsRefreshing}
+                onRefreshModels={() => refreshModelsRef.current()}
                 contextReferences={displayContextReferences}
                 slashCommands={slashCommands}
                 mentionOptions={groupMentionOptions}
@@ -2521,7 +2589,7 @@ export default function App() {
                 onEffortChange={(value) => {
                   setEffort(value);
                   setComposerNotice(
-                    `Thinking changed to ${value}. Claude effort takes effect after the session restarts.`,
+                    `Thinking changed to ${value}. It takes effect on the next turn.`,
                   );
                 }}
                 onUpdateContextReferenceMode={(referenceId, mode) => {

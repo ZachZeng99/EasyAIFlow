@@ -959,7 +959,7 @@ export const switchCodexSessionModel = async (payload: {
 export const switchCodexSessionEffort = async (_payload: {
   sessionId: string;
   session?: SessionSummary;
-  effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  effort: string;
 }) => ({
   projects: await getProjects(),
 });

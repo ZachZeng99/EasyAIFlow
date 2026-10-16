@@ -11,7 +11,7 @@ contextBridge.exposeInMainWorld('easyAIFlow', {
     cwd: string;
     prompt: string;
     model?: string;
-    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    effort?: string;
     baseClaudeSessionId?: string;
   }) => ipcRenderer.invoke('claude:btw-message', payload),
   discardBtwSession: (payload: { cwd: string; claudeSessionId?: string }) => ipcRenderer.invoke('claude:btw-discard', payload),
@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('easyAIFlow', {
   getSessionHistoryRevision: (payload: { sessionId: string }) =>
     ipcRenderer.invoke('sessions:get-native-history-revision', payload),
   getOperationStatus: (payload: { operationId: string }) => ipcRenderer.invoke('device:operation-status', payload),
+  getProviderModels: (payload: { provider: import('../src/data/types.js').SessionProvider; cwd: string; force?: boolean }) => ipcRenderer.invoke('device:provider-models', payload),
   getSessionMessagePage: (payload: { sessionId: string; before?: string }) =>
     ipcRenderer.invoke('sessions:get-message-page', payload),
   grantPathPermission: (payload: { projectRoot: string; targetPath: string }) =>
@@ -84,20 +85,20 @@ contextBridge.exposeInMainWorld('easyAIFlow', {
     session?: import('../src/data/types.js').SessionSummary;
     references?: import('../src/data/types.js').ContextReference[];
     model?: string;
-    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    effort?: string;
   }) =>
     ipcRenderer.invoke('claude:send-message', payload),
   switchModel: (payload: {
     sessionId: string;
     session?: import('../src/data/types.js').SessionSummary;
     model: string;
-    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    effort?: string;
   }) =>
     ipcRenderer.invoke('claude:switch-model', payload),
   switchEffort: (payload: {
     sessionId: string;
     session?: import('../src/data/types.js').SessionSummary;
-    effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    effort: string;
   }) =>
     ipcRenderer.invoke('claude:switch-effort', payload),
   stopSessionRun: (payload: { sessionId: string }) => ipcRenderer.invoke('claude:stop-session', payload),

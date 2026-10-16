@@ -680,7 +680,7 @@ await run('native Claude import reconnects a model-switched session whose cwd mo
 
     assert.equal(session?.claudeSessionId, 'new-native');
     assert.equal(fullSession?.workspace, projectRoot);
-    assert.equal(fullSession?.model, 'fable');
+    assert.equal(fullSession?.model, 'claude-fable-5');
     assert.equal(session?.messagesLoaded, false);
     assert.deepEqual(session?.messages, []);
     assert.equal(fullSession?.messages.at(-1)?.content, '下午 fable 分析完成。');
@@ -872,7 +872,7 @@ await run('native Claude import scans nested cwd project directories for matchin
 
     assert.equal(session?.claudeSessionId, 'new-native');
     assert.equal(session?.title, 'FogBlink');
-    assert.equal(fullSession?.model, 'fable');
+    assert.equal(fullSession?.model, 'claude-fable-5');
     assert.equal(session?.messagesLoaded, false);
     assert.deepEqual(session?.messages, []);
     assert.equal(fullSession?.messages.at(-1)?.content, '还缺一次完整构建验证。');

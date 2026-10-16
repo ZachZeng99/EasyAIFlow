@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { DeviceServiceClient } from '../backend/deviceServiceClient.ts';
-import { CodexAppServerClient } from '../backend/codexAppServer.ts';
+import type { ProviderModelCatalog } from '../src/data/providerModels.ts';
 import type { ProjectCreateResult, SessionCreateResult, SessionRecord } from '../src/data/types.ts';
 
 await mkdir('.tmp-tests', { recursive: true });
@@ -20,14 +20,11 @@ console.log(`Smoke artifacts: ${root}`);
 let client = new DeviceServiceClient(options);
 const sessions: string[] = [];
 try {
-  const catalog = await CodexAppServerClient.create(workspace);
-  let codexModel: string;
-  try {
-    const result = await catalog.request<{ data: Array<{ id: string; model?: string; isDefault?: boolean }> }>('model/list', { limit: 100 });
-    const selected = result.data.find((item) => item.isDefault) ?? result.data[0];
-    if (!selected) throw new Error('Codex returned no models.');
-    codexModel = selected.model ?? selected.id;
-  } finally { await catalog.close(); }
+  const claudeCatalog = await client.request<ProviderModelCatalog>('getProviderModels', { provider: 'claude', cwd: workspace, force: true });
+  const codexCatalog = await client.request<ProviderModelCatalog>('getProviderModels', { provider: 'codex', cwd: workspace, force: true });
+  const claudeModel = claudeCatalog.models.find((model) => model.aliases?.includes('sonnet'))?.id;
+  const codexModel = codexCatalog.models.find((model) => model.isDefault)?.id;
+  assert.ok(claudeModel && codexModel, 'Both providers must expose usable runtime model catalogs');
   const project = await client.request<ProjectCreateResult>('createProject', { rootPath: workspace, name: 'EAF v2 smoke' });
   const originalStatus = await client.request<{ instanceId: string }>('getDeviceStatus');
   for (const provider of ['claude', 'codex'] as const) {
@@ -37,7 +34,7 @@ try {
     sessions.push(created.session.id);
     const request = { sessionId: created.session.id,
       prompt: 'This is an EasyAIFlow integration smoke test. Do not run tools or edit files. Reply with exactly EAF_SYNC_OK.',
-      model: provider === 'codex' ? codexModel : 'sonnet', effort: 'low',
+      model: provider === 'codex' ? codexModel : claudeModel, effort: 'default',
     };
     const queued = await client.request<{ queued: { assistantMessageId: string } }>('sendMessage', request, `smoke-${provider}`);
     client.close();

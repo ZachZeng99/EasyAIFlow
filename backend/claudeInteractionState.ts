@@ -67,7 +67,7 @@ export type ClaudeRunState = ClaudeRunStateCompletion & {
 
 export type ClaudePrintOptions = {
   model?: string;
-  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  effort?: string;
   references?: ContextReference[];
 };
 

@@ -2,6 +2,8 @@
 
 Independent service and operation ledger are implemented and verified. Electron and Web now share the same authenticated local service, detached from client lifetime. Duplicate operations coalesce and replay persisted results with fresh catalog state. Native-history ownership regression is fixed and committed as `996e316`. Real Claude/Codex, Electron Node-mode service startup, local HTTP gateway restart and related regression tests passed. Work continues on model discovery and remaining P0 interaction cases.
 
+Model catalog checkpoint verified: dynamic provider catalogs, scoped disk caches, auto/manual refresh, recommended new-session models, exact-ID preservation and runtime reasoning levels are implemented. Claude command discovery uses initialize metadata. Model/cache/UI/import tests, real discovered-model smoke, and frontend/Electron/server builds passed. Continuing group/interaction verification without ending at this checkpoint.
+
 P0 message synchronization implemented. Reused V2 persistence revisions for committed messages in IPC/SSE, revision-based snapshots, duplicate/gap handling and reconnect recovery. Persisted Codex streaming text and traces. Added 17 regressions including real local HTTP/SSE transport; related store, frontend, group and Codex regressions pass. Type checks and Web production build pass. Broader P0 remains open; see `docs/v2/p0-progress.md`.
 
 ---

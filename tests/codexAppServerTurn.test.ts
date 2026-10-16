@@ -758,7 +758,7 @@ await run('runCodexAppServerTurn names the native thread after the current sessi
       assert.equal(createCount, 1);
       assert.equal(managerAcquireCount, 0);
       assert.equal(closeCount, 1);
-      assert.equal(turnStarts[0]?.effort, 'xhigh');
+      assert.equal(turnStarts[0]?.effort, 'max');
       assert.equal(updatedIndex.id, 'thread-new');
       assert.equal(updatedIndex.thread_name, sessionTitle);
     } finally {

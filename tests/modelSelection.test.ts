@@ -28,7 +28,7 @@ run('resolveRequestedModelArg keeps model when selection is explicit', () => {
 
 run('syncImplicitModelSelection follows session model when selection is not explicit', () => {
   const result = syncImplicitModelSelection('opus[1m]', 'implicit', 'claude-sonnet-4-6');
-  assert.deepEqual(result, { model: 'sonnet', source: 'implicit' });
+  assert.deepEqual(result, { model: 'claude-sonnet-4-6', source: 'implicit' });
 });
 
 run('syncImplicitModelSelection preserves user choice when selection is explicit', () => {
@@ -36,11 +36,11 @@ run('syncImplicitModelSelection preserves user choice when selection is explicit
   assert.deepEqual(result, { model: 'sonnet', source: 'explicit' });
 });
 
-run('normalizeModelSelectionValue maps native model names back to 1m aliases for UI controls', () => {
-  assert.equal(normalizeModelSelectionValue('claude-sonnet-4-6'), 'sonnet');
-  assert.equal(normalizeModelSelectionValue('claude-opus-4-8'), 'opus[1m]');
+run('normalizeModelSelectionValue preserves native model IDs for UI controls', () => {
+  assert.equal(normalizeModelSelectionValue('claude-sonnet-4-6'), 'claude-sonnet-4-6');
+  assert.equal(normalizeModelSelectionValue('claude-opus-4-8'), 'claude-opus-4-8');
   assert.equal(normalizeModelSelectionValue('claude'), 'fable');
-  assert.equal(normalizeModelSelectionValue('claude-fable'), 'fable');
+  assert.equal(normalizeModelSelectionValue('claude-fable'), 'claude-fable');
 });
 
 run('getKnownModelContextWindow treats fable as a million-token Claude model', () => {
@@ -67,7 +67,7 @@ run('shouldSwitchSessionModel requires a persisted Claude session and a real mod
   );
   assert.equal(
     shouldSwitchSessionModel('sonnet', 'claude-sonnet-4-6', 'session-123', 'continue this task'),
-    false,
+    true,
   );
   assert.equal(
     shouldSwitchSessionModel('opus[1m]', 'claude-sonnet-4-6', undefined, 'continue this task'),

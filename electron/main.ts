@@ -108,6 +108,7 @@ app.whenReady().then(async () => {
     'claude:stop-session': 'stopSessionRun',
     'claude:disconnect-session': 'disconnectSession',
     'device:operation-status': 'getOperationStatus',
+    'device:provider-models': 'getProviderModels',
   };
   for (const [channel, method] of Object.entries(channels)) {
     ipcMain.handle(channel, (_event, payload?: { operationId?: string }) => device!.request(method, payload, payload?.operationId));

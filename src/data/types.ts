@@ -93,7 +93,8 @@ export type SessionRuntimePhase =
   | 'idle'
   | 'terminating';
 
-export type SessionEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+/** Runtime-advertised effort names; "default" lets the provider choose. */
+export type SessionEffort = string;
 
 export type SessionRuntimeState = {
   processActive: boolean;
