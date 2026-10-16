@@ -20,8 +20,11 @@
     "build:web": "npm run check && vite build && npm run build:server",
     "build:server": "tsc -p tsconfig.server.json",
     "check": "tsc -b",
+    "service:status": "tsx scripts/device-service.ts status",
+    "service:stop": "tsx scripts/device-service.ts stop",
+    "smoke:providers": "tsx scripts/smoke-device-providers.ts",
     "preview": "vite preview",
-    "start:web": "node dist-server/server.js",
+    "start:web": "node dist-server/server/server.js",
     "package:win": "npm run build && electron-builder --win nsis"
   },
   "dependencies": {

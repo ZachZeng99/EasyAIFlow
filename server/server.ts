@@ -4,377 +4,19 @@ import { readFile, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { gzipSync } from 'node:zlib';
-import { stopAllCodexRuns } from '../backend/codexInteraction.js';
-import {
-  configureRuntimePaths,
-  getRuntimePaths,
-  resolveDefaultWebUserDataPath,
-} from '../backend/runtimePaths.js';
-import type { ClaudeInteractionContext } from '../backend/claudeInteractionContext.js';
-import { createClaudeInteractionState } from '../backend/claudeInteractionState.js';
-import { getGitSnapshot } from '../backend/claudeHelpers.js';
-import {
-  getSessionInteractionSnapshots,
-  grantPathPermission,
-  getConfiguredClaudeModel,
-} from '../backend/claudeInteraction.js';
-import {
-  handleRespondToPermission,
-  handleRespondToAskUserQuestion,
-  handleRespondToPlanMode,
-  handleStopSession,
-  handleDisconnectSession,
-  handleSendMessage,
-  handleSwitchEffort,
-  handleSwitchModel,
-  handleBtwMessage,
-  handleBtwDiscard,
-  handleGetSlashCommands,
-  handleBootstrapSessions,
-  handleCloseProject,
-  handleDeleteStreamwork,
-  handleDeleteSession,
-} from '../backend/claudeRpcOperations.js';
-import { getCodexAppServerInteractionSnapshots } from '../backend/codexAppServerTurn.js';
-import { writeTextToSystemClipboard } from '../backend/systemClipboard.js';
-import {
-  createProject,
-  createSession,
-  createSessionInStreamwork,
-  createStreamwork,
-  getNativeSessionHistoryRevision,
-  getSessionMessagePage,
-  getSessionRecordForBootstrap,
-  renameEntity,
-  reorderStreamworks,
-  setSessionPinned,
-  updateSessionContextReferences,
-  flushPendingSave,
-} from '../electron/sessionStore.js';
-import { getFileDiff } from '../electron/fileDiff.js';
-import type {
-  ClaudeStreamEvent,
-  ContextReference,
-  PendingAttachment,
-  ProjectRecord,
-  SessionRecord,
-  SessionSummary,
-} from '../src/data/types.js';
-import type { PlanModeResponsePayload } from '../src/data/planMode.js';
+import { DeviceServiceClient } from '../backend/deviceServiceClient.js';
+import { resolveDefaultWebUserDataPath } from '../backend/runtimePaths.js';
 import { createSseClientRegistry } from './sseClients.js';
-import { onSessionMessagesCommitted } from '../backend/sessionMessageEvents.js';
-import { startMemoryDiagnostics } from '../backend/memoryDiagnostics.js';
+import type { ClaudeStreamEvent } from '../src/data/types.js';
+import { isUiRpcMethod } from '../src/data/rpcOperations.js';
 
-// ---------------------------------------------------------------------------
-// Runtime paths configuration
-// ---------------------------------------------------------------------------
-
-configureRuntimePaths({
-  mode: 'web',
-  userDataPath: resolveDefaultWebUserDataPath({
-    pathExists: (candidate) => existsSync(candidate),
-  }),
-  homePath: process.env.USERPROFILE ?? os.homedir(),
+const device = new DeviceServiceClient({
+  dataDirectory: resolveDefaultWebUserDataPath({ pathExists: existsSync, env: process.env }),
+  homeDirectory: process.env.EASYAIFLOW_HOME_DIR || process.env.USERPROFILE || os.homedir(),
 });
-
-// ---------------------------------------------------------------------------
-// SSE event clients
-// ---------------------------------------------------------------------------
-
 const eventClients = createSseClientRegistry();
-onSessionMessagesCommitted((event) => eventClients.broadcastEvent(event));
-
-const ctx: ClaudeInteractionContext = {
-  broadcastEvent: (event: ClaudeStreamEvent) => {
-    eventClients.broadcastEvent(event);
-  },
-  attachmentRoot: () => path.join(getRuntimePaths().userDataPath, 'attachments'),
-  claudeSettingsPath: () => path.join(getRuntimePaths().homePath, '.claude', 'settings.json'),
-  homePath: () => getRuntimePaths().homePath,
-};
-
-const state = createClaudeInteractionState();
-
-const writeSseEvent = (
-  client: ServerResponse<IncomingMessage>,
-  event: ClaudeStreamEvent,
-) => {
-  eventClients.writeEvent(client, event);
-};
-
-const replayInteractionSnapshots = (client: ServerResponse<IncomingMessage>) => {
-  const interactions = {
-    ...getSessionInteractionSnapshots(state),
-    ...getCodexAppServerInteractionSnapshots(),
-  };
-
-  Object.entries(interactions).forEach(([sessionId, interaction]) => {
-    interaction.runtime &&
-      writeSseEvent(client, {
-        type: 'runtime-state',
-        sessionId,
-        runtime: interaction.runtime,
-      });
-
-    interaction.backgroundTasks?.forEach((task) => {
-      writeSseEvent(client, {
-        type: 'background-task',
-        sessionId,
-        task,
-      });
-    });
-
-    const pendingPermissions = [
-      ...(interaction.permission ? [interaction.permission] : []),
-      ...(interaction.pendingPermissions ?? []),
-    ];
-    pendingPermissions.forEach((request) => {
-      if (!request.requestId) {
-        return;
-      }
-      writeSseEvent(client, {
-        type: 'permission-request',
-        sessionId,
-        requestId: request.requestId,
-        toolName: 'Permission Request',
-        targetPath: request.path,
-        sensitive: request.sensitive,
-      });
-    });
-
-    interaction.askUserQuestion &&
-      writeSseEvent(client, {
-        type: 'ask-user-question',
-        sessionId,
-        toolUseId: interaction.askUserQuestion.toolUseId,
-        questions: interaction.askUserQuestion.questions,
-      });
-
-    interaction.planModeRequest &&
-      writeSseEvent(client, {
-        type: 'plan-mode-request',
-        sessionId,
-        request: interaction.planModeRequest.request,
-      });
-  });
-};
-
-// ---------------------------------------------------------------------------
-// RPC handlers
-// ---------------------------------------------------------------------------
-
-const deriveProjectNameFromPath = (rootPath: string) => {
-  const parts = rootPath.split(/[\\/]/).filter(Boolean);
-  return parts[parts.length - 1] ?? 'Project';
-};
-
-const summarizeProjectsForWebBootstrap = (projects: ProjectRecord[]) => {
-  let includedInitialVisibleSession = false;
-
-  return projects.map((project) => ({
-    ...project,
-    dreams: project.dreams.map((dream) => ({
-      ...dream,
-      sessions: dream.sessions.map((session) => {
-        const current = session as SessionRecord;
-        const isVisible = !current.hidden;
-        const shouldIncludeMessages =
-          isVisible &&
-          current.messagesLoaded !== false &&
-          !includedInitialVisibleSession;
-
-        if (shouldIncludeMessages) {
-          includedInitialVisibleSession = true;
-        }
-
-        return {
-          ...current,
-          messages: shouldIncludeMessages ? (current.messages ?? []) : [],
-          messagesLoaded: shouldIncludeMessages,
-        };
-      }),
-    })),
-  }));
-};
-
-const summarizeProjectsInResult = <T extends { projects: ProjectRecord[] }>(result: T): T => ({
-  ...result,
-  projects: summarizeProjectsForWebBootstrap(result.projects),
-});
-
-const rpcHandlers = {
-  'clipboard:write-text': async (payload: { value: string }) => {
-    await writeTextToSystemClipboard(payload.value);
-    return null;
-  },
-  getAppMeta: async () => ({
-    name: 'EasyAIFlow Web',
-    version: 'web',
-    platform: 'web',
-    defaultModel: await getConfiguredClaudeModel(ctx),
-  }),
-  getProjects: async () => {
-    const bootstrap = await handleBootstrapSessions(state, { bootstrapProjects: true });
-    return {
-      ...bootstrap,
-      projects: summarizeProjectsForWebBootstrap(bootstrap.projects),
-    };
-  },
-  getSessionRecord: async (payload: { sessionId: string }) => {
-    const session = await getSessionRecordForBootstrap(payload.sessionId, {
-      finalizeTrailingUserTurn: !state.residentSessions.has(payload.sessionId),
-      finalizeTrailingToolTurn: !state.residentSessions.has(payload.sessionId),
-    });
-    if (!session) {
-      throw new Error('Session not found.');
-    }
-
-    return {
-      ...session,
-      messagesLoaded: true,
-    };
-  },
-  getSessionHistoryRevision: async (payload: { sessionId: string }) =>
-    getNativeSessionHistoryRevision(payload.sessionId),
-  getSessionMessagePage: async (payload: { sessionId: string; before?: string }) =>
-    getSessionMessagePage(payload.sessionId, payload.before),
-  getGitSnapshot: async (payload: { cwd: string }) => getGitSnapshot(payload.cwd),
-  getSlashCommands: async (payload: { cwd: string; model?: string }) =>
-    handleGetSlashCommands(ctx, state, payload),
-  sendBtwMessage: async (payload: {
-    sessionId?: string;
-    cwd: string;
-    prompt: string;
-    model?: string;
-    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-    baseClaudeSessionId?: string;
-  }) => handleBtwMessage(ctx, state, payload),
-  discardBtwSession: async (payload: { cwd: string; claudeSessionId?: string }) => {
-    await handleBtwDiscard(ctx, state, payload);
-    return null;
-  },
-  getFileDiff: async (payload: { cwd: string; filePath: string }) => getFileDiff(payload.cwd, payload.filePath),
-  grantPathPermission: async (payload: { projectRoot: string; targetPath: string }) => {
-    await grantPathPermission(ctx, payload.projectRoot, payload.targetPath);
-    return null;
-  },
-  respondToPermissionRequest: async (payload: { requestId: string; behavior: 'allow' | 'deny' }) =>
-    handleRespondToPermission(ctx, state, payload),
-  respondToPlanModeRequest: async (payload: {
-    requestId: string;
-    behavior: 'allow' | 'deny';
-    choice?: 'clear-auto' | 'auto' | 'manual' | 'revise';
-    notes?: string;
-  }) => {
-    const pending = state.pendingPlanModeRequests.get(payload.requestId);
-    if (!pending) {
-      return { mode: 'missing' as const };
-    }
-
-    const toolUseId = pending.request.toolUseId;
-    const mode: PlanModeResponsePayload['mode'] = payload.behavior === 'allow'
-      ? (payload.choice === 'manual' ? 'approve_manual' : 'approve_accept_edits')
-      : 'revise';
-    return handleRespondToPlanMode(ctx, state, {
-      toolUseId,
-      mode,
-      notes: payload.notes,
-    });
-  },
-  respondToAskUserQuestion: async (payload: {
-    toolUseId: string;
-    answers: Record<string, string>;
-    annotations?: Record<string, { notes?: string }>;
-  }) => handleRespondToAskUserQuestion(ctx, state, payload),
-  respondToPlanMode: async (payload: {
-    toolUseId: string;
-    mode: PlanModeResponsePayload['mode'];
-    selectedPromptIndex?: number;
-    notes?: string;
-  }) => handleRespondToPlanMode(ctx, state, payload),
-  createProject: async (payload: { name?: string; rootPath: string }) =>
-    summarizeProjectsInResult(
-      await createProject(payload.name?.trim() || deriveProjectNameFromPath(payload.rootPath), payload.rootPath),
-    ),
-  closeProject: async (payload: { projectId: string }) =>
-    summarizeProjectsInResult(await handleCloseProject(ctx, state, payload)),
-  createStreamwork: async (payload: { projectId: string; name: string }) =>
-    summarizeProjectsInResult(await createStreamwork(payload.projectId, payload.name)),
-  deleteStreamwork: async (payload: { streamworkId: string }) =>
-    summarizeProjectsInResult(await handleDeleteStreamwork(ctx, state, payload)),
-  reorderStreamworks: async (payload: { projectId: string; sourceId: string; targetId: string }) =>
-    summarizeProjectsInResult(
-      await reorderStreamworks(payload.projectId, payload.sourceId, payload.targetId),
-    ),
-  createSession: async (payload?: {
-    sourceSessionId?: string;
-    includeStreamworkSummary?: boolean;
-    provider?: import('../src/data/types.js').SessionProvider;
-    sessionKind?: import('../src/data/types.js').SessionKind;
-  }) =>
-    summarizeProjectsInResult(
-      await createSession(
-        payload?.sourceSessionId,
-        Boolean(payload?.includeStreamworkSummary),
-        payload?.provider,
-        payload?.sessionKind,
-      ),
-    ),
-  createSessionInStreamwork: async (payload: {
-    streamworkId: string;
-    name?: string;
-    includeStreamworkSummary?: boolean;
-    provider?: import('../src/data/types.js').SessionProvider;
-    sessionKind?: import('../src/data/types.js').SessionKind;
-  }) =>
-    summarizeProjectsInResult(
-      await createSessionInStreamwork(
-        payload.streamworkId,
-        payload.name,
-        Boolean(payload.includeStreamworkSummary),
-        payload.provider,
-        payload.sessionKind,
-      ),
-    ),
-  deleteSession: async (payload: { sessionId: string }) =>
-    summarizeProjectsInResult(await handleDeleteSession(ctx, state, payload)),
-  setSessionPinned: async (payload: { sessionId: string; pinned: boolean }) =>
-    summarizeProjectsInResult(await setSessionPinned(payload.sessionId, payload.pinned)),
-  updateSessionContextReferences: async (payload: { sessionId: string; references: ContextReference[] }) =>
-    summarizeProjectsInResult(await updateSessionContextReferences(payload.sessionId, payload.references)),
-  renameEntity: async (payload: { kind: 'project' | 'streamwork' | 'session'; id: string; name: string }) =>
-    summarizeProjectsInResult(await renameEntity(payload.kind, payload.id, payload.name)),
-  sendMessage: async (payload: {
-    sessionId: string;
-    prompt: string;
-    attachments?: PendingAttachment[];
-    session?: SessionSummary;
-    references?: ContextReference[];
-    model?: string;
-    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-  }) => handleSendMessage(ctx, state, payload),
-  switchModel: async (payload: {
-    sessionId: string;
-    session?: SessionSummary;
-    model: string;
-    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-  }) => handleSwitchModel(ctx, state, payload),
-  switchEffort: async (payload: {
-    sessionId: string;
-    session?: SessionSummary;
-    effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-  }) => handleSwitchEffort(ctx, state, payload),
-  stopSessionRun: async (payload: { sessionId: string }) =>
-    handleStopSession(ctx, state, payload),
-  disconnectSession: async (payload: { sessionId: string }) =>
-    handleDisconnectSession(ctx, state, payload),
-} as const;
-
-type RpcMethod = keyof typeof rpcHandlers;
-
-// ---------------------------------------------------------------------------
-// HTTP helpers
-// ---------------------------------------------------------------------------
+device.onEvent((event) => eventClients.broadcastEvent(event));
+await device.connect();
 
 const parseJsonBody = async (request: IncomingMessage) => {
   const chunks: Buffer[] = [];
@@ -387,7 +29,8 @@ const parseJsonBody = async (request: IncomingMessage) => {
   }
 
   return JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
-    method?: RpcMethod;
+    method?: string;
+    operationId?: string;
     payload?: unknown;
   };
 };
@@ -477,7 +120,7 @@ const serveStatic = async (
 ) => {
   const sanitizedPath = requestPath === '/' ? '/index.html' : requestPath;
   const targetPath = path.resolve(staticRoot, `.${sanitizedPath}`);
-  const isInsideDist = targetPath.startsWith(staticRoot);
+  const isInsideDist = targetPath.startsWith(`${staticRoot}${path.sep}`);
 
   if (isInsideDist) {
     try {
@@ -510,107 +153,60 @@ const serveStatic = async (
   }
 };
 
-// ---------------------------------------------------------------------------
-// HTTP server
-// ---------------------------------------------------------------------------
 
 const host = process.env.HOST ?? '0.0.0.0';
 const port = Number(process.env.PORT ?? process.env.EASYAIFLOW_WEB_SERVER_PORT ?? 8887);
-
-createServer(async (request, response) => {
+const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? `localhost:${port}`}`);
-
+  if (request.headers.origin) {
+    let allowed = false;
+    try { allowed = new URL(request.headers.origin).host === request.headers.host; } catch { /* Invalid origin. */ }
+    if (!allowed) { respondJson(request, response, 403, { error: 'Cross-origin access is not allowed.' }); return; }
+  }
   if (request.method === 'OPTIONS') {
-    response.writeHead(204, {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Headers': 'Content-Type',
-      'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-      'Cache-Control': 'no-store',
-    });
+    response.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS' });
     response.end();
     return;
   }
-
   if (request.method === 'GET' && url.pathname === '/api/events') {
-    response.writeHead(200, {
-      'Content-Type': 'text/event-stream; charset=utf-8',
-      'Cache-Control': 'no-cache, no-transform',
-      Connection: 'keep-alive',
-      'Access-Control-Allow-Origin': '*',
-    });
+    response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'Access-Control-Allow-Origin': '*' });
     eventClients.add(response);
-    if (!eventClients.writeComment(response, 'connected')) {
-      return;
-    }
-    replayInteractionSnapshots(response);
-    if (!eventClients.has(response)) {
-      return;
-    }
-    const heartbeat = setInterval(() => {
-      if (!eventClients.writeComment(response, 'heartbeat')) {
-        clearInterval(heartbeat);
-      }
-    }, 15_000);
-
-    const cleanup = () => {
-      clearInterval(heartbeat);
-      eventClients.remove(response);
-    };
-    request.on('close', cleanup);
-    response.on('close', cleanup);
-    response.on('error', cleanup);
+    eventClients.writeComment(response, 'connected');
+    const heartbeat = setInterval(() => eventClients.writeComment(response, 'heartbeat'), 15000);
+    response.on('close', () => { clearInterval(heartbeat); eventClients.remove(response); });
+    response.on('error', () => { clearInterval(heartbeat); eventClients.remove(response); });
+    try {
+      const events = await device.request<ClaudeStreamEvent[]>('getInteractionEvents');
+      for (const event of events) eventClients.writeEvent(response, event);
+    } catch { response.end(); }
     return;
   }
-
   if (request.method === 'POST' && url.pathname === '/api/rpc') {
     try {
       const parsed = await parseJsonBody(request);
-      const method = parsed?.method;
-      if (!method || !(method in rpcHandlers)) {
-        respondJson(request, response, 400, { error: 'Unknown RPC method.' });
+      if (!parsed || typeof parsed.method !== 'string' || !isUiRpcMethod(parsed.method)) {
+        respondJson(request, response, 400, { error: 'RPC method is required.' });
         return;
       }
-
-      const handler = rpcHandlers[method];
-      const result = await handler(parsed?.payload as never);
+      const result = await device.request(parsed.method, parsed.payload, parsed.operationId);
       respondJson(request, response, 200, result);
     } catch (error) {
-      respondJson(request, response, 500, {
-        error: error instanceof Error ? error.message : 'Internal server error.',
-      });
+      const detail = error as { code?: string; operationId?: string };
+      respondJson(request, response, 500, { error: error instanceof Error ? error.message : 'Internal server error.', code: detail.code, operationId: detail.operationId });
     }
     return;
   }
-
   await serveStatic(request, url.pathname, response);
 }).listen(port, host, () => {
-  console.log(`EasyAIFlow web server listening on http://${host}:${port}`);
+  const address = server.address();
+  console.log(`EasyAIFlow web client: http://${host}:${address && typeof address === 'object' ? address.port : port} (device service runs independently)`);
 });
 
-// Heap/structure diagnostics. Disable with EASYAIFLOW_MEM_DIAG=0.
-if (process.env.EASYAIFLOW_MEM_DIAG !== '0') {
-  startMemoryDiagnostics({
-    state,
-    sseClientCount: () => eventClients.size,
-  });
-}
-
-const killActiveRuns = () => {
-  stopAllCodexRuns();
-  state.activeRuns.forEach((run) => {
-    if (!run.child.killed) {
-      run.child.kill();
-    }
-  });
+// Closing this UI gateway leaves the device service and its tasks running.
+const close = () => {
+  device.close();
+  server.closeAllConnections();
+  server.close(() => process.exit(0));
 };
-
-process.on('SIGINT', () => {
-  void flushPendingSave();
-  killActiveRuns();
-  process.exit(0);
-});
-process.on('SIGTERM', () => {
-  void flushPendingSave();
-  killActiveRuns();
-  process.exit(0);
-});
+process.on('SIGINT', close);
+process.on('SIGTERM', close);

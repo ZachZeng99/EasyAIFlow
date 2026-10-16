@@ -1,122 +1,12 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { stopAllCodexRuns } from '../backend/codexInteraction.js';
-import { configureRuntimePaths } from '../backend/runtimePaths.js';
-import { onSessionMessagesCommitted } from '../backend/sessionMessageEvents.js';
-import type { ClaudeInteractionContext } from '../backend/claudeInteractionContext.js';
-import { createClaudeInteractionState } from '../backend/claudeInteractionState.js';
-import { getGitSnapshot } from '../backend/claudeHelpers.js';
-import {
-  grantPathPermission,
-  getConfiguredClaudeModel,
-} from '../backend/claudeInteraction.js';
-import {
-  handleRespondToPermission,
-  handleRespondToAskUserQuestion,
-  handleRespondToPlanMode,
-  handleStopSession,
-  handleDisconnectSession,
-  handleSendMessage,
-  handleSwitchEffort,
-  handleSwitchModel,
-  handleBtwMessage,
-  handleBtwDiscard,
-  handleGetAppMeta,
-  handleBootstrapSessions,
-  handleGetSlashCommands,
-  handleCloseProject,
-  handleDeleteStreamwork,
-  handleDeleteSession,
-} from '../backend/claudeRpcOperations.js';
-import {
-  createProject,
-  createSession,
-  createSessionInStreamwork,
-  createStreamwork,
-  getNativeSessionHistoryRevision,
-  getSessionMessagePage,
-  getSessionRecordForBootstrap,
-  renameEntity,
-  reorderStreamworks,
-  setSessionPinned,
-  updateSessionContextReferences,
-  flushPendingSave,
-} from './sessionStore.js';
-import {
-  createBeforeQuitHandler,
-  settleClaudeSessionsForShutdown,
-} from './appShutdown.js';
-import { getFileDiff } from './fileDiff.js';
+import { DeviceServiceClient } from '../backend/deviceServiceClient.js';
 import { shouldOpenExternally } from './externalNavigation.js';
-import type {
-  ClaudeStreamEvent,
-  ContextReference,
-  PendingAttachment,
-  SessionSummary,
-} from '../src/data/types.js';
-import type { PlanModeResponsePayload } from '../src/data/planMode.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const devServerUrl = 'http://127.0.0.1:4173';
-
-onSessionMessagesCommitted((event) => {
-  BrowserWindow.getAllWindows().forEach((window) => {
-    if (!window.webContents.isDestroyed()) {
-      window.webContents.send('claude:event', event);
-    }
-  });
-});
-
-const ctx: ClaudeInteractionContext = {
-  broadcastEvent: (event: ClaudeStreamEvent) => {
-    BrowserWindow.getAllWindows().forEach((window) => {
-      window.webContents.send('claude:event', event);
-    });
-  },
-  attachmentRoot: () => path.join(app.getPath('userData'), 'attachments'),
-  claudeSettingsPath: () => path.join(process.env.USERPROFILE ?? app.getPath('home'), '.claude', 'settings.json'),
-  homePath: () => process.env.USERPROFILE ?? app.getPath('home'),
-};
-
-const state = createClaudeInteractionState();
-
-const killClaudeRuns = () => {
-  const children = new Set<{
-    killed?: boolean;
-    kill: () => void;
-  }>();
-
-  state.activeRuns.forEach((run) => {
-    children.add(run.child);
-  });
-  state.residentSessions.forEach((resident) => {
-    children.add(resident.child);
-  });
-
-  children.forEach((child) => {
-    if (!child.killed) {
-      child.kill();
-    }
-  });
-};
-
-const openProjectDirectory = async () => {
-  const result = await dialog.showOpenDialog({
-    properties: ['openDirectory'],
-    title: 'Open Project Folder',
-  });
-
-  if (result.canceled || result.filePaths.length === 0) {
-    return null;
-  }
-
-  const rootPath = result.filePaths[0];
-  const name = path.basename(rootPath);
-  return createProject(name, rootPath);
-};
-
+let device: DeviceServiceClient | undefined;
 const loadDevServer = async (window: BrowserWindow, retries = 20) => {
   for (let attempt = 0; attempt < retries; attempt += 1) {
     try {
@@ -175,238 +65,73 @@ const createMainWindow = async () => {
   window.webContents.openDevTools({ mode: 'detach' });
 };
 
+
 app.whenReady().then(async () => {
-  configureRuntimePaths({
-    mode: 'desktop',
-    userDataPath: app.getPath('userData'),
-    homePath: app.getPath('home'),
+  device = new DeviceServiceClient({
+    dataDirectory: process.env.EASYAIFLOW_DATA_DIR || app.getPath('userData'),
+    homeDirectory: process.env.EASYAIFLOW_HOME_DIR || app.getPath('home'),
   });
-
-  ipcMain.handle('clipboard:write-text', async (_event, value: string) => {
-    clipboard.writeText(value);
-  });
-  ipcMain.handle('app:meta', async () => handleGetAppMeta(ctx, app.getVersion()));
-  ipcMain.handle('git:snapshot', (_event, cwd: string) => getGitSnapshot(cwd));
-  ipcMain.handle('claude:list-slash-commands', async (_event, payload: { cwd: string; model?: string }) =>
-    handleGetSlashCommands(ctx, state, payload),
-  );
-  ipcMain.handle(
-    'claude:btw-message',
-    async (
-      _event,
-      payload: {
-        sessionId?: string;
-        cwd: string;
-        prompt: string;
-        model?: string;
-        effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-        baseClaudeSessionId?: string;
-      },
-    ) => handleBtwMessage(ctx, state, payload),
-  );
-  ipcMain.handle('claude:btw-discard', async (_event, payload: { cwd: string; claudeSessionId?: string }) =>
-    handleBtwDiscard(ctx, state, payload),
-  );
-  ipcMain.handle('sessions:bootstrap', async () => handleBootstrapSessions(state));
-  ipcMain.handle('sessions:get-record', async (_event, payload: { sessionId: string }) => {
-    const session = await getSessionRecordForBootstrap(payload.sessionId, {
-      finalizeTrailingUserTurn: !state.residentSessions.has(payload.sessionId),
-      finalizeTrailingToolTurn: !state.residentSessions.has(payload.sessionId),
-    });
-    if (!session) {
-      throw new Error('Session not found.');
-    }
-    return {
-      ...session,
-      messagesLoaded: true,
-    };
-  });
-  ipcMain.handle(
-    'sessions:get-native-history-revision',
-    (_event, payload: { sessionId: string }) =>
-      getNativeSessionHistoryRevision(payload.sessionId),
-  );
-  ipcMain.handle(
-    'sessions:get-message-page',
-    (_event, payload: { sessionId: string; before?: string }) =>
-      getSessionMessagePage(payload.sessionId, payload.before),
-  );
-  ipcMain.handle(
-    'sessions:create',
-    async (
-      _event,
-      payload?: {
-        sourceSessionId?: string;
-        includeStreamworkSummary?: boolean;
-        provider?: import('../src/data/types.js').SessionProvider;
-        sessionKind?: import('../src/data/types.js').SessionKind;
-      },
-    ) =>
-      createSession(
-        payload?.sourceSessionId,
-        Boolean(payload?.includeStreamworkSummary),
-        payload?.provider,
-        payload?.sessionKind,
-      ),
-  );
-  ipcMain.handle(
-    'sessions:create-in-streamwork',
-    async (
-      _event,
-      payload: {
-        streamworkId: string;
-        name?: string;
-        includeStreamworkSummary?: boolean;
-        provider?: import('../src/data/types.js').SessionProvider;
-        sessionKind?: import('../src/data/types.js').SessionKind;
-      },
-    ) =>
-      createSessionInStreamwork(
-        payload.streamworkId,
-        payload.name,
-        Boolean(payload.includeStreamworkSummary),
-        payload.provider,
-        payload.sessionKind,
-      ),
-  );
-  ipcMain.handle('projects:create', async (_event, payload: { name: string; rootPath: string }) =>
-    createProject(payload.name, payload.rootPath),
-  );
-  ipcMain.handle('permissions:grant-path', async (_event, payload: { projectRoot: string; targetPath: string }) => {
-    await grantPathPermission(ctx, payload.projectRoot, payload.targetPath);
-  });
-  ipcMain.handle(
-    'permissions:respond',
-    async (_event, payload: { requestId: string; behavior: 'allow' | 'deny' }) =>
-      handleRespondToPermission(ctx, state, payload),
-  );
-  ipcMain.handle(
-    'ask-user-question:respond',
-    async (
-      _event,
-      payload: {
-        toolUseId: string;
-        answers: Record<string, string>;
-        annotations?: Record<string, { notes?: string }>;
-      },
-    ) => handleRespondToAskUserQuestion(ctx, state, payload),
-  );
-  ipcMain.handle(
-    'plan-mode:respond',
-    async (
-      _event,
-      payload: {
-        toolUseId: string;
-        mode: PlanModeResponsePayload['mode'];
-        selectedPromptIndex?: number;
-        notes?: string;
-      },
-    ) => handleRespondToPlanMode(ctx, state, payload),
-  );
-  ipcMain.handle('projects:open-directory', async () => openProjectDirectory());
-  ipcMain.handle('projects:close', async (_event, payload: { projectId: string }) =>
-    handleCloseProject(ctx, state, payload),
-  );
-  ipcMain.handle('streamworks:create', async (_event, payload: { projectId: string; name: string }) =>
-    createStreamwork(payload.projectId, payload.name),
-  );
-  ipcMain.handle('streamworks:delete', async (_event, payload: { streamworkId: string }) =>
-    handleDeleteStreamwork(ctx, state, payload),
-  );
-  ipcMain.handle(
-    'entities:rename',
-    async (_event, payload: { kind: 'project' | 'streamwork' | 'session'; id: string; name: string }) =>
-      renameEntity(payload.kind, payload.id, payload.name),
-  );
-  ipcMain.handle('sessions:delete', async (_event, payload: { sessionId: string }) =>
-    handleDeleteSession(ctx, state, payload),
-  );
-  ipcMain.handle(
-    'sessions:set-pinned',
-    async (_event, payload: { sessionId: string; pinned: boolean }) =>
-      setSessionPinned(payload.sessionId, payload.pinned),
-  );
-  ipcMain.handle(
-    'sessions:update-context-references',
-    async (_event, payload: { sessionId: string; references: ContextReference[] }) =>
-      updateSessionContextReferences(payload.sessionId, payload.references),
-  );
-  ipcMain.handle(
-    'streamworks:reorder',
-    async (_event, payload: { projectId: string; sourceId: string; targetId: string }) =>
-      reorderStreamworks(payload.projectId, payload.sourceId, payload.targetId),
-  );
-  ipcMain.handle('git:file-diff', async (_event, payload: { cwd: string; filePath: string }) =>
-    getFileDiff(payload.cwd, payload.filePath),
-  );
-  ipcMain.handle(
-    'claude:switch-model',
-    async (
-      _event,
-      payload: {
-        sessionId: string;
-        session?: SessionSummary;
-        model: string;
-        effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-      },
-    ) => handleSwitchModel(ctx, state, payload),
-  );
-  ipcMain.handle(
-    'claude:switch-effort',
-    async (
-      _event,
-      payload: {
-        sessionId: string;
-        session?: SessionSummary;
-        effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-      },
-    ) => handleSwitchEffort(ctx, state, payload),
-  );
-  ipcMain.handle(
-    'claude:send-message',
-    async (
-      _event,
-      payload: {
-        sessionId: string;
-        prompt: string;
-        attachments?: PendingAttachment[];
-        session?: SessionSummary;
-        references?: ContextReference[];
-        model?: string;
-        effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-      },
-    ) => handleSendMessage(ctx, state, payload),
-  );
-  ipcMain.handle('claude:stop-session', async (_event, payload: { sessionId: string }) =>
-    handleStopSession(ctx, state, payload),
-  );
-  ipcMain.handle('claude:disconnect-session', async (_event, payload: { sessionId: string }) =>
-    handleDisconnectSession(ctx, state, payload),
-  );
-
-  await createMainWindow();
-
-  app.on('activate', async () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      await createMainWindow();
+  device.onEvent((event) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.webContents.isDestroyed()) window.webContents.send('claude:event', event);
     }
   });
-});
-
-app.on(
-  'before-quit',
-  createBeforeQuitHandler({
-    prepareClaudeShutdown: () => settleClaudeSessionsForShutdown(ctx, state, { flushPendingSaveImpl: flushPendingSave }),
-    stopAllCodexRuns,
-    killClaudeRuns,
-    quit: () => {
-      app.quit();
-    },
-  }),
-);
-
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
+  await device.connect();
+  const channels: Record<string, string> = {
+    'claude:list-slash-commands': 'getSlashCommands',
+    'claude:btw-message': 'sendBtwMessage',
+    'claude:btw-discard': 'discardBtwSession',
+    'sessions:bootstrap': 'getProjects',
+    'sessions:get-record': 'getSessionRecord',
+    'sessions:get-native-history-revision': 'getSessionHistoryRevision',
+    'sessions:get-message-page': 'getSessionMessagePage',
+    'sessions:create': 'createSession',
+    'sessions:create-in-streamwork': 'createSessionInStreamwork',
+    'projects:create': 'createProject',
+    'permissions:grant-path': 'grantPathPermission',
+    'permissions:respond': 'respondToPermissionRequest',
+    'ask-user-question:respond': 'respondToAskUserQuestion',
+    'plan-mode:respond': 'respondToPlanMode',
+    'plan-mode:respond-request': 'respondToPlanModeRequest',
+    'projects:close': 'closeProject',
+    'streamworks:create': 'createStreamwork',
+    'streamworks:delete': 'deleteStreamwork',
+    'entities:rename': 'renameEntity',
+    'sessions:delete': 'deleteSession',
+    'sessions:set-pinned': 'setSessionPinned',
+    'sessions:update-context-references': 'updateSessionContextReferences',
+    'streamworks:reorder': 'reorderStreamworks',
+    'git:file-diff': 'getFileDiff',
+    'claude:switch-model': 'switchModel',
+    'claude:switch-effort': 'switchEffort',
+    'claude:send-message': 'sendMessage',
+    'claude:stop-session': 'stopSessionRun',
+    'claude:disconnect-session': 'disconnectSession',
+    'device:operation-status': 'getOperationStatus',
+  };
+  for (const [channel, method] of Object.entries(channels)) {
+    ipcMain.handle(channel, (_event, payload?: { operationId?: string }) => device!.request(method, payload, payload?.operationId));
   }
+  ipcMain.handle('clipboard:write-text', (_event, value: string) => clipboard.writeText(value));
+  ipcMain.handle('git:snapshot', (_event, cwd: string) => device!.request('getGitSnapshot', { cwd }));
+  ipcMain.handle('app:meta', async () => ({
+    ...await device!.request<Record<string, unknown>>('getAppMeta'), version: app.getVersion(), platform: process.platform,
+  }));
+  ipcMain.handle('projects:open-directory', async () => {
+    const selected = await dialog.showOpenDialog({ properties: ['openDirectory'], title: 'Open Project Folder' });
+    if (selected.canceled || !selected.filePaths[0]) return null;
+    const rootPath = selected.filePaths[0];
+    return device!.request('createProject', { rootPath, name: path.basename(rootPath) });
+  });
+  await createMainWindow();
+  app.on('activate', async () => {
+    if (BrowserWindow.getAllWindows().length === 0) await createMainWindow();
+  });
+}).catch((error) => {
+  dialog.showErrorBox('EasyAIFlow', error instanceof Error ? error.message : String(error));
+  app.quit();
 });
+
+// The daemon owns CLI processes. Quitting a client only disconnects its transport.
+app.on('before-quit', () => device?.close());
+app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

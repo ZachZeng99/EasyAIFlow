@@ -1,5 +1,15 @@
 # Current Task: EAF 2.0 P0 — Committed message synchronization
 
+## Continuing P0: Independent service and durable operations
+
+Branch: `codex/eaf-v2`. Checkpoints: `c02d008` (design), `19392d5` (message synchronization).
+
+- [x] Extract shared runtime behind an authenticated local device service.
+- [x] Route Electron and Web clients to that service; client exit does not stop it.
+- [x] Persist operation identities/results and preserve IDs across transport retries and renderer reloads.
+- [x] Verify real subprocess lifecycle, Electron executable compatibility and CLI smoke runs.
+- [x] Run integration regressions, record remaining gaps, and commit the next verified checkpoint.
+
 Approved design: `docs/superpowers/specs/2026-10-16-eaf-2.0-design.md`.
 
 - [x] Inspect persistence, native adapters, IPC/SSE and frontend merging; consult Claude reference schemas.
@@ -17,6 +27,8 @@ Use the existing V2 journal; do not introduce a competing message store. Keep le
 - New regressions first failed as expected before implementation. Two-client comparison exposed injected undefined fields in captured messages; preserve optional-property presence.
 - Codex tests initially hit ENOTEMPTY during cleanup because new streaming persistence had a pending index write. Flush the test store before deleting its verified temporary directory.
 - `git diff --no-index --check` returned the normal difference exit code for untracked files; validate their whitespace directly rather than treating that code as a source failure.
+- Live Codex smoke initially timed out: its native importer replaced EAF message IDs even though the reply had completed. Added durable runtime history ownership; both real providers now pass close/reconnect/retry smoke tests.
+- A replay test used a project creation result whose initial empty session had subsequently been removed. The service correctly rejected the removed entity; the fresh-catalog test now replays an entity that still exists.
 
 ---
 

@@ -22,6 +22,7 @@ import type {
 } from './data/types';
 import type { PlanModeResponsePayload } from './data/planMode.js';
 import type { SessionInteractionState } from './data/sessionInteraction.js';
+import { withOperationIdentity } from './data/operationIdentity.js';
 
 type RpcErrorShape = {
   error?: string;
@@ -70,6 +71,9 @@ export type EasyAIFlowBridge = {
     interactions?: Record<string, SessionInteractionState>;
   }>;
   getSessionRecord: (payload: { sessionId: string }) => Promise<SessionRecord>;
+  getOperationStatus: (payload: { operationId: string }) => Promise<{
+    id: string; method: string; status: 'started' | 'completed' | 'uncertain'; result?: unknown; error?: string;
+  } | null>;
   getSessionHistoryRevision: (payload: { sessionId: string }) => Promise<{
     revision?: string;
   }>;
@@ -186,8 +190,9 @@ const callWebRpc = async <T>(method: string, payload?: unknown): Promise<T> => {
     body: JSON.stringify({
       method,
       payload,
+      operationId: payload && typeof payload === 'object' ? (payload as { operationId?: string }).operationId : undefined,
     }),
-  });
+  }).catch(() => { throw new Error('EAF_TRANSPORT_RETRYABLE: 与执行服务的连接中断，请求将使用原操作 ID 重试。'); });
 
   if (!response.ok) {
     let message = `Request failed with status ${response.status}`;
@@ -202,7 +207,11 @@ const callWebRpc = async <T>(method: string, payload?: unknown): Promise<T> => {
     throw new Error(message);
   }
 
-  return (await response.json()) as T;
+  try {
+    return (await response.json()) as T;
+  } catch {
+    throw new Error('EAF_TRANSPORT_RETRYABLE: 响应未完整收到，请求将使用原操作 ID 重试。');
+  }
 };
 
 const writeClipboardText = async (value: string) => {
@@ -222,7 +231,7 @@ const webBridge: EasyAIFlowBridge = {
   runtime: 'web',
   writeClipboardText,
   getAppMeta: () => callWebRpc('getAppMeta'),
-  getGitSnapshot: (payload) => callWebRpc('getGitSnapshot', payload),
+  getGitSnapshot: (cwd) => callWebRpc('getGitSnapshot', { cwd }),
   getSlashCommands: (payload) => callWebRpc('getSlashCommands', payload),
   sendBtwMessage: (payload) => callWebRpc('sendBtwMessage', payload),
   discardBtwSession: (payload) => callWebRpc('discardBtwSession', payload),
@@ -230,6 +239,7 @@ const webBridge: EasyAIFlowBridge = {
   getPathForFile: () => '',
   getProjects: () => callWebRpc('getProjects'),
   getSessionRecord: (payload) => callWebRpc('getSessionRecord', payload),
+  getOperationStatus: (payload) => callWebRpc('getOperationStatus', payload),
   getSessionHistoryRevision: (payload) => callWebRpc('getSessionHistoryRevision', payload),
   getSessionMessagePage: (payload) => callWebRpc('getSessionMessagePage', payload),
   grantPathPermission: (payload) => callWebRpc('grantPathPermission', payload),
@@ -276,4 +286,4 @@ const webBridge: EasyAIFlowBridge = {
 };
 
 export const bridge: EasyAIFlowBridge =
-  typeof window !== 'undefined' && window.easyAIFlow ? window.easyAIFlow : webBridge;
+  withOperationIdentity(typeof window !== 'undefined' && window.easyAIFlow ? window.easyAIFlow : webBridge);

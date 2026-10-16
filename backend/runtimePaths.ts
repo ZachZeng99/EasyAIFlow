@@ -44,7 +44,7 @@ const resolveLegacyWebUserDataPath = ({ homePath = os.homedir() }: DefaultUserDa
   path.join(homePath, '.easyaiflow-web');
 
 export const resolveDefaultWebUserDataPath = (options: DefaultUserDataPathOptions = {}) => {
-  const override = options.env?.EASYAIFLOW_DATA_DIR?.trim();
+  const override = (options.env ?? process.env).EASYAIFLOW_DATA_DIR?.trim();
   if (override) {
     return override;
   }

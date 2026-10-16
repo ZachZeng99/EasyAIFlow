@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('easyAIFlow', {
   getSessionRecord: (payload: { sessionId: string }) => ipcRenderer.invoke('sessions:get-record', payload),
   getSessionHistoryRevision: (payload: { sessionId: string }) =>
     ipcRenderer.invoke('sessions:get-native-history-revision', payload),
+  getOperationStatus: (payload: { operationId: string }) => ipcRenderer.invoke('device:operation-status', payload),
   getSessionMessagePage: (payload: { sessionId: string; before?: string }) =>
     ipcRenderer.invoke('sessions:get-message-page', payload),
   grantPathPermission: (payload: { projectRoot: string; targetPath: string }) =>
@@ -33,7 +34,7 @@ contextBridge.exposeInMainWorld('easyAIFlow', {
     choice?: 'clear-auto' | 'auto' | 'manual' | 'revise';
     notes?: string;
   }) =>
-    ipcRenderer.invoke('plan-mode:respond', payload),
+    ipcRenderer.invoke('plan-mode:respond-request', payload),
   respondToAskUserQuestion: (payload: {
     toolUseId: string;
     answers: Record<string, string>;
