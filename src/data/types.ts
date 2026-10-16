@@ -164,6 +164,8 @@ export type SessionSummary = {
   claudeSessionId?: string;
   codexThreadId?: string;
   nativeHistoryRevision?: string;
+  /** EAF-managed histories keep their stable message IDs; native files remain import sources. */
+  historyAuthority?: 'runtime';
   sessionKind?: SessionKind;
   hidden?: boolean;
   instructionPrompt?: string;

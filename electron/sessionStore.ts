@@ -166,9 +166,9 @@ const nativeCatalogFileCache = new Map<string, NativeCatalogFileCacheEntry>();
 let nativeCatalogLastRefreshAt = 0;
 const storePath = () => path.join(getRuntimePaths().userDataPath, 'easyaiflow-sessions.json');
 const nativeClaudeProjectsRoot = () =>
-  path.join(process.env.USERPROFILE ?? getRuntimePaths().homePath, '.claude', 'projects');
+  path.join(getRuntimePaths().homePath, '.claude', 'projects');
 const nativeClaudeHistoryPath = () =>
-  path.join(process.env.USERPROFILE ?? getRuntimePaths().homePath, '.claude', 'history.jsonl');
+  path.join(getRuntimePaths().homePath, '.claude', 'history.jsonl');
 
 const normalizeSessionModel = (model: string, provider: SessionProvider) => {
   if (provider !== 'claude') {
@@ -2507,11 +2507,11 @@ const parseCachedNativeClaudeSessionFile = async (
 };
 
 const codexSessionsRoot = () =>
-  path.join(process.env.USERPROFILE ?? getRuntimePaths().homePath, '.codex', 'sessions');
+  path.join(getRuntimePaths().homePath, '.codex', 'sessions');
 const codexArchivedSessionsRoot = () =>
-  path.join(process.env.USERPROFILE ?? getRuntimePaths().homePath, '.codex', 'archived_sessions');
+  path.join(getRuntimePaths().homePath, '.codex', 'archived_sessions');
 const codexSessionIndexPath = () =>
-  path.join(process.env.USERPROFILE ?? getRuntimePaths().homePath, '.codex', 'session_index.jsonl');
+  path.join(getRuntimePaths().homePath, '.codex', 'session_index.jsonl');
 
 const listJsonlFilesRecursively = async (rootDir: string): Promise<string[]> => {
   const results: string[] = [];
@@ -3732,6 +3732,9 @@ const applyNativeCatalogEntries = (
     return;
   }
   const sessionIdKey = provider === 'claude' ? 'claudeSessionId' : 'codexThreadId';
+  const runtimeOwners = new Map(getAllSessionRecords(cachedState?.projects ?? [])
+    .filter((session) => session.historyAuthority === 'runtime' && session[sessionIdKey])
+    .map((session) => [session[sessionIdKey]!, session]));
   const existingByNativeId = new Map<string, SessionRecord>();
   projectSessions.forEach((session) => {
     const nativeId = session[sessionIdKey];
@@ -3746,6 +3749,8 @@ const applyNativeCatalogEntries = (
   for (const parsed of latestNativeCatalogEntries(entries).sort(
     (left, right) => (left.updatedAt ?? 0) - (right.updatedAt ?? 0),
   )) {
+    const runtimeOwner = runtimeOwners.get(parsed.nativeSessionId);
+    if (runtimeOwner && runtimeOwner.projectId !== project.id) continue;
     if (deletedIds.includes(parsed.nativeSessionId)) {
       continue;
     }
@@ -3766,6 +3771,11 @@ const applyNativeCatalogEntries = (
         sessionIdKey,
         provider,
       );
+    if (existing?.historyAuthority === 'runtime') {
+      nativeSessionsNeedingHydration.delete(existing.id);
+      if (existing.dreamId === temporary.id) importedSessions.push(existing);
+      continue;
+    }
     const display = resolveImportedSessionDisplay(existing, parsed);
     const existingDream = existing ? findSessionDream(project, existingDreamBySessionId, existing) : undefined;
     const recoveryDream = provider === 'claude'
@@ -5031,6 +5041,7 @@ export const getProjectsForBootstrap = async () => {
 };
 
 const refreshNativeSessionSource = async (session: SessionRecord) => {
+  if (session.historyAuthority === 'runtime') return true;
   const source = nativeSessionSources.get(session.id);
   if (!source) {
     return false;
@@ -5076,6 +5087,10 @@ const hydrateNativeSessionMessages = async (
   session: SessionRecord,
   options?: NativeClaudeSessionParseOptions,
 ) => {
+  if (session.historyAuthority === 'runtime') {
+    nativeSessionsNeedingHydration.delete(session.id);
+    return;
+  }
   if (!v2Store || !cachedState) {
     return;
   }
@@ -5603,6 +5618,8 @@ export const appendMessagesToSession = async (
 
   forEachSession(state.projects, (session) => {
     if (session.id === sessionId) {
+      session.historyAuthority = 'runtime';
+      nativeSessionsNeedingHydration.delete(sessionId);
       const nextMessages = assignMessagesForSession(session, messages);
       persistedMessages = nextMessages;
       session.messages = [...(session.messages ?? []), ...nextMessages];
@@ -5617,7 +5634,7 @@ export const appendMessagesToSession = async (
     sessionMutations: persistedMessages.length > 0
       ? [{ type: 'append-messages', sessionId, messages: persistedMessages }]
       : [],
-    immediateIndex: false,
+    immediateIndex: true,
   });
   return cloneVisibleProjects(state.projects);
 };
