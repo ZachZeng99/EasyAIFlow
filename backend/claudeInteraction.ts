@@ -9,6 +9,8 @@ import { getRuntimePaths } from './runtimePaths.js';
 import { captureProviderFrame } from './protocolCapture.js';
 import { registerClaudeQuestion } from './claudeQuestionInteraction.js';
 import { normalizeClaudeProtocolMessage } from '../electron/claudeProtocol.js';
+import { observeClaudeNativeAgents, forgetClaudeNativeAgents } from './nativeAgents.js';
+import { supportsClaudeSubagentForwarding } from './claudeCapabilities.js';
 import type {
   ActiveClaudeRun,
   ActiveClaudeTurn,
@@ -861,6 +863,7 @@ const removeResidentSession = (
   sessionId: string,
 ) => {
   state.residentSessions.delete(sessionId);
+  forgetClaudeNativeAgents(state, sessionId);
 };
 
 const getResidentProcessUnavailableMessage = (
@@ -1733,6 +1736,7 @@ export const handleClaudeLine = async (
   }
 
   const parsed = normalizeClaudeProtocolMessage(JSON.parse(line) as Record<string, unknown>);
+  if (await observeClaudeNativeAgents(ctx, state, sessionId, parsed, assistantMessageId)) return;
   const missingClaudeSessionId = extractMissingClaudeConversationSessionId(parsed);
   if (missingClaudeSessionId) {
     options?.onMissingClaudeConversation?.(missingClaudeSessionId);
@@ -2588,6 +2592,7 @@ const ensureResidentClaudeSession = async (
   const args = buildClaudePrintArgs({
     model: resolvedModel,
     effort: options?.effort,
+    forwardSubagentText: await supportsClaudeSubagentForwarding(),
     sessionArgs: buildClaudeSessionArgs(session.claudeSessionId, session.title, forkSession, session.id),
   });
 
@@ -2707,7 +2712,11 @@ const ensureResidentClaudeSession = async (
       const runState = owner?.runState ?? turn?.runState;
       const releaseTurn = turn?.releaseQueuedTurn ?? (() => undefined);
 
+      // Child frames must not update root metadata, text, turn completion or tool-loop state.
+      if (parsed.parent_tool_use_id && await observeClaudeNativeAgents(ctx, state, session.id, parsed, assistantMessageId)) return;
+
       if (!assistantMessageId || !runState) {
+        await observeClaudeNativeAgents(ctx, state, session.id, parsed);
         if (parsedBackgroundTask) {
           recordUnownedResidentBackgroundTask(
             ctx,
@@ -3725,6 +3734,12 @@ export const interruptSessionTurn = async (
   state: ClaudeInteractionState,
   sessionId: string,
 ) => {
+  const record = await findSession(sessionId);
+  if (record?.messages.some((message) => message.nativeAgent && ['pending', 'running'].includes(message.nativeAgent.status))) {
+    // This CLI process belongs to one session. End it when stopping native child
+    // work, including children that have already left the foreground turn.
+    return disconnectSession(ctx, state, sessionId);
+  }
   const resident = getResidentSession(state, sessionId);
   if (!resident || !resident.currentTurn) {
     stopSessions(state, [sessionId]);

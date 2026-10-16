@@ -88,6 +88,7 @@ const captureMessage = (message: ConversationMessage): ConversationMessage => ({
   ...(message.contextReferences ? { contextReferences: message.contextReferences.map((item) => ({ ...item })) } : {}),
   ...(message.steps ? { steps: message.steps.map((item) => ({ ...item })) } : {}),
   ...(message.recordedDiff ? { recordedDiff: { ...message.recordedDiff } } : {}),
+  ...(message.nativeAgent ? { nativeAgent: { ...message.nativeAgent, ...(message.nativeAgent.outputMessageIds ? { outputMessageIds: [...message.nativeAgent.outputMessageIds] } : {}) } } : {}),
 });
 
 const captureMutation = (mutation: SessionStoreV2SessionMutation): SessionStoreV2SessionMutation =>

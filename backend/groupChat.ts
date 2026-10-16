@@ -312,6 +312,7 @@ const mirrorTraceMessage = async (
   if (message.role !== 'system') {
     return;
   }
+  if (message.nativeAgent && message.nativeAgent.rootAssistantMessageId !== spec.backingAssistantMessageId) return;
 
   const mirroredMessage: ConversationMessage = {
     ...message,
@@ -320,6 +321,7 @@ const mirrorTraceMessage = async (
     speakerLabel: spec.participant.label,
     provider: spec.participant.provider,
     sourceSessionId: spec.backingSessionId,
+    ...(message.nativeAgent ? { nativeAgent: { ...message.nativeAgent, rootAssistantMessageId: spec.roomAssistantMessageId } } : {}),
   };
 
   const updated = await ignoreMissingSessionError(

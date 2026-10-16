@@ -5389,6 +5389,41 @@ export const getSessionMessagePage = async (
   };
 };
 
+export const getSessionNativeAgents = async (sessionId: string, before?: string): Promise<import('../src/data/types.js').NativeAgentPage> => {
+  const state = await loadState();
+  const session = findSessionInProjects(state.projects, sessionId) as SessionRecord | undefined;
+  if (!session) throw new Error('Session not found.');
+  if (!v2Store || session.messagesLoaded === true) {
+    const nodes = (session.messages ?? []).filter((message) => message.nativeAgent);
+    if (before && !before.startsWith('agent-memory:')) throw new Error('Agent history changed; refresh the list.');
+    const end = before ? nodes.findIndex((message) => message.id === decodeURIComponent(before.slice('agent-memory:'.length))) : nodes.length;
+    if (end < 0) throw new Error('Agent history changed; refresh the list.');
+    const selected = nodes.slice(Math.max(0, end - 10), end);
+    return { messages: sanitizeConversationMessagesForDisplay(structuredClone(selected)), hasMoreBefore: end > 10,
+      nextBefore: end > 10 ? `agent-memory:${encodeURIComponent(selected[0].id)}` : undefined };
+  }
+  let cursor: { pageBefore?: string; skip: number } = { skip: 0 };
+  if (before) {
+    if (!before.startsWith('agent-page:') || before.length > 4096) throw new Error('Agent history changed; refresh the list.');
+    cursor = JSON.parse(Buffer.from(before.slice('agent-page:'.length), 'base64url').toString('utf8'));
+    if (!Number.isSafeInteger(cursor.skip) || cursor.skip < 0 || (cursor.pageBefore !== undefined && typeof cursor.pageBefore !== 'string')) throw new Error('Invalid agent cursor.');
+  }
+  const collected: ConversationMessage[] = [];
+  let next: typeof cursor | undefined;
+  for (let scanned = 0; scanned < 32; scanned++) {
+    const page = await v2Store.readMessagePage(sessionId, cursor.pageBefore);
+    const nodes = page.messages.filter((message) => message.nativeAgent).reverse();
+    const selected = nodes.slice(cursor.skip, cursor.skip + 10 - collected.length);
+    collected.push(...selected);
+    if (cursor.skip + selected.length < nodes.length) { next = { ...cursor, skip: cursor.skip + selected.length }; break; }
+    next = page.hasMoreBefore ? { pageBefore: page.nextBefore, skip: 0 } : undefined;
+    if (!next || collected.length >= 10) break;
+    cursor = next;
+  }
+  return { messages: sanitizeConversationMessagesForDisplay(recoverStaleSessionMessagesForProvider(collected.reverse(), session.provider)), hasMoreBefore: Boolean(next),
+    nextBefore: next ? `agent-page:${Buffer.from(JSON.stringify(next)).toString('base64url')}` : undefined };
+};
+
 export const releaseMaterializedSessionHistory = async (sessionId: string) => {
   if (!v2Store) {
     return false;

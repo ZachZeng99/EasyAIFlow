@@ -42,6 +42,7 @@ const normalizeMessages = (messages: ConversationMessage[]) => {
   };
 
   for (const message of messages) {
+    if (message.kind === 'native_agent') continue;
     if (message.role !== 'system') {
       flushTrace();
       result.push(message);

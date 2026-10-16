@@ -11,6 +11,11 @@ const run = (name: string, fn: () => void) => {
   }
 };
 
+run('subagent forwarding is opt-in after runtime capability detection', () => {
+  assert.equal(buildClaudePrintArgs({}).includes('--forward-subagent-text'), false);
+  assert.equal(buildClaudePrintArgs({ forwardSubagentText: true }).includes('--forward-subagent-text'), true);
+});
+
 run('buildClaudePrintArgs uses stream-json input and permission prompt tool', () => {
   const args = buildClaudePrintArgs({
     model: 'sonnet',

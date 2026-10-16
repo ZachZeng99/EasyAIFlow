@@ -72,6 +72,7 @@ export type EasyAIFlowBridge = {
     projects: ProjectRecord[];
     interactions?: Record<string, SessionInteractionState>;
   }>;
+  getSessionNativeAgents: (payload: { sessionId: string; before?: string }) => Promise<import('./data/types.js').NativeAgentPage>;
   updateGroupParticipants: (payload: { sessionId: string; expectedRevision: number; participants: import('./data/types.js').GroupParticipantConfig[] }) => Promise<{ projects: ProjectRecord[]; session: SessionRecord }>;
   getSessionRecord: (payload: { sessionId: string }) => Promise<SessionRecord>;
   getProviderModels: (payload: { provider: SessionProvider; cwd: string; force?: boolean }) => Promise<ProviderModelCatalog>;
@@ -243,6 +244,7 @@ const webBridge: EasyAIFlowBridge = {
   getFileDiff: (payload) => callWebRpc('getFileDiff', payload),
   getPathForFile: () => '',
   getProjects: () => callWebRpc('getProjects'),
+  getSessionNativeAgents: (payload) => callWebRpc('getSessionNativeAgents', payload),
   updateGroupParticipants: (payload) => callWebRpc('updateGroupParticipants', payload),
   getSessionRecord: (payload) => callWebRpc('getSessionRecord', payload),
   getProviderModels: (payload) => callWebRpc('getProviderModels', payload),

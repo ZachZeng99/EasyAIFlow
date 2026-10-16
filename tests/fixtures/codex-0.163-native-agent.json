@@ -1,0 +1,110 @@
+[
+  {
+    "method": "item/started",
+    "params": {
+      "item": {
+        "type": "subAgentActivity",
+        "model": "gpt-6.1-sol",
+        "reasoningEffort": "low",
+        "id": "call_eae3947d0de945a7bd94d1889851358b",
+        "kind": "started",
+        "agentThreadId": "01a143e9-93cb-7143-a8b9-8d646286904b",
+        "agentPath": "/root/native_probe"
+      },
+      "threadId": "01a143e9-763d-7a53-bc20-d42192e132e3",
+      "turnId": "01a143e9-7748-7711-90a3-3d231f4e3d14",
+      "startedAtMs": 1792140743953
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "item": {
+        "type": "subAgentActivity",
+        "model": "gpt-6.1-sol",
+        "reasoningEffort": "low",
+        "id": "call_eae3947d0de945a7bd94d1889851358b",
+        "kind": "started",
+        "agentThreadId": "01a143e9-93cb-7143-a8b9-8d646286904b",
+        "agentPath": "/root/native_probe"
+      },
+      "threadId": "01a143e9-763d-7a53-bc20-d42192e132e3",
+      "turnId": "01a143e9-7748-7711-90a3-3d231f4e3d14",
+      "completedAtMs": 1792140743953
+    }
+  },
+  {
+    "method": "item/started",
+    "params": {
+      "item": {
+        "type": "collabAgentToolCall",
+        "id": "call_6df3d79b9c5840de87d4d02a051d0f89",
+        "tool": "wait",
+        "status": "inProgress",
+        "senderThreadId": "01a143e9-763d-7a53-bc20-d42192e132e3",
+        "receiverThreadIds": [],
+        "prompt": null,
+        "model": null,
+        "reasoningEffort": null,
+        "agentsStates": {}
+      },
+      "threadId": "01a143e9-763d-7a53-bc20-d42192e132e3",
+      "turnId": "01a143e9-7748-7711-90a3-3d231f4e3d14",
+      "startedAtMs": 1792140746819
+    }
+  },
+  {
+    "method": "item/started",
+    "params": {
+      "item": {
+        "type": "subAgentActivity",
+        "model": null,
+        "reasoningEffort": null,
+        "id": "subagent-completed-01a143e9-9511-7d12-9e3a-be641aaea180",
+        "kind": "completed",
+        "agentThreadId": "01a143e9-93cb-7143-a8b9-8d646286904b",
+        "agentPath": "/root/native_probe"
+      },
+      "threadId": "01a143e9-763d-7a53-bc20-d42192e132e3",
+      "turnId": "01a143e9-7748-7711-90a3-3d231f4e3d14",
+      "startedAtMs": 1792140750358
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "item": {
+        "type": "subAgentActivity",
+        "model": null,
+        "reasoningEffort": null,
+        "id": "subagent-completed-01a143e9-9511-7d12-9e3a-be641aaea180",
+        "kind": "completed",
+        "agentThreadId": "01a143e9-93cb-7143-a8b9-8d646286904b",
+        "agentPath": "/root/native_probe"
+      },
+      "threadId": "01a143e9-763d-7a53-bc20-d42192e132e3",
+      "turnId": "01a143e9-7748-7711-90a3-3d231f4e3d14",
+      "completedAtMs": 1792140750358
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "item": {
+        "type": "collabAgentToolCall",
+        "id": "call_6df3d79b9c5840de87d4d02a051d0f89",
+        "tool": "wait",
+        "status": "completed",
+        "senderThreadId": "01a143e9-763d-7a53-bc20-d42192e132e3",
+        "receiverThreadIds": [],
+        "prompt": null,
+        "model": null,
+        "reasoningEffort": null,
+        "agentsStates": {}
+      },
+      "threadId": "01a143e9-763d-7a53-bc20-d42192e132e3",
+      "turnId": "01a143e9-7748-7711-90a3-3d231f4e3d14",
+      "completedAtMs": 1792140750359
+    }
+  }
+]

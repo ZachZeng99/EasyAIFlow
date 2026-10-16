@@ -80,6 +80,7 @@ export type BackgroundTaskRecord = {
   description: string;
   /** The process is still alive, but it no longer represents unfinished session work. */
   detached?: boolean;
+  isBackground?: boolean;
   toolUseId?: string;
   taskType?: string;
   workflowName?: string;
@@ -214,7 +215,25 @@ export type MessageStep = {
   status: 'queued' | 'running' | 'complete' | 'blocked';
 };
 
-export type ConversationMessageKind = 'message' | 'thinking' | 'tool_use' | 'tool_result' | 'progress' | 'error';
+export type NativeAgentRecord = {
+  id: string;
+  provider: SessionProvider;
+  controller: 'runtime';
+  nativeId: string;
+  nativeTaskId?: string;
+  parentId?: string;
+  rootAssistantMessageId: string;
+  label: string;
+  model?: string;
+  prompt?: string;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'stopped' | 'unknown';
+  updatedAt: number;
+  outputNote?: string;
+  outputMessageIds?: string[];
+  revision?: number;
+};
+
+export type ConversationMessageKind = 'message' | 'thinking' | 'tool_use' | 'tool_result' | 'progress' | 'error' | 'native_agent';
 
 export type ConversationMessage = {
   id: string;
@@ -232,6 +251,7 @@ export type ConversationMessage = {
   sourceSessionId?: string;
   targetParticipantIds?: string[];
   recordedDiff?: DiffPayload;
+  nativeAgent?: NativeAgentRecord;
   status?: 'queued' | 'streaming' | 'running' | 'background' | 'success' | 'complete' | 'error';
   contextReferences?: ContextReference[];
   attachments?: MessageAttachment[];
@@ -243,6 +263,8 @@ export type SessionHistoryPageState = {
   hasMoreBefore: boolean;
   sessionRevision: number;
 };
+
+export type NativeAgentPage = { messages: ConversationMessage[]; nextBefore?: string; hasMoreBefore: boolean };
 
 export type SessionMessagePage = SessionHistoryPageState & {
   sessionId: string;

@@ -3175,3 +3175,29 @@ p {
   .group-member-card { padding: 12px; }
   .group-members-button { padding: 8px 10px; }
 }
+
+.native-agents-dialog { width: min(980px, calc(100vw - 28px)); height: min(740px, calc(100dvh - 32px)); display: flex; flex-direction: column; }
+.native-agents-dialog .dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.native-agents-dialog .dialog-head p, .native-agent-meta, .native-agent-note { color: rgba(245,239,230,.6); font-size: .8rem; margin-top: 7px; line-height: 1.5; }
+.native-agents-layout { display: grid; grid-template-columns: minmax(180px, 28%) minmax(0, 1fr); min-height: 0; flex: 1; }
+.native-agents-tree { overflow-y: auto; border-right: 1px solid rgba(255,255,255,.08); padding: 10px; }
+.native-agents-tree button { display: block; width: 100%; text-align: left; border: 1px solid transparent; border-radius: 9px; background: transparent; padding: 12px; margin-bottom: 6px; cursor: pointer; overflow-wrap: anywhere; }
+.native-agents-tree button.selected { background: rgba(245,158,11,.1); border-color: rgba(245,158,11,.3); }
+.native-agents-tree strong, .native-agents-tree span { display: block; }
+.native-agents-tree span { font-size: .74rem; color: rgba(245,239,230,.55); margin-top: 5px; }
+.native-agent-detail { min-width: 0; padding: 18px; overflow-y: auto; }
+.native-agent-detail-heading { display: flex; align-items: flex-start; gap: 12px; justify-content: space-between; }
+.native-agent-detail-heading h3 { overflow-wrap: anywhere; }
+.native-agent-status { white-space: nowrap; font-size: .74rem; color: #d9b46a; }
+.native-agent-status.status-completed { color: #8ad5a0; }
+.native-agent-status.status-failed { color: #ec9a91; }
+.native-agent-detail details { margin: 18px 0; }
+.native-agent-detail h4 { margin: 18px 0 10px; }
+.native-agent-detail pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .84rem; line-height: 1.6; }
+.native-agent-output { border: 1px solid rgba(255,255,255,.08); border-radius: 12px; padding: 14px; background: rgba(0,0,0,.15); }
+.native-agents-empty { padding: 24px; color: rgba(245,239,230,.65); }
+@media (max-width: 600px) {
+  .native-agents-layout { grid-template-columns: 1fr; grid-template-rows: minmax(80px, 28%) minmax(0,1fr); }
+  .native-agents-tree { border-right: 0; border-bottom: 1px solid rgba(255,255,255,.08); }
+  .chat-actions { flex-wrap: wrap; justify-content: flex-end; }
+}

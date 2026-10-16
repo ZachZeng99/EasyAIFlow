@@ -159,6 +159,7 @@ export const parseClaudeBackgroundTaskEvent = (
     last_tool_name?: unknown;
     status?: unknown;
     usage?: unknown;
+    is_backgrounded?: unknown;
   };
 
   if (record.type === 'system') {
@@ -169,6 +170,7 @@ export const parseClaudeBackgroundTaskEvent = (
 
     if (record.subtype === 'task_started') {
       return {
+        ...(typeof record.is_backgrounded === 'boolean' ? { isBackground: record.is_backgrounded } : {}),
         taskId,
         status: 'running',
         description: getString(record.description) ?? `Background task ${taskId}`,

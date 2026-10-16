@@ -4,6 +4,8 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import { DiffContent } from './DiffContent';
+import { NativeAgentsDialog } from './NativeAgentsDialog';
+import { collectNativeAgents } from '../data/nativeAgents';
 import { InlinePermissionCard } from './InlinePermissionCard';
 import { InlineAskUserQuestionCard } from './InlineAskUserQuestionCard';
 import { InlinePlanModeCard } from './InlinePlanModeCard';
@@ -223,6 +225,8 @@ function ChatThreadComponent({
 }: ChatThreadProps) {
   const providerName = session.sessionKind === 'group' ? 'Group Room' : getProviderDisplayName(session.provider);
   const displayItems = useMemo(() => buildDisplayItems(messages), [messages]);
+  const agents = useMemo(() => collectNativeAgents(messages), [messages]);
+  const [showNativeAgents, setShowNativeAgents] = useState(false);
   const activePermissionRequest = getActiveSessionPermissionRequest(interaction);
   const activeBackgroundTasks = useMemo(
     () =>
@@ -444,8 +448,8 @@ function ChatThreadComponent({
             </span>
           </div>
         </div>
-        {showDisconnectAction || (session.sessionKind === 'group' && onManageParticipants) ? (
           <div className="chat-actions">
+            <button type="button" className="group-members-button" onClick={() => setShowNativeAgents(true)}>子 agent {agents.length}</button>
             {session.sessionKind === 'group' && onManageParticipants ? <button type="button" className="group-members-button" onClick={onManageParticipants}>群成员</button> : null}
             {showDisconnectAction ? <button
               type="button"
@@ -457,8 +461,8 @@ function ChatThreadComponent({
               <span aria-hidden="true">🔌</span>
             </button> : null}
           </div>
-        ) : null}
       </header>
+      {showNativeAgents ? <NativeAgentsDialog key={session.id} sessionId={session.id} messages={messages} onClose={() => setShowNativeAgents(false)} /> : null}
 
       <div
         ref={streamRef}

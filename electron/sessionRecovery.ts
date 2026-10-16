@@ -7,6 +7,10 @@ const recoverMessage = (
 ): ConversationMessage => {
   const providerName = getProviderDisplayName(provider);
 
+  if (message.nativeAgent && ['running', 'pending'].includes(message.nativeAgent.status)) {
+    return { ...message, status: 'complete', nativeAgent: { ...message.nativeAgent, revision: (message.nativeAgent.revision ?? 0) + 1, status: 'unknown', outputNote: '设备服务曾中断，原生 agent 的最终状态尚未确认。' } };
+  }
+
   if (
     message.status !== 'running' &&
     message.status !== 'streaming' &&

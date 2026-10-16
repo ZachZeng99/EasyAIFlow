@@ -1,5 +1,19 @@
 # Current Task: EAF 2.0 P0 — Committed message synchronization
 
+## Current continuation: Native agent identity, output and lifecycle
+
+- [x] Verify current Claude forwarding and Codex collaboration schemas with real protocol capture.
+- [x] Persist native agent records using the existing message journal, isolating child output from the root answer.
+- [x] Render parent/child relationships, output and terminal states in a usable desktop/mobile view.
+- [x] Verify real CLI agents, replay/refresh behavior, long-history paging and group projection.
+- [x] Final build and checkpoint commit, then continue device management and autonomous communication.
+
+Native checkpoint notes: both real providers passed separate child output/completed state. Immediate restart initially reconnected to a closing worker; new unauthenticated connections are now rejected during shutdown, and a repeat restart preserved both agent records exactly. Added Codex child lifecycle retention after parent completion and scoped child-turn interruption, covered by deterministic tests. Current child output uses bounded recent history, not full unbounded transcript hydration.
+
+UI verification: actual native Codex record displayed completed status and CHILD_NATIVE_OK separately from ROOT_NATIVE_OK. Desktop screenshot `.tmp-run/eaf-native-agents.jpg`; 390 × 844 layout passed. Added a bounded native-record paging API because an agent created early in a long task can fall outside the ordinary chat tail. Native per-record revisions keep older page results from reverting live state.
+
+Resume check: branch clean except unrelated `.tmp-run/`; the interrupted turn left no partial implementation. The previous 8887 service is no longer running. Claude advertises --forward-subagent-text; the previously observed Codex app binary path has been replaced by an app update, so use the runtime resolver instead of a remembered path.
+
 ## Current fix: Codex model discovery selects an obsolete CLI
 
 - [x] Reproduce the served catalog and compare installed runtimes: npm CLI 0.144.6 returns three GPT-5.6 models; desktop CLI 0.162.0-alpha.17.2 returns seven including GPT-6.1 Sol / GPT-6 Astra.

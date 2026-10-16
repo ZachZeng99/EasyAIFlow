@@ -46,7 +46,7 @@ export const resolveAskUserQuestionState = (state: SessionInteractionState, tool
 };
 
 export const isActiveBackgroundTask = (task: BackgroundTaskRecord) =>
-  !task.detached && (task.status === 'pending' || task.status === 'running');
+  !task.detached && task.isBackground !== false && (task.status === 'pending' || task.status === 'running');
 
 export const mergeBackgroundTaskRecords = (
   previous: BackgroundTaskRecord | undefined,

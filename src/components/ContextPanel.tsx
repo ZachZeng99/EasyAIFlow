@@ -27,7 +27,7 @@ function ContextPanelComponent({
   const [requestedFilePath, setRequestedFilePath] = useState<string>('');
   const [diffPayload, setDiffPayload] = useState<DiffPayload | null>(null);
   const [isLoadingDiff, setIsLoadingDiff] = useState(false);
-  const backgroundTasks = interaction?.backgroundTasks ?? [];
+  const backgroundTasks = (interaction?.backgroundTasks ?? []).filter((task) => task.isBackground !== false);
   const appliedEffort = interaction?.runtime?.appliedEffort;
   const effortMatches = appliedEffort === requestedEffort;
   const effortStatusLabel = appliedEffort

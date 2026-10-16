@@ -24,6 +24,7 @@
     "service:stop": "tsx scripts/device-service.ts stop",
     "smoke:providers": "tsx scripts/smoke-device-providers.ts",
     "smoke:interactions": "tsx scripts/smoke-device-interactions.ts",
+    "smoke:native-agents": "tsx scripts/smoke-native-agents.ts",
     "preview": "vite preview",
     "start:web": "node dist-server/server/server.js",
     "package:win": "npm run build && electron-builder --win nsis"

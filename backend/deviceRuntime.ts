@@ -44,6 +44,7 @@ import {
   createStreamwork,
   getNativeSessionHistoryRevision,
   getSessionMessagePage,
+  getSessionNativeAgents,
   getSessionRecordForBootstrap,
   getProjectsForBootstrap,
   setSessionRuntime,
@@ -205,6 +206,7 @@ export const createDeviceRuntime = (broadcast: (event: ClaudeStreamEvent) => voi
   });
 
   const rpcHandlers = {
+    getSessionNativeAgents: (payload: { sessionId: string; before?: string }) => getSessionNativeAgents(payload.sessionId, payload.before),
     getProviderModels: (payload: { provider: 'claude' | 'codex'; cwd: string; force?: boolean }) => {
       if (!['claude', 'codex'].includes(payload.provider) || typeof payload.cwd !== 'string') throw new Error('Invalid provider or workspace.');
       return models.get(payload.provider, payload.cwd, payload.force);

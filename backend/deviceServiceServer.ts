@@ -45,6 +45,7 @@ export const startDeviceService = async (options: { dataDirectory: string; homeD
     socket.on('error', () => socket.destroy());
     socket.on('close', () => { clearTimeout(timeout); clients.delete(socket); });
     const handle = async (frame: Record<string, unknown>) => {
+      if (stopping && !authenticated) { socket.destroy(); return; }
       if (!authenticated) {
         const supplied = typeof frame.key === 'string' ? frame.key : '';
         if (frame.type !== 'auth' || frame.version !== DEVICE_SERVICE_PROTOCOL || supplied.length !== key.length ||

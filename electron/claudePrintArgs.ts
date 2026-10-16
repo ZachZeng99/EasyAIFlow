@@ -5,6 +5,7 @@ type ClaudePrintArgOptions = {
   tools?: string;
   permissionMode?: 'acceptEdits' | 'bypassPermissions' | 'default' | 'dontAsk' | 'plan' | 'auto';
   noSessionPersistence?: boolean;
+  forwardSubagentText?: boolean;
 };
 
 export const DEFAULT_CLAUDE_EFFORT: NonNullable<ClaudePrintArgOptions['effort']> = 'max';
@@ -16,6 +17,7 @@ export const buildClaudePrintArgs = ({
   tools,
   permissionMode = 'bypassPermissions',
   noSessionPersistence = false,
+  forwardSubagentText = false,
 }: ClaudePrintArgOptions) => {
   const args = [
     '--print',
@@ -54,6 +56,7 @@ export const buildClaudePrintArgs = ({
   if (noSessionPersistence) {
     args.push('--no-session-persistence');
   }
+  if (forwardSubagentText) args.push('--forward-subagent-text');
 
   args.push(...sessionArgs);
   return args;

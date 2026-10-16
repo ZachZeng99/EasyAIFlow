@@ -535,3 +535,11 @@ Completed scoped recovery through supported API; no code changes or global serve
 - Added visible runtime provenance, removed the frontend version whitelist, and made new group members use provider-recommended defaults.
 - Resolver, shell-argument, cache, app-server, device-service and selection regressions passed. Real gpt-6.1-sol smoke passed reply/reconnect/idempotence; the running 8887 service and browser selector both show seven models.
 - No global npm installation, credentials or Codex settings changed. Existing session model choices remain intact.
+# 2026-10-16 native agent visibility
+
+- Verified the current local Claude forwarding flag, restored source schemas, official docs, Codex 0.163 generated protocol bindings and real native child executions.
+- Added journal-backed native agent records, duplicate/output isolation, parent links, independent output view and bounded history pagination. Foreground Claude Agent events no longer yield the main task as background jobs.
+- Codex retains its process after a parent answer while child work remains; scoped stop reaches child turns. Native peers mentioned by messaging tools are not misclassified as children.
+- Real Claude/Codex foreground child tests passed; real Codex background child and immediate service restart passed. Regression tests cover persistence, nesting, duplicate frames, output isolation, stop, group ownership and old-record pagination.
+- Actual desktop/mobile UI checked and screenshot saved. Final compilation, long-history paging and bounded native item reads passed; no sub-agent implementation delegation was used.
+- Asked the user whether remote devices will use LAN/VPN or a public control server; no answer yet. Continue independent work, defaulting to LAN/VPN if no preference arrives.

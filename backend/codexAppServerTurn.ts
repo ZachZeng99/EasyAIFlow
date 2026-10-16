@@ -22,6 +22,8 @@ import { stopPendingSessionMessages } from '../electron/sessionStop.js';
 import { createSerialAsyncQueue } from '../electron/serialAsyncQueue.js';
 import { appServerManager, CodexAppServerClient } from './codexAppServer.js';
 import { codexRuntimeResolver } from './codexRuntime.js';
+import { NativeAgentProjection } from './nativeAgentProjection.js';
+import { persistNativeAgents, readCodexAgentOutput, interruptCodexNativeAgents } from './nativeAgents.js';
 import type { SessionInteractionState } from '../src/data/sessionInteraction.js';
 import type {
   ConversationMessage,
@@ -56,6 +58,8 @@ export type CodexAppServerTurnOptions = {
 };
 
 type ActiveAppServerTurn = {
+  nativeAgents?: NativeAgentProjection;
+  foregroundCompleted?: boolean;
   sessionId: string;
   assistantMessageId: string;
   threadId: string;
@@ -86,6 +90,7 @@ const residentAppServerSessions = new Map<string, ResidentAppServerSession>();
 const pendingResidentConnections = new Map<string, Promise<ResidentAppServerSession>>();
 
 type TurnCaptureState = {
+  nativeAgents?: NativeAgentProjection;
   turnId: string | null;
   finalContent: string;
   tokenUsage: TokenUsage | undefined;
@@ -254,8 +259,10 @@ const countActiveAppServerTurnsForCwd = (cwd: string) => {
   return count;
 };
 
-const getResidentRuntimePhase = (sessionId: string): SessionRuntimePhase =>
-  activeAppServerTurns.has(sessionId) ? 'running' : 'idle';
+const getResidentRuntimePhase = (sessionId: string): SessionRuntimePhase => {
+  const turn = activeAppServerTurns.get(sessionId);
+  return turn ? turn.foregroundCompleted && turn.nativeAgents?.activeNativeIds(turn.assistantMessageId).length ? 'background' : 'running' : 'idle';
+};
 
 const emitResidentRuntimeState = (ctx: ClaudeInteractionContext, sessionId: string) =>
   emitRuntimeState(ctx, sessionId, getResidentRuntimePhase(sessionId), true);
@@ -526,6 +533,18 @@ export const handleAppServerNotification = async (
   activeTurnCountForCwd = 1,
 ) => {
   const { method, params } = notification;
+  const nativeItem = params.item as { type?: string } | undefined;
+  if (state.nativeAgents || ['subAgentActivity', 'collabAgentToolCall', 'collabToolCall'].includes(nativeItem?.type ?? '') || method === 'thread/started') {
+    state.nativeAgents ??= new NativeAgentProjection('codex', sessionId, (await findSession(sessionId))?.messages);
+    activeTurn.nativeAgents = state.nativeAgents;
+    const observed = state.nativeAgents.observeCodex(notification, activeTurn.threadId, activeTurn.assistantMessageId);
+    await persistNativeAgents(ctx, sessionId, state.nativeAgents);
+    if (activeTurn.client) {
+      for (const nativeId of observed.inspect) await readCodexAgentOutput(activeTurn.client, state.nativeAgents, nativeId, activeTurn.turnId ?? undefined);
+      await persistNativeAgents(ctx, sessionId, state.nativeAgents);
+    }
+    if (observed.child) return;
+  }
 
   if (method === 'turn/started') {
     if (!matchesHandledNotificationScope(activeTurn, state, params, activeTurnCountForCwd)) {
@@ -588,6 +607,7 @@ export const handleAppServerNotification = async (
       itemType === 'mcpToolCall' ||
       itemType === 'dynamicToolCall' ||
       itemType === 'collabAgentToolCall' ||
+      itemType === 'collabToolCall' ||
       itemType === 'function_call' ||
       itemType === 'function_call_output'
     ) {
@@ -905,11 +925,12 @@ const executeCodexAppServerTurn = async (
     };
     client!.addNotificationHandler(notificationHandler);
     clientExitHandler = (error: Error) => {
-      if (activeTurn.stopped || state.completed) {
+      if (activeTurn.stopped || state.completed && !state.nativeAgents?.activeNativeIds(prepared.assistantMessageId).length) {
         return;
       }
 
       state.error = state.error || error.message || 'Codex app-server process exited.';
+      state.nativeAgents?.settleOpen(prepared.assistantMessageId, 'unknown', 'Codex 进程已断开，子 agent 的最终状态尚未确认。');
       activeTurn.settle?.();
     };
     client.addExitHandler(clientExitHandler);
@@ -946,6 +967,30 @@ const executeCodexAppServerTurn = async (
     }
 
     await notificationQueue.drain();
+    activeTurn.foregroundCompleted = true;
+
+    if (!activeTurn.stopped && state.nativeAgents?.activeNativeIds(prepared.assistantMessageId).length) {
+      const content = state.finalContent.trim() || getStreamedAgentMessageContent(state);
+      await updateAssistantMessage(sessionId, prepared.assistantMessageId, (message) => { message.status = 'background'; message.content = content; });
+      ctx.broadcastEvent({ type: 'status', sessionId, messageId: prepared.assistantMessageId, status: 'background', content });
+      emitRuntimeState(ctx, sessionId, 'background', true);
+      // A root final answer does not terminate its native children. Retain the
+      // owning connection until their lifecycle settles or the user stops them.
+      while (!activeTurn.stopped && !state.error && state.nativeAgents.activeNativeIds(prepared.assistantMessageId).length) {
+        await new Promise((resolve) => setTimeout(resolve, 750));
+        await new Promise<void>((resolve, reject) => notificationQueue.push(async () => {
+          try {
+            for (const nativeId of state.nativeAgents!.activeNativeIds(prepared.assistantMessageId)) {
+              if (activeTurn.stopped) break;
+              await readCodexAgentOutput(client!, state.nativeAgents!, nativeId, activeTurn.turnId ?? undefined);
+            }
+            await persistNativeAgents(ctx, sessionId, state.nativeAgents!);
+            resolve();
+          } catch (error) { reject(error); }
+        }));
+      }
+    }
+    if (state.nativeAgents) await persistNativeAgents(ctx, sessionId, state.nativeAgents);
 
     clearCompletionTimer(state);
     client.removeNotificationHandler(notificationHandler);
@@ -1138,8 +1183,13 @@ export const interruptCodexAppServerTurn = async (
     }
   }
 
-  const result = await stopPendingSessionMessages(sessionId);
+  const result = await stopPendingSessionMessages(sessionId, { skipNativeAgents: Boolean(activeTurn.nativeAgents) });
+  if (activeTurn.client && activeTurn.nativeAgents) {
+    await interruptCodexNativeAgents(activeTurn.client, activeTurn.nativeAgents, activeTurn.assistantMessageId);
+    await persistNativeAgents(ctx, sessionId, activeTurn.nativeAgents);
+  }
   result.changedMessages.forEach((message) => {
+    if (message.nativeAgent && activeTurn.nativeAgents) return;
     if (message.role === 'assistant') {
       ctx.broadcastEvent({
         type: 'status',

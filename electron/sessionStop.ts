@@ -61,7 +61,7 @@ export const stopAssistantMessage = async (sessionId: string, messageId: string)
   return stopped;
 };
 
-export const stopPendingSessionMessages = async (sessionId: string) => {
+export const stopPendingSessionMessages = async (sessionId: string, options?: { skipNativeAgents?: boolean }) => {
   const session = await findSession(sessionId);
   if (!session) {
     return {
@@ -75,6 +75,7 @@ export const stopPendingSessionMessages = async (sessionId: string) => {
   let lastAssistantContent = '';
 
   for (const message of session.messages ?? []) {
+    if (options?.skipNativeAgents && message.nativeAgent) continue;
     if (!isPendingStatus(message.status)) {
       continue;
     }
@@ -90,6 +91,7 @@ export const stopPendingSessionMessages = async (sessionId: string) => {
 
     const nextMessage: ConversationMessage = {
       ...message,
+      ...(message.nativeAgent ? { nativeAgent: { ...message.nativeAgent, revision: (message.nativeAgent.revision ?? 0) + 1, status: 'stopped' as const } } : {}),
       status: message.kind === 'tool_result' ? 'success' : 'complete',
     };
     await upsertSessionMessage(sessionId, nextMessage);
