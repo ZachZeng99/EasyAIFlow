@@ -50,6 +50,8 @@ export type CodexAppServerTurnOptions = {
   references?: ContextReference[];
   outputSchema?: object;
   parseFinalMessage?: (raw: string) => string;
+  onPrepared?: (assistantMessageId: string) => void;
+  signal?: AbortSignal;
 };
 
 type ActiveAppServerTurn = {
@@ -63,10 +65,13 @@ type ActiveAppServerTurn = {
   disconnectOnFinish: boolean;
   traceMessages: Map<string, ConversationMessage>;
   cleanupClient?: () => Promise<void>;
+  client?: CodexAppServerClient;
   settle?: () => void;
 };
 
 const activeAppServerTurns = new Map<string, ActiveAppServerTurn>();
+// Reserve before asynchronous preparation, and retain the reservation through cleanup.
+const claimedAppServerTurns = new Map<string, AbortController>();
 
 type ResidentAppServerSession = {
   sessionId: string;
@@ -702,17 +707,43 @@ export const handleAppServerNotification = async (
   }
 };
 
+type RunTurnOptions = CodexAppServerTurnOptions & {
+  client?: CodexAppServerClient;
+  disconnectOnFinish?: boolean;
+  onThreadReady?: (threadId: string) => void;
+};
+
 export const runCodexAppServerTurn = async (
   ctx: ClaudeInteractionContext,
   sessionId: string,
   prompt: string,
   pendingAttachments: PendingAttachment[] = [],
   fallbackSession?: SessionSummary,
-  options?: CodexAppServerTurnOptions & {
-    client?: CodexAppServerClient;
-    disconnectOnFinish?: boolean;
-    onThreadReady?: (threadId: string) => void;
-  },
+  options?: RunTurnOptions,
+) => {
+  if (claimedAppServerTurns.has(sessionId)) throw new Error('Codex app-server turn is already running for this session.');
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  if (options?.signal?.aborted) controller.abort();
+  options?.signal?.addEventListener('abort', onAbort, { once: true });
+  claimedAppServerTurns.set(sessionId, controller);
+  try {
+    return await executeCodexAppServerTurn(ctx, sessionId, prompt, pendingAttachments, fallbackSession, {
+      ...options, signal: controller.signal,
+    });
+  } finally {
+    options?.signal?.removeEventListener('abort', onAbort);
+    claimedAppServerTurns.delete(sessionId);
+  }
+};
+
+const executeCodexAppServerTurn = async (
+  ctx: ClaudeInteractionContext,
+  sessionId: string,
+  prompt: string,
+  pendingAttachments: PendingAttachment[] = [],
+  fallbackSession?: SessionSummary,
+  options?: RunTurnOptions,
 ) => {
   if (activeAppServerTurns.has(sessionId)) {
     throw new Error('Codex app-server turn is already running for this session.');
@@ -720,6 +751,7 @@ export const runCodexAppServerTurn = async (
 
   const prepared = await prepareCodexRun(ctx, sessionId, prompt, pendingAttachments, fallbackSession, {
     references: options?.references,
+    onPrepared: options?.onPrepared,
   });
   const requestedModel = options?.model?.trim() || prepared.session.model;
   const requestedEffort = resolveCodexReasoningEffort(options?.effort);
@@ -730,12 +762,14 @@ export const runCodexAppServerTurn = async (
     threadId: '',
     turnId: null,
     cwd: prepared.session.workspace,
-    stopped: false,
+    stopped: options?.signal?.aborted ?? false,
     completed: false,
     disconnectOnFinish: options?.disconnectOnFinish ?? true,
     traceMessages: new Map(),
   };
   activeAppServerTurns.set(sessionId, activeTurn);
+  const onAbort = () => { activeTurn.stopped = true; activeTurn.settle?.(); };
+  options?.signal?.addEventListener('abort', onAbort, { once: true });
   emitRuntimeState(ctx, sessionId, 'running', true);
 
   let client: CodexAppServerClient | null = options?.client ?? null;
@@ -755,11 +789,14 @@ export const runCodexAppServerTurn = async (
   let clientExitHandler: ((error: Error) => void) | null = null;
 
   try {
+    options?.signal?.throwIfAborted();
     if (!client) {
       client = await CodexAppServerClient.create(prepared.session.workspace);
       ownsClient = true;
     }
     activeTurn.cleanupClient = cleanupClient;
+    activeTurn.client = client;
+    options?.signal?.throwIfAborted();
 
     // Start or resume thread.
     let threadId = prepared.session.codexThreadId?.trim() || '';
@@ -874,6 +911,10 @@ export const runCodexAppServerTurn = async (
         state.turnId = turnResponse.turn.id;
         activeTurn.turnId = turnResponse.turn.id;
       }
+      // A stop can arrive while turn/start is in flight and before its id is known.
+      if (activeTurn.stopped && activeTurn.turnId) {
+        await client.turnInterrupt({ threadId, turnId: activeTurn.turnId }).catch(() => undefined);
+      }
 
       // If the turn completed synchronously.
       if (turnResponse.turn?.status && turnResponse.turn.status !== 'inProgress') {
@@ -889,8 +930,10 @@ export const runCodexAppServerTurn = async (
 
     clearCompletionTimer(state);
     client.removeNotificationHandler(notificationHandler);
+    notificationHandler = null;
     if (clientExitHandler) {
       client.removeExitHandler(clientExitHandler);
+      clientExitHandler = null;
     }
     activeTurn.settle = undefined;
     activeAppServerTurns.delete(sessionId);
@@ -990,6 +1033,17 @@ export const runCodexAppServerTurn = async (
     };
   } catch (error) {
     activeAppServerTurns.delete(sessionId);
+    if (activeTurn.stopped) {
+      const stopped = await stopPendingSessionMessages(sessionId);
+      for (const message of stopped.changedMessages) {
+        ctx.broadcastEvent(message.role === 'assistant'
+          ? { type: 'status', sessionId, messageId: message.id, status: message.status, title: message.title, content: message.content }
+          : { type: 'trace', sessionId, message });
+      }
+      if (activeTurn.disconnectOnFinish) emitRuntimeState(ctx, sessionId, 'inactive', false);
+      else emitResidentRuntimeState(ctx, sessionId);
+      return { projects: stopped.projects, queued: { sessionId, userMessageId: prepared.userMessageId, assistantMessageId: prepared.assistantMessageId } };
+    }
     const errorMessage = error instanceof Error ? error.message : 'Codex app-server failed.';
     await finalizeCodexTraceMessages(ctx, sessionId, activeTurn.traceMessages, 'error');
 
@@ -1014,9 +1068,11 @@ export const runCodexAppServerTurn = async (
       // Clean up the notification handler that may have been added before the error.
       if (notificationHandler) {
         client.removeNotificationHandler(notificationHandler);
+        notificationHandler = null;
       }
       if (clientExitHandler) {
         client.removeExitHandler(clientExitHandler);
+        clientExitHandler = null;
       }
       if (activeTurn.disconnectOnFinish) {
         await cleanupClient();
@@ -1031,6 +1087,11 @@ export const runCodexAppServerTurn = async (
         assistantMessageId: prepared.assistantMessageId,
       },
     };
+  } finally {
+    options?.signal?.removeEventListener('abort', onAbort);
+    if (client && notificationHandler) client.removeNotificationHandler(notificationHandler);
+    if (client && clientExitHandler) client.removeExitHandler(clientExitHandler);
+    if (activeTurn.stopped) await cleanupClient();
   }
 };
 
@@ -1039,6 +1100,7 @@ export const interruptCodexAppServerTurn = async (
   sessionId: string,
   options?: { keepConnected?: boolean },
 ) => {
+  claimedAppServerTurns.get(sessionId)?.abort();
   const activeTurn = activeAppServerTurns.get(sessionId);
   if (!activeTurn) {
     return { projects: await getProjects() };
@@ -1050,17 +1112,10 @@ export const interruptCodexAppServerTurn = async (
   activeTurn.settle?.();
 
   if (activeTurn.threadId && activeTurn.turnId) {
-    let acquiredInterruptClient = false;
     try {
-      const client = await appServerManager.acquire(activeTurn.cwd);
-      acquiredInterruptClient = true;
-      await client.turnInterrupt({ threadId: activeTurn.threadId, turnId: activeTurn.turnId });
+      await activeTurn.client?.turnInterrupt({ threadId: activeTurn.threadId, turnId: activeTurn.turnId });
     } catch {
       // Best-effort interrupt.
-    } finally {
-      if (acquiredInterruptClient) {
-        appServerManager.release(activeTurn.cwd);
-      }
     }
   }
 
@@ -1101,6 +1156,7 @@ export const disconnectCodexAppServerTurn = async (
   ctx: ClaudeInteractionContext,
   sessionId: string,
 ) => {
+  claimedAppServerTurns.get(sessionId)?.abort();
   const activeTurn = activeAppServerTurns.get(sessionId);
   if (activeTurn) {
     await interruptCodexAppServerTurn(ctx, sessionId, { keepConnected: false });

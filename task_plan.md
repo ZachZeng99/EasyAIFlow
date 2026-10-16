@@ -14,6 +14,18 @@ Further checkpoints: `996e316` (runtime history ownership), `dcfc9a5` (independe
 - [x] Complete final build and commit the model catalog checkpoint.
 - [ ] Continue real group-chat and interactive-request verification, then native agent visibility and communication.
 
+## Current continuation: Group routing and lifecycle
+
+- [x] Fix default/explicit recipient routing and freeze client-selected targets.
+- [x] Bind backing reply IDs before events; serialize Codex member turns and cancel queued work on stop.
+- [x] Freeze completed public room context and keep room activity until every dispatch settles.
+- [x] Verify routing, concurrency, cancellation and real CLI group scenarios.
+- [x] Finish build and commit checkpoint.
+
+Investigation notes: the restored Claude print loop confirms interrupt aborts the current execution; EAF must also cancel its own not-yet-submitted turns. A source search used Windows wildcards as literal paths and failed; reran with the concrete file. Initial type check found the new room resolution event needed sourceSessionId and the coordinator needed an explicit AbortSignal return type; corrected both.
+
+Test setup notes: corrected the group fixture to pass sessionKind as the fifth createSessionInStreamwork argument. The resident test filename was resolved via file inventory after a guessed path was absent.
+
 ## Interaction verification
 
 - [x] Real group fan-out, shared context and queued Claude replies passed.

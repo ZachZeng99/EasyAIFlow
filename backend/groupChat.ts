@@ -37,6 +37,20 @@ import type {
   SessionSummary,
 } from '../src/data/types.js';
 import { resolveGroupTargets } from '../src/data/groupChat.js';
+import { GroupTurnCoordinator } from './groupTurnCoordinator.js';
+import type { SessionInteractionState } from '../src/data/sessionInteraction.js';
+
+const coordinators = new WeakMap<ClaudeInteractionState, GroupTurnCoordinator>();
+const coordinatorFor = (state: ClaudeInteractionState) => {
+  let coordinator = coordinators.get(state);
+  if (!coordinator) { coordinator = new GroupTurnCoordinator(); coordinators.set(state, coordinator); }
+  return coordinator;
+};
+export const hasActiveGroupTurns = (state: ClaudeInteractionState) => coordinatorFor(state).hasWork();
+export const getGroupInteractionSnapshots = (state: ClaudeInteractionState): Record<string, SessionInteractionState> =>
+  Object.fromEntries(coordinatorFor(state).pendingCounts().map(([sessionId, pendingTurns]) => [sessionId, {
+    runtime: { processActive: true, phase: 'running', pendingTurns, updatedAt: Date.now() },
+  }]));
 
 type GroupSendPayload = {
   sessionId: string;
@@ -45,6 +59,7 @@ type GroupSendPayload = {
   session?: SessionSummary;
   model?: string;
   effort?: ClaudePrintOptions['effort'];
+  targetParticipantIds?: string[];
 };
 
 type GroupMirrorSpec = {
@@ -467,27 +482,10 @@ export const mirrorAssistantEvent = async (
 
 export const resolveMirroredAssistantRoomMessageId = (
   spec: GroupMirrorSpec,
-  roomSession: SessionRecord,
+  _roomSession: SessionRecord,
   backingMessageId: string,
 ) => {
-  const matchesBackingId =
-    Boolean(spec.backingAssistantMessageId) && backingMessageId === spec.backingAssistantMessageId;
-
-  if (spec.backingAssistantMessageId) {
-    return matchesBackingId ? spec.roomAssistantMessageId : null;
-  }
-
-  const fallbackTarget = [...(roomSession.messages ?? [])]
-    .reverse()
-    .find(
-      (message) =>
-        message.role === 'assistant' &&
-        message.speakerId === spec.participant.id &&
-        message.sourceSessionId === spec.backingSessionId &&
-        (message.status === 'queued' || message.status === 'streaming' || message.status === 'running'),
-    );
-
-  return fallbackTarget?.id ?? null;
+  return spec.backingAssistantMessageId === backingMessageId ? spec.roomAssistantMessageId : null;
 };
 
 export const createMirroredContext = (
@@ -545,8 +543,8 @@ export const createMirroredContext = (
           event.type === 'permission-request' ||
           event.type === 'ask-user-question' ||
           event.type === 'plan-mode-request' ||
-          event.type === 'background-task' ||
-          event.type === 'runtime-state'
+          event.type === 'interaction-resolved' ||
+          event.type === 'background-task'
         ) {
           ctx.broadcastEvent({
             ...event,
@@ -577,7 +575,7 @@ const buildRoomAssistantPlaceholder = (
   speakerLabel: participant.label,
   provider: participant.provider,
   sourceSessionId: backingSessionId,
-  status: 'streaming',
+  status: 'queued',
 });
 
 const buildRoomUserMessage = (
@@ -647,17 +645,32 @@ const markGroupParticipantStartError = async (
   });
 };
 
-const getRoomSnapshotMessages = (
+export const getRoomSnapshotMessages = (
   roomSession: SessionRecord,
-  lastAppliedRoomSeq: number,
   snapshotSeq: number,
-) =>
-  (roomSession.messages ?? []).filter(
+) => {
+  // Revisit earlier sequence numbers: a reply can complete after a later user
+  // message. Incremental seq watermarks alone would permanently skip it.
+  const publicMessages = (roomSession.messages ?? []).filter(
     (message) =>
       typeof message.seq === 'number' &&
-      message.seq > lastAppliedRoomSeq &&
-      message.seq <= snapshotSeq,
+      message.seq <= snapshotSeq &&
+      (message.role === 'user' || message.role === 'assistant') &&
+      (!message.kind || message.kind === 'message') &&
+      (message.status === undefined || message.status === 'complete' || message.status === 'success'),
   );
+  // Keep the addressed user prompt intact and bound older public context.
+  let remaining = 64 * 1024;
+  const selected: ConversationMessage[] = [];
+  for (const message of publicMessages.slice(-80).reverse()) {
+    if (remaining <= 0 && message.seq !== snapshotSeq) break;
+    const content = message.seq === snapshotSeq || message.content.length <= remaining
+      ? message.content : `${message.content.slice(0, remaining)}\n[Earlier message excerpt truncated]`;
+    selected.push({ ...message, content, targetParticipantIds: message.targetParticipantIds?.slice() });
+    if (message.seq !== snapshotSeq) remaining -= content.length;
+  }
+  return selected.reverse();
+};
 
 const runGroupParticipantTurn = async (
   ctx: ClaudeInteractionContext,
@@ -668,13 +681,16 @@ const runGroupParticipantTurn = async (
   snapshotSeq: number,
   pendingAttachments: PendingAttachment[],
   payload: GroupSendPayload,
+  signal: AbortSignal,
 ) => {
+  signal.throwIfAborted();
   const backingSession = await findSession(participant.backingSessionId);
   if (!backingSession) {
     throw new Error(`${participant.label} backing session not found.`);
   }
 
-  const syncMessages = getRoomSnapshotMessages(roomSession, participant.lastAppliedRoomSeq, snapshotSeq);
+  signal.throwIfAborted();
+  const syncMessages = roomSession.messages;
   const syncPrompt = participant.provider === 'codex'
     ? buildCodexRoomChatPrompt(participant, syncMessages)
     : buildRoomSyncPrompt(roomSession, participant, syncMessages, snapshotSeq);
@@ -723,7 +739,8 @@ const runGroupParticipantTurn = async (
         mirrorSpec.backingAssistantMessageId &&
         'messageId' in event &&
         event.messageId === mirrorSpec.backingAssistantMessageId &&
-        (event.type === 'complete' || event.type === 'error')
+        (event.type === 'complete' || event.type === 'error' ||
+          (event.type === 'status' && (event.status === 'complete' || event.status === 'error')))
       ) {
         removeSessionBroadcastInterceptor(state, backingSession.id, interceptor!);
         interceptorSettled?.();
@@ -732,6 +749,10 @@ const runGroupParticipantTurn = async (
 
     addSessionBroadcastInterceptor(state, backingSession.id, interceptor);
   }
+
+  const onAbort = () => interceptorSettled?.();
+  signal.addEventListener('abort', onAbort, { once: true });
+  const onPrepared = (messageId: string) => { mirrorSpec.backingAssistantMessageId = messageId; };
 
   try {
     // Codex: pass mirroredCtx directly and keep forwarding the original backing
@@ -751,6 +772,8 @@ const runGroupParticipantTurn = async (
               references: roomSession.contextReferences ?? [],
               model: participant.model || backingSession.model || payload.model,
               effort: payload.effort,
+              onPrepared,
+              signal,
             },
           )
         : await runClaudePrint(
@@ -764,6 +787,8 @@ const runGroupParticipantTurn = async (
               references: roomSession.contextReferences ?? [],
               model: participant.model || backingSession.model || payload.model,
               effort: payload.effort,
+              onPrepared,
+              signal,
             },
           );
 
@@ -787,11 +812,12 @@ const runGroupParticipantTurn = async (
 
     // Wait for the interceptor to see the terminal event (complete/error) so
     // background task results are mirrored before we return.
-    if (backgroundSettled) {
+    if (backgroundSettled && !signal.aborted) {
       await backgroundSettled;
     }
     await flushMirroredEvents();
   } finally {
+    signal.removeEventListener('abort', onAbort);
     // Safety net: always clean up the interceptor even if the turn throws.
     if (interceptor) {
       removeSessionBroadcastInterceptor(state, backingSession.id, interceptor);
@@ -802,6 +828,12 @@ const runGroupParticipantTurn = async (
 };
 
 export const sendGroupMessage = async (
+  ctx: ClaudeInteractionContext,
+  state: ClaudeInteractionState,
+  payload: GroupSendPayload,
+) => coordinatorFor(state).dispatch(payload.sessionId, () => dispatchGroupMessage(ctx, state, payload));
+
+const dispatchGroupMessage = async (
   ctx: ClaudeInteractionContext,
   state: ClaudeInteractionState,
   payload: GroupSendPayload,
@@ -818,7 +850,9 @@ export const sendGroupMessage = async (
     payload.prompt,
     roomSession.group.participants,
     roomSession.messages ?? [],
+    payload.targetParticipantIds,
   );
+  if (!targets.length) throw new Error('No enabled group recipient matches this message. Choose an available participant with @.');
   const userMessage = buildRoomUserMessage(payload.prompt, targets, pendingAttachments);
   const initialProjects = await appendMessagesToSession(
     roomSession.id,
@@ -841,20 +875,10 @@ export const sendGroupMessage = async (
         .map((message) => (typeof message.seq === 'number' ? message.seq : 0)),
     );
 
-  if (targets.length === 0) {
-    return {
-      projects: initialProjects,
-      queued: {
-        sessionId: roomSession.id,
-        userMessageId: userMessage.id,
-        assistantMessageId: '',
-      },
-    };
-  }
-
   const targetParticipants = roomAfterUser.group.participants.filter((participant) =>
     targets.includes(participant.id),
   );
+  const contextSnapshot = { ...roomAfterUser, messages: getRoomSnapshotMessages(roomAfterUser, snapshotSeq) };
   const placeholders = targetParticipants.map((participant) =>
     buildRoomAssistantPlaceholder(participant, participant.backingSessionId),
   );
@@ -873,10 +897,12 @@ export const sendGroupMessage = async (
   });
 
   // Broadcast running state for the room when participant turns start.
+  const coordinator = coordinatorFor(state);
+  const turn = coordinator.begin(roomSession.id);
   ctx.broadcastEvent({
     type: 'runtime-state',
     sessionId: roomSession.id,
-    runtime: { processActive: true, phase: 'running', updatedAt: Date.now() },
+    runtime: getGroupInteractionSnapshots(state)[roomSession.id].runtime!,
   });
 
   const turnPromises = targetParticipants.map((participant, index) => {
@@ -885,16 +911,22 @@ export const sendGroupMessage = async (
       return Promise.resolve();
     }
 
-    return runGroupParticipantTurn(
+    const run = () => runGroupParticipantTurn(
       ctx,
       state,
-      roomAfterUser,
+      contextSnapshot,
       participant,
       placeholder,
       snapshotSeq,
       pendingAttachments,
       payload,
-    ).catch(async (error) => {
+      turn.signal,
+    );
+    const pending = participant.provider === 'codex'
+      ? coordinator.runMember(participant.backingSessionId, turn.signal, run)
+      : run();
+    return pending.catch(async (error) => {
+      if (turn.signal.aborted) return;
       await markGroupParticipantStartError(
         ctx,
         roomSession.id,
@@ -921,11 +953,14 @@ export const sendGroupMessage = async (
     } catch (error) {
       console.warn('[GROUP] Failed to broadcast final room snapshot', roomSession.id, error);
     }
+    turn.finish();
+    const pendingRuntime = getGroupInteractionSnapshots(state)[roomSession.id]?.runtime;
     ctx.broadcastEvent({
       type: 'runtime-state',
       sessionId: roomSession.id,
-      runtime: { processActive: false, phase: 'inactive', updatedAt: Date.now() },
+      runtime: pendingRuntime ?? { processActive: false, phase: 'inactive', pendingTurns: 0, updatedAt: Date.now() },
     });
+    if (pendingRuntime) return;
     await Promise.allSettled([
       releaseMaterializedSessionHistory(roomSession.id),
       ...roomSession.group.participants.map((participant) =>
@@ -966,11 +1001,20 @@ export const stopGroupSessionRuns = async (
   state: ClaudeInteractionState,
   sessionId: string,
   mode: 'stop' | 'disconnect' = 'stop',
+) => coordinatorFor(state).dispatch(sessionId, () => stopGroupRuns(ctx, state, sessionId, mode));
+
+const stopGroupRuns = async (
+  ctx: ClaudeInteractionContext,
+  state: ClaudeInteractionState,
+  sessionId: string,
+  mode: 'stop' | 'disconnect',
 ) => {
   const session = await findSession(sessionId);
   if (!isGroupRoomSession(session)) {
     throw new Error('Group session not found.');
   }
+
+  const settled = coordinatorFor(state).cancel(sessionId);
 
   await Promise.allSettled(
     session.group.participants.map((participant) =>
@@ -978,6 +1022,7 @@ export const stopGroupSessionRuns = async (
     ),
   );
 
+  await settled;
   const roomResult = await stopPendingSessionMessages(sessionId);
   roomResult.changedMessages.forEach((message) => {
     if (message.role === 'assistant') {

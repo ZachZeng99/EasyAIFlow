@@ -2223,6 +2223,8 @@ export const prepareClaudeRun = async (
   options?: ClaudePrintOptions,
   assistantStatus: 'queued' | 'streaming' = 'streaming',
 ): Promise<PreparedClaudeRun> => {
+  const stopVersion = readSessionStopVersion(state.sessionStopVersions, sessionId);
+  options?.signal?.throwIfAborted();
   let session = (await findSession(sessionId)) ?? (fallbackSession ? await ensureSessionRecord(fallbackSession) : null);
   if (!session) {
     throw new Error('Session not found');
@@ -2275,6 +2277,7 @@ export const prepareClaudeRun = async (
     prompt,
     'Just now',
   );
+  resolvedOptions.onPrepared?.(assistantMessage.id);
   ctx.broadcastEvent({
     type: 'trace',
     sessionId,
@@ -2295,7 +2298,7 @@ export const prepareClaudeRun = async (
     options: resolvedOptions,
     projects,
     assistantWasQueued: assistantStatus === 'queued',
-    stopVersion: readSessionStopVersion(state.sessionStopVersions, sessionId),
+    stopVersion,
   };
 };
 
@@ -3179,6 +3182,13 @@ const executePreparedClaudeRunAttempt = async (
   new Promise<void>((resolve, reject) => {
     void (async () => {
       const resident = await ensureResidentClaudeSession(ctx, state, prepared.session, prepared.options);
+      if (prepared.options?.signal?.aborted || readSessionStopVersion(state.sessionStopVersions, prepared.sessionId) !== prepared.stopVersion) {
+        const stopped = await stopAssistantMessage(prepared.sessionId, prepared.assistantMessageId);
+        if (stopped) ctx.broadcastEvent({ type: 'status', sessionId: prepared.sessionId, messageId: prepared.assistantMessageId, status: stopped.status, title: stopped.title, content: stopped.content });
+        releaseQueuedTurn();
+        resolve();
+        return;
+      }
       const turn = createActiveTurn(prepared, releaseQueuedTurn, resolve, reject);
       resident.currentTurn = turn;
       emitRuntimeState(ctx, prepared.sessionId, 'running', true, resident.configuredEffort);
@@ -3250,7 +3260,7 @@ export const runClaudePrint = async (
     try {
       prepared = await preparedRun;
       await scheduledRun.whenReady;
-      if (readSessionStopVersion(state.sessionStopVersions, sessionId) !== prepared.stopVersion) {
+      if (options?.signal?.aborted || readSessionStopVersion(state.sessionStopVersions, sessionId) !== prepared.stopVersion) {
         const stopped = await stopAssistantMessage(prepared.sessionId, prepared.assistantMessageId);
         if (stopped) {
           ctx.broadcastEvent({

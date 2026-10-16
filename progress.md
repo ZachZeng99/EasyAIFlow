@@ -505,3 +505,11 @@ Started scoped runtime investigation. Read existing plans and preserved all earl
 
 
 Completed scoped recovery through supported API; no code changes or global server restart. Repeated live read has zero queued/streaming/running/background messages; original message IDs/text and native history preserved. Source/history merge chronology is an existing separate concern, not claimed fixed.
+# 2026-10-16 group lifecycle checkpoint
+
+- Continuing on `codex/eaf-v2` after six existing commits; no changes to main or unrelated `.tmp-run/`.
+- Added explicit/default recipient behavior, fixed target selection at submit, removed guessing of reply placeholders, serialized Codex participant turns, and cancelled queued work on group stop.
+- Shared context is a bounded snapshot of completed public messages. Group pending counts survive snapshot reads and keep the UI active between member turns.
+- Deterministic group lifecycle, group parsing/mirroring, session interaction, Codex app-server, group store/recovery, resident lifecycle, question control and run queue regressions passed.
+- Real Claude/Codex group smoke passed at `.tmp-tests/live-interactions-kBOlkv`: default target, @all fan-out, cross-provider shared context, both queues, and stop. First run's mixed-case assertion was corrected after checking intact persisted replies.
+- Final type check, frontend/Electron/server compilation and whitespace checks passed. Remote physical-device management and native/EAF agent communication remain scheduled work, not delivered by this checkpoint.

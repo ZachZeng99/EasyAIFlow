@@ -81,6 +81,7 @@ contextBridge.exposeInMainWorld('easyAIFlow', {
   sendMessage: (payload: {
     sessionId: string;
     prompt: string;
+    targetParticipantIds?: string[];
     attachments?: import('../src/data/types.js').PendingAttachment[];
     session?: import('../src/data/types.js').SessionSummary;
     references?: import('../src/data/types.js').ContextReference[];

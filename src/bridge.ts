@@ -150,6 +150,7 @@ export type EasyAIFlowBridge = {
   sendMessage: (payload: {
     sessionId: string;
     prompt: string;
+    targetParticipantIds?: string[];
     attachments?: PendingAttachment[];
     session?: SessionSummary;
     references?: ContextReference[];

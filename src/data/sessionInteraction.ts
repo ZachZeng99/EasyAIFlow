@@ -222,6 +222,9 @@ export const mergeGroupRoomRuntimeState = (
   );
 
   if (presentParticipants.length > 0) {
+    if ((roomState?.pendingTurns ?? 0) > 0) {
+      return mergeSessionRuntimeStates([roomState, ...presentParticipants]);
+    }
     return mergeSessionRuntimeStates(presentParticipants);
   }
 

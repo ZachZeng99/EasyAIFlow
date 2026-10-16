@@ -2,6 +2,9 @@ import type { ConversationMessage, GroupParticipant, GroupParticipantId } from '
 
 const groupMentionPattern = /(^|[^@\w])@(claude|codex|all)\b/gi;
 
+export const hasGroupMention = (prompt: string) =>
+  new RegExp(groupMentionPattern.source, 'i').test(prompt);
+
 const isGroupParticipantId = (value: string): value is GroupParticipantId =>
   value === 'claude' || value === 'codex';
 
@@ -48,7 +51,7 @@ export const getLastGroupResponder = (
       typeof message.speakerId === 'string' &&
       isGroupParticipantId(message.speakerId) &&
       enabledIds.has(message.speakerId) &&
-      message.status !== 'error' &&
+      (message.status === undefined || message.status === 'complete' || message.status === 'success') &&
       message.content.trim().length > 0,
   );
 
@@ -63,12 +66,20 @@ export const resolveGroupTargets = (
   prompt: string,
   availableParticipants: GroupParticipant[],
   messages: ConversationMessage[],
+  selectedTargets?: string[],
 ): GroupParticipantId[] => {
   const explicitTargets = parseGroupTargets(prompt, availableParticipants);
-  if (explicitTargets.length > 0) {
-    return explicitTargets;
+  const explicitlyAddressed = hasGroupMention(prompt);
+  if (selectedTargets) {
+    const enabledIds = new Set(availableParticipants.filter((p) => p.enabled).map((p) => p.id));
+    return selectedTargets.length > 0 && selectedTargets.every((id) =>
+      isGroupParticipantId(id) && enabledIds.has(id) && (!explicitlyAddressed || explicitTargets.includes(id)))
+      ? [...new Set(selectedTargets)] as GroupParticipantId[]
+      : [];
   }
+  if (explicitlyAddressed) return explicitTargets;
 
   const lastResponder = getLastGroupResponder(messages, availableParticipants);
-  return lastResponder ? [lastResponder] : [];
+  const defaultId = lastResponder ?? availableParticipants.find((participant) => participant.enabled)?.id;
+  return defaultId ? [defaultId] : [];
 };

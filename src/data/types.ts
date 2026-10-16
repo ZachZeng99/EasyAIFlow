@@ -101,6 +101,8 @@ export type SessionRuntimeState = {
   phase: SessionRuntimePhase;
   appliedEffort?: SessionEffort;
   updatedAt?: number;
+  /** Group dispatches still queued or executing in this device service. */
+  pendingTurns?: number;
 };
 
 export type ChangedFile = {
@@ -315,6 +317,7 @@ export type ClaudeStreamEvent =
   | {
       type: 'interaction-resolved';
       sessionId: string;
+      sourceSessionId?: string;
       interaction: 'ask';
       requestId: string;
     }

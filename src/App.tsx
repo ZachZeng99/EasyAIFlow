@@ -19,7 +19,7 @@ import {
   mergeProjectSnapshots,
   mergeProjectSnapshotsAndHydrateSession,
 } from './data/projectSnapshots';
-import { getLastGroupResponder } from './data/groupChat';
+import { hasGroupMention, resolveGroupTargets } from './data/groupChat';
 import {
   evictSessionHistories,
   isStaleSessionHistoryCursorError,
@@ -199,7 +199,6 @@ const referenceTokenPattern = /\[\[(session|streamwork):([^[\]|]+?)(?:\|(summary
 const makeContextReferenceId = () =>
   globalThis.crypto?.randomUUID?.() ?? `ctx-${Math.random().toString(36).slice(2, 10)}`;
 
-const hasGroupMentions = (prompt: string) => /(^|\s)@(claude|codex|all)\b/i.test(prompt);
 
 const getContextReferenceKey = (reference: ContextReference) =>
   reference.kind === 'session'
@@ -889,9 +888,10 @@ export default function App() {
       return composerNotice;
     }
 
-    const lastResponderId = getLastGroupResponder(
-      selectedSession.messages ?? [],
+    const [lastResponderId] = resolveGroupTargets(
+      '',
       selectedGroupParticipants,
+      selectedSession.messages ?? [],
     );
     const lastResponder = selectedGroupParticipants.find(
       (participant) => participant.id === lastResponderId,
@@ -901,7 +901,7 @@ export default function App() {
       return `No @ defaults to ${lastResponder.label}. Type @ for quick options, or use @all.`;
     }
 
-    return 'Type @ for quick options, or start with @claude, @codex, or @all.';
+    return 'No group participants are enabled.';
   }, [composerNotice, selectedGroupParticipants, selectedSession]);
   const sessionIndicators = useMemo<Record<string, SessionIndicator>>(
     () =>
@@ -1703,7 +1703,7 @@ export default function App() {
     }));
     let requestedModel = resolveRequestedModelArg(model, modelSelectionSource);
     const requestsGroupMode =
-      selectedSession.sessionKind === 'group' || hasGroupMentions(outgoingPrompt);
+      selectedSession.sessionKind === 'group' || hasGroupMention(outgoingPrompt);
 
     const optimisticSend =
       requestsGroupMode || usesCommittedMessages(selectedSession)
@@ -1727,6 +1727,9 @@ export default function App() {
       const result = await bridge.sendMessage({
         sessionId: selectedSession.id,
         prompt: outgoingPrompt,
+        targetParticipantIds: selectedSession.sessionKind === 'group'
+          ? resolveGroupTargets(outgoingPrompt, selectedGroupParticipants, selectedSession.messages ?? [])
+          : undefined,
         attachments: pendingAttachments,
         session: selectedSession,
         references: displayContextReferences,

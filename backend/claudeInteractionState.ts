@@ -72,6 +72,9 @@ export type ClaudePrintOptions = {
   model?: string;
   effort?: string;
   references?: ContextReference[];
+  /** Internal orchestration hooks; never supplied by RPC clients. */
+  onPrepared?: (assistantMessageId: string) => void;
+  signal?: AbortSignal;
 };
 
 export type PreparedClaudeRun = {

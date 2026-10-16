@@ -39,6 +39,7 @@ import type {
 } from '../src/data/types.js';
 
 type CodexRunOptions = {
+  onPrepared?: (assistantMessageId: string) => void;
   model?: string;
   references?: ContextReference[];
   fullAuto?: boolean;
@@ -575,6 +576,7 @@ export const prepareCodexRun = async (
   };
 
   const projects = await appendMessagesToSession(sessionId, [userMessage, assistantMessage], prompt, 'Just now');
+  options?.onPrepared?.(assistantMessage.id);
   ctx.broadcastEvent({
     type: 'trace',
     sessionId,

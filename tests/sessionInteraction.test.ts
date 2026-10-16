@@ -66,6 +66,19 @@ run('mergeSessionRuntimeStates falls back to the latest offline state when nothi
   });
 });
 
+run('mergeGroupRoomRuntimeState accounts for acknowledged queued dispatches between member turns', () => {
+  const merged = mergeGroupRoomRuntimeState(
+    makeRuntime({ phase: 'running', pendingTurns: 2 }),
+    [makeRuntime({ phase: 'idle' })],
+  );
+  assert.equal(merged?.phase, 'running');
+  const waiting = mergeGroupRoomRuntimeState(
+    makeRuntime({ phase: 'running', pendingTurns: 2 }),
+    [makeRuntime({ phase: 'awaiting_reply' })],
+  );
+  assert.equal(waiting?.phase, 'awaiting_reply');
+});
+
 run('mergeGroupRoomRuntimeState prefers backing runtimes over stale room runtime', () => {
   const merged = mergeGroupRoomRuntimeState(
     makeRuntime({ processActive: true, phase: 'running', updatedAt: 50 }),

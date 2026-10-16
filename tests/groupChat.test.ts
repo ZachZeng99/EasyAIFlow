@@ -5,8 +5,9 @@ import {
   createMirroredContext,
   ignoreMissingSessionError,
   resolveMirroredAssistantRoomMessageId,
+  getRoomSnapshotMessages,
 } from '../backend/groupChat.ts';
-import { resolveGroupTargets } from '../src/data/groupChat.ts';
+import { hasGroupMention, resolveGroupTargets } from '../src/data/groupChat.ts';
 import type { ConversationMessage, GroupParticipant, SessionRecord } from '../src/data/types.ts';
 
 const run = (name: string, fn: () => void) => {
@@ -396,7 +397,7 @@ run('resolveMirroredAssistantRoomMessageId ignores foreign events once the backi
   assert.equal(resolved, null);
 });
 
-run('resolveMirroredAssistantRoomMessageId falls back to the latest pending placeholder before the backing assistant id is known', () => {
+run('resolveMirroredAssistantRoomMessageId never guesses a placeholder before the backing assistant id is known', () => {
   const room = makeRoomSession([
     {
       id: 'assistant-old',
@@ -435,10 +436,49 @@ run('resolveMirroredAssistantRoomMessageId falls back to the latest pending plac
     'backing-unknown',
   );
 
-  assert.equal(resolved, 'assistant-new');
+  assert.equal(resolved, null);
 });
 
-await runAsync('createMirroredContext forwards backing events for Codex rooms and flush waits for mirrored delivery', async () => {
+run('group routing has an enabled default and never redirects an unavailable explicit recipient', () => {
+  const participants = [makeParticipant({ enabled: false, id: 'claude' }), makeParticipant()];
+  assert.deepEqual(resolveGroupTargets('你好', participants, []), ['codex']);
+  assert.deepEqual(resolveGroupTargets('请@claude处理', participants, []), []);
+  assert.equal(hasGroupMention('你好@codex'), true);
+  assert.equal(hasGroupMention('mail@codex.example'), false);
+  assert.deepEqual(resolveGroupTargets('你好', participants.map((p) => ({ ...p, enabled: false })), []), []);
+});
+
+run('group routing ignores partial replies and preserves the recipient selected before a new reply arrives', () => {
+  const participants = [makeParticipant({ id: 'claude' }), makeParticipant()];
+  const message: ConversationMessage = { id: 'reply', role: 'assistant', timestamp: '', title: '', content: 'partial', speakerId: 'codex', status: 'streaming' };
+  assert.deepEqual(resolveGroupTargets('继续', participants, [message]), ['claude']);
+  assert.deepEqual(resolveGroupTargets('继续', participants, [{ ...message, status: 'complete' }], ['claude']), ['claude']);
+  assert.deepEqual(resolveGroupTargets('继续', participants, [], ['missing']), []);
+  assert.deepEqual(resolveGroupTargets('@all 继续', participants, [], ['codex']), ['codex']);
+  assert.deepEqual(resolveGroupTargets('@claude 继续', participants, [], ['codex']), []);
+});
+
+run('room context freezes only public completed messages and revisits replies that completed at an earlier sequence', () => {
+  const base: ConversationMessage = { id: 'user', role: 'user', timestamp: '', title: '', content: 'question', seq: 4, status: 'complete' };
+  const pending: ConversationMessage = { ...base, id: 'reply', role: 'assistant', seq: 2, content: 'partial', status: 'streaming' };
+  const room = makeRoomSession([pending, { ...base, id: 'trace', seq: 3, role: 'system', kind: 'tool_use', content: 'private tool output' }, base]);
+  const snapshot = getRoomSnapshotMessages(room, 4);
+  assert.deepEqual(snapshot.map((m) => m.id), ['user']);
+  pending.status = 'complete';
+  pending.content = 'finished';
+  base.content = 'mutated after dispatch';
+  assert.equal(snapshot[0].content, 'question');
+  assert.deepEqual(getRoomSnapshotMessages(room, 4).map((m) => m.id), ['reply', 'user']);
+});
+
+run('room context is bounded while retaining the entire addressed message', () => {
+  const messages: ConversationMessage[] = Array.from({ length: 120 }, (_, seq) => ({ id: String(seq), seq, role: 'user', timestamp: '', title: '', content: 'x'.repeat(10000), status: 'complete' }));
+  const snapshot = getRoomSnapshotMessages(makeRoomSession(messages), 119);
+  assert.equal(snapshot.at(-1)?.content, messages.at(-1)?.content);
+  assert.ok(snapshot.reduce((sum, message) => sum + message.content.length, 0) < 80000);
+});
+
+await runAsync('member runtime events do not overwrite aggregate room activity', async () => {
   const recordedEvents: Array<Record<string, unknown>> = [];
   const mirror = createMirroredContext(
     {
@@ -472,9 +512,7 @@ await runAsync('createMirroredContext forwards backing events for Codex rooms an
 
   await mirror.flush();
 
-  assert.equal(recordedEvents.length, 2);
-  assert.equal(recordedEvents[1]?.sessionId, 'room-1');
-  assert.equal(recordedEvents[1]?.sourceSessionId, 'member-codex');
+  assert.equal(recordedEvents.length, 1);
 });
 
 await runAsync('ignoreMissingSessionError swallows missing session failures', async () => {

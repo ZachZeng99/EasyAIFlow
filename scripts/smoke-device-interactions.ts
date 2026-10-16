@@ -49,6 +49,7 @@ try {
   const model = catalog.models.find((entry) => entry.aliases?.includes('sonnet'))?.id;
   assert.ok(model);
   const project = await client.request<ProjectCreateResult>('createProject', { rootPath: workspace, name: 'EAF interaction smoke' });
+  if (!process.argv.includes('--only-group')) {
   const created = await client.request<SessionCreateResult>('createSessionInStreamwork', { streamworkId: project.session.dreamId, name: 'Question smoke', provider: 'claude' });
   askSession = created.session.id;
   sessions.push(askSession);
@@ -85,26 +86,48 @@ try {
   });
   await client.request('stopSessionRun', { sessionId: askSession }).catch(() => undefined);
   await client.request('disconnectSession', { sessionId: askSession }).catch(() => undefined);
+  }
 
   if (!process.argv.includes('--only-ask')) {
   const room = await client.request<SessionCreateResult>('createSessionInStreamwork', { streamworkId: project.session.dreamId, name: 'Group smoke', sessionKind: 'group' });
   const roomId = room.session.id;
   sessions.push(roomId);
+  await run('first unmentioned group message has a default recipient', async () => {
+    const started = await client.request<{ queued: { assistantMessageId: string } }>('sendMessage', { sessionId: roomId, effort: 'default', prompt: 'Do not use tools. Reply with exactly DEFAULT_GROUP_OK.' });
+    assert.ok(started.queued.assistantMessageId);
+    const record = await waitFor(roomId, (session) => session.messages.some((message) => message.id === started.queued.assistantMessageId && message.status === 'complete'), 'default group recipient');
+    assert.match(record.messages.find((message) => message.id === started.queued.assistantMessageId)?.content ?? '', /DEFAULT_GROUP_OK/);
+  });
   await run('real group fan-out and shared context', async () => {
-    await client.request('sendMessage', { sessionId: roomId, effort: 'default', prompt: '@all Do not use tools. Reply with exactly your participant label followed by _GROUP_OK.' });
-    const first = await waitFor(roomId, (session) => ['claude', 'codex'].every((speaker) => session.messages.some((message) => message.speakerId === speaker && message.role === 'assistant' && message.status === 'complete' && message.content.includes('_GROUP_OK'))), 'group fan-out');
-    assert.ok(first.messages.some((message) => message.content.includes('Claude_GROUP_OK')));
-    assert.ok(first.messages.some((message) => message.content.includes('Codex_GROUP_OK')));
+    const started = await client.request<{ queued: { userMessageId: string } }>('sendMessage', { sessionId: roomId, effort: 'default', prompt: '@all Do not use tools. Reply with exactly your participant label followed by _GROUP_OK.' });
+    const first = await waitFor(roomId, (session) => {
+      const userSeq = session.messages.find((message) => message.id === started.queued.userMessageId)?.seq ?? Infinity;
+      return ['claude', 'codex'].every((speaker) => session.messages.some((message) => (message.seq ?? 0) > userSeq && message.speakerId === speaker && message.role === 'assistant' && message.status === 'complete' && message.content.includes('_GROUP_OK')));
+    }, 'group fan-out');
+    assert.ok(first.messages.some((message) => message.role === 'assistant' && /Claude_GROUP_OK/i.test(message.content)));
+    assert.ok(first.messages.some((message) => message.role === 'assistant' && /Codex_GROUP_OK/i.test(message.content)));
     const follow = await client.request<{ queued: { assistantMessageId: string } }>('sendMessage', { sessionId: roomId, effort: 'default', prompt: '@codex Repeat Claude\'s previous exact reply. Do not add anything and do not use tools.' });
     const second = await waitFor(roomId, (session) => session.messages.some((message) => message.id === follow.queued.assistantMessageId && message.status === 'complete'), 'group follow-up');
-    assert.match(second.messages.find((message) => message.id === follow.queued.assistantMessageId)?.content ?? '', /Claude_GROUP_OK/);
+    assert.match(second.messages.find((message) => message.id === follow.queued.assistantMessageId)?.content ?? '', /Claude_GROUP_OK/i);
   });
-  await run('queued Claude room replies keep their own message identities', async () => {
-    const first = await client.request<{ queued: { assistantMessageId: string } }>('sendMessage', { sessionId: roomId, effort: 'default', prompt: '@claude Do not use tools. Reply with exactly QUEUE_A.' });
-    const second = await client.request<{ queued: { assistantMessageId: string } }>('sendMessage', { sessionId: roomId, effort: 'default', prompt: '@claude Do not use tools. Reply with exactly QUEUE_B.' });
+  for (const provider of ['claude', 'codex']) {
+  await run(`queued ${provider} room replies keep their own message identities`, async () => {
+    const first = await client.request<{ queued: { assistantMessageId: string } }>('sendMessage', { sessionId: roomId, effort: 'default', prompt: `@${provider} Do not use tools. Reply with exactly QUEUE_A.` });
+    const second = await client.request<{ queued: { assistantMessageId: string } }>('sendMessage', { sessionId: roomId, effort: 'default', prompt: `@${provider} Do not use tools. Reply with exactly QUEUE_B.` });
     const record = await waitFor(roomId, (session) => [first, second].every((turn) => session.messages.some((message) => message.id === turn.queued.assistantMessageId && message.status === 'complete')), 'queued room turns');
     assert.match(record.messages.find((message) => message.id === first.queued.assistantMessageId)?.content ?? '', /QUEUE_A/);
     assert.match(record.messages.find((message) => message.id === second.queued.assistantMessageId)?.content ?? '', /QUEUE_B/);
+  });
+  }
+  await run('real group stop settles current and queued turns', async () => {
+    for (const provider of ['claude', 'codex']) {
+      await client.request('sendMessage', { sessionId: roomId, effort: 'default', prompt: `@${provider} Do not use tools. Write a long numbered list of 100 sample words.` });
+      await client.request('sendMessage', { sessionId: roomId, effort: 'default', prompt: `@${provider} Do not use tools. Reply with exactly SHOULD_BE_CANCELLED.` });
+    }
+    await client.request('stopSessionRun', { sessionId: roomId });
+    const record = await client.request<SessionRecord>('getSessionRecord', { sessionId: roomId });
+    assert.ok(record.messages.every((message) => !['queued', 'streaming', 'running'].includes(message.status ?? '')));
+    assert.ok(!record.messages.some((message) => message.role === 'assistant' && message.content.includes('SHOULD_BE_CANCELLED')));
   });
   }
 } finally {

@@ -1,7 +1,8 @@
 import type { ClaudeInteractionContext } from './claudeInteractionContext.js';
 import type { ClaudeInteractionState } from './claudeInteractionState.js';
 import { answerClaudeQuestion } from './claudeQuestionInteraction.js';
-import { sendGroupMessage, stopGroupSessionRuns } from './groupChat.js';
+import { sendGroupMessage, stopGroupSessionRuns, getGroupInteractionSnapshots } from './groupChat.js';
+import { hasGroupMention } from '../src/data/groupChat.js';
 import { resolveProviderSessionRuntime } from './providerSessionRuntime.js';
 import {
   grantPathPermission,
@@ -48,7 +49,6 @@ import type { PlanModeResponsePayload } from '../src/data/planMode.js';
 const resolveSessionKind = async (sessionId: string, fallbackSession?: SessionSummary) =>
   (await findSession(sessionId))?.sessionKind ?? fallbackSession?.sessionKind ?? 'standard';
 
-const hasGroupMention = (prompt: string) => /(^|\s)@(claude|codex|all)\b/i.test(prompt);
 
 export const handleRespondToPermission = async (
   ctx: ClaudeInteractionContext,
@@ -181,6 +181,7 @@ export const handleSendMessage = async (
   payload: {
     sessionId: string;
     prompt: string;
+    targetParticipantIds?: string[];
     attachments?: PendingAttachment[];
     session?: SessionSummary;
     references?: ContextReference[];
@@ -280,6 +281,7 @@ export const handleBootstrapSessions = async (
   interactions: {
     ...getSessionInteractionSnapshots(state),
     ...getCodexAppServerInteractionSnapshots(),
+    ...getGroupInteractionSnapshots(state),
   },
 });
 

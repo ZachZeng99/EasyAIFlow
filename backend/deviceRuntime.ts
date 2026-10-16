@@ -31,6 +31,7 @@ import {
   handleDeleteSession,
 } from './claudeRpcOperations.js';
 import { getCodexAppServerInteractionSnapshots } from './codexAppServerTurn.js';
+import { getGroupInteractionSnapshots, hasActiveGroupTurns } from './groupChat.js';
 import { writeTextToSystemClipboard } from './systemClipboard.js';
 import {
   createProject,
@@ -88,6 +89,7 @@ export const createDeviceRuntime = (broadcast: (event: ClaudeStreamEvent) => voi
     const interactions = {
       ...getSessionInteractionSnapshots(state),
       ...getCodexAppServerInteractionSnapshots(),
+      ...getGroupInteractionSnapshots(state),
     };
 
     Object.entries(interactions).forEach(([sessionId, interaction]) => {
@@ -361,7 +363,7 @@ export const createDeviceRuntime = (broadcast: (event: ClaudeStreamEvent) => voi
   return {
     handlers: rpcHandlers,
     interactionEvents,
-    hasActiveWork: () => state.sessionRunQueue.size > 0 || interactionEvents().some((event) => event.type === 'runtime-state' && ['running', 'background', 'awaiting_reply'].includes(event.runtime.phase)),
+    hasActiveWork: () => hasActiveGroupTurns(state) || state.sessionRunQueue.size > 0 || interactionEvents().some((event) => event.type === 'runtime-state' && ['running', 'background', 'awaiting_reply'].includes(event.runtime.phase)),
     close: async () => {
       unsubscribe();
       await settleClaudeSessionsForShutdown(ctx, state);

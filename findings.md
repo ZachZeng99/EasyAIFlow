@@ -505,3 +505,16 @@ Add a `detached` distinction for background records. A running detached process 
 - Recovery succeeded via disconnectSession. All 110 original persisted messages retained unchanged; store now has 115 because shutdown flushed 5 older in-memory messages. The 100-message API window shifted accordingly; apparent missing IDs were pagination only, verified against complete store.
 - Native SHA256 unchanged: 7FC061AAD84A4109EB00D0DB9E23ABB31297B2063AE513785E0D045D0AD54217.
 - Backup and verification: C:/Users/L/AppData/Roaming/easyaiflow/recovery-backups/cpu-stuck-20260924-104939.
+# 2026-10-16 group continuation
+
+- Added per-room dispatch ordering, per-Codex-member execution queues, cancellation tokens, pre-stream message identity hooks and durable group context snapshots. Native Claude retains its own foreground/background queue semantics.
+- Fixed a separate Codex preparation race by reserving a session before asynchronous work; stops use the actual owning app-server client and handle late turn/start acknowledgement.
+- Room runtime snapshots now include pending dispatch counts; member-idle events cannot replace aggregate room activity, including during reconnect between queued turns.
+- New deterministic lifecycle test passed ordering/IDs, context snapshots, cancellation, owning-client interrupt, late acknowledgement and pre-launch cancellation. Test fixtures were corrected to hydrate released history before assertions.
+- First real group run passed default recipient, Claude/Codex queues and stop. Fan-out assertion failed because Codex emitted `CODEX_GROUP_OK` rather than mixed-case `Codex_GROUP_OK`; persisted replies were intact. Case-insensitive assertions and turn-scoped matching now avoid false failures; rerunning full shared-context case.
+
+- Verified branch `codex/eaf-v2` with six checkpoints through `68528bb`; only unrelated `.tmp-run/` is untracked.
+- Group default routing returns no recipient in an empty room and treats streaming content as a previous responder. Disabled explicit mentions can silently fall back to another participant.
+- Mirror identity is assigned only after provider invocation returns (after completion for Codex), leaving overlapping Claude turns vulnerable to latest-placeholder guessing.
+- Group Codex calls have no queue; native active-turn guard also has an asynchronous preparation gap. Each dispatch independently emits room-inactive even when another dispatch is still running.
+- Incremental room sequence context can skip a formerly pending reply forever; freeze completed public context per dispatch instead.
