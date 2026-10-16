@@ -1,5 +1,6 @@
 import {
   appendFile,
+  copyFile,
   mkdir,
   readFile,
   readdir,
@@ -394,7 +395,7 @@ const atomicReplaceFile = async (filePath: string, content: string) => {
   await mkdir(path.dirname(filePath), { recursive: true });
   const tempPath = makeTempPath(filePath);
   const previousPath = `${filePath}.previous`;
-  await writeFile(tempPath, content, 'utf8');
+  await writeFile(tempPath, content, { encoding: 'utf8', flush: true });
 
   try {
     await rename(tempPath, filePath);
@@ -458,6 +459,49 @@ const validateIndex = (value: unknown): SessionStoreV2Index => {
     throw new Error('Invalid V2 session store index.');
   }
   return value as SessionStoreV2Index;
+};
+
+const writeIndex = async (indexPath: string, index: SessionStoreV2Index) => {
+  const content = JSON.stringify(index);
+  await atomicReplaceFile(indexPath, content);
+  // Keep a durable copy after successful activation. Atomic rename alone does
+  // not guarantee the new file's contents survive an OS/power failure.
+  await atomicReplaceFile(`${indexPath}.last-good.json`, content);
+};
+
+const readIndex = async (indexPath: string): Promise<SessionStoreV2Index> => {
+  let primaryError: unknown;
+  try {
+    return validateIndex(parseJson(await readFile(indexPath, 'utf8'), 'V2 session store index'));
+  } catch (error) {
+    if (isRecord(error) && typeof error.code === 'string' && !isMissingEntry(error)) {
+      throw error;
+    }
+    primaryError = error;
+  }
+
+  for (const backupPath of [`${indexPath}.last-good.json`, `${indexPath}.previous`]) {
+    let recovered: SessionStoreV2Index;
+    try {
+      recovered = validateIndex(parseJson(await readFile(backupPath, 'utf8'), 'V2 session store index backup'));
+    } catch {
+      continue;
+    }
+    // Preserve corrupt bytes for diagnosis before restoring the validated V2
+    // catalog. Never fall back to the stale pre-migration V1 store.
+    if (!isMissingEntry(primaryError)) {
+      await copyFile(indexPath, `${indexPath}.corrupt-${Date.now()}-${process.pid}`);
+    }
+    await atomicReplaceFile(indexPath, JSON.stringify(recovered));
+    console.warn(`[SESSION_STORE] Recovered V2 index from ${backupPath}`);
+    return recovered;
+  }
+  if (isMissingEntry(primaryError)) {
+    // A valid manifest was already read. Returning ENOENT here would make
+    // openSessionStoreV2 treat an activated store as absent and remigrate V1.
+    throw new Error('V2 session store index is missing and no valid V2 recovery copy is available.', { cause: primaryError });
+  }
+  throw primaryError;
 };
 
 const sessionRecords = (state: SessionStoreAppState) =>
@@ -737,7 +781,7 @@ export class SessionStoreV2 {
           }
           const revision = this.indexRevision + 1;
           const index = buildIndex(state, revision);
-          await atomicReplaceFile(pathsForRoot(this.rootPath).indexPath, JSON.stringify(index));
+          await writeIndex(pathsForRoot(this.rootPath).indexPath, index);
           this.indexRevision = revision;
         }
       })().finally(() => {
@@ -829,7 +873,7 @@ const loadSessionStoreV2FromRoot = async (
   if (requireManifest) {
     validateManifest(parseJson(await readTextWithPrevious(paths.manifestPath), 'V2 session store manifest'));
   }
-  const index = validateIndex(parseJson(await readTextWithPrevious(paths.indexPath), 'V2 session store index'));
+  const index = await readIndex(paths.indexPath);
   const projects: ProjectRecord[] = index.projects.map((project) => ({
     ...project,
     dreams: project.dreams.map((dream) => ({
@@ -961,7 +1005,7 @@ export const migrateSessionStoreV2 = async (
       await writeFile(paths.eventsPath, '', 'utf8');
     }
 
-    await writeFile(finalPaths.indexPath, JSON.stringify(buildIndex(state, 0)), 'utf8');
+    await writeIndex(finalPaths.indexPath, buildIndex(state, 0));
     await verifyMigratedStore(finalRoot, state);
     const manifest: SessionStoreV2Manifest = {
       schemaVersion: SESSION_STORE_V2_SCHEMA_VERSION,

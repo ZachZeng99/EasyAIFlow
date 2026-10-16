@@ -135,13 +135,13 @@ await run('auto-migrates V1 and subsequent updates touch only the active V2 sess
     const catalogSession = catalog[0]?.dreams[0]?.sessions.find((item) => item.id === first.id);
     assert.deepEqual((catalogSession as SessionRecord | undefined)?.messages, []);
     assert.equal(catalogSession?.messagesLoaded, false);
-    assert.equal(reloaded?.messages.length, 51);
-    assert.equal(reloaded?.messages[0]?.id, 'first-200');
+    assert.equal(reloaded?.messages.length, 100);
+    assert.equal(reloaded?.messages[0]?.id, 'first-151');
     assert.equal(reloaded?.messages.at(-1)?.id, 'second');
     assert.equal(reloaded?.historyPage?.hasMoreBefore, true);
     assert.equal(older?.messages.length, 100);
-    assert.equal(older?.messages[0]?.id, 'first-100');
-    assert.equal(older?.messages.at(-1)?.id, 'first-199');
+    assert.equal(older?.messages[0]?.id, 'first-51');
+    assert.equal(older?.messages.at(-1)?.id, 'first-150');
     assert.equal(materializedMessageCount, 251);
     assert.equal(released, true);
     assert.deepEqual(releasedRecord?.messages, []);
@@ -300,7 +300,7 @@ await run('bounds trace content for UI pages without changing runtime materializ
     store = await importFreshSessionStore();
     await store.getProjectsForBootstrap();
     const opened = await store.getSessionRecordForBootstrap(target.id);
-    assert.equal(opened?.messages.length, 1);
+    assert.equal(opened?.messages.length, 100);
     assert.equal(opened?.historyPage?.hasMoreBefore, true);
 
     const older = opened?.historyPage?.nextBefore

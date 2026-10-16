@@ -212,6 +212,8 @@ export type ConversationMessage = {
   timestamp: string;
   title: string;
   content: string;
+  /** A completed local reply may arrive before (or without) its native JSONL record. */
+  completionOrigin?: 'runtime' | 'recovered-report';
   speakerId?: string;
   speakerLabel?: string;
   provider?: SessionProvider;

@@ -27,7 +27,7 @@ import {
   isIgnorableBackgroundTaskFollowupText,
   stripLeadingBackgroundTaskFollowupText as stripLeadingBackgroundTaskFollowupFromAssistantText,
 } from './claudeRunState.js';
-import { getClaudeResultError } from './claudeErrors.js';
+import { getClaudeResultError, getClaudeSyntheticApiError, isClaudeRequestRetry } from './claudeErrors.js';
 import { isClaudeSyntheticModel, normalizeClaudeModelSelection } from './claudeModel.js';
 import { mergeNativeImportedSessions } from './nativeSessionMerge.js';
 import {
@@ -134,6 +134,17 @@ type NativeSessionCatalogEntry = {
 };
 
 type NativeSessionSource = Pick<NativeSessionCatalogEntry, 'filePath' | 'provider' | 'sourceRevision'>;
+
+// Include parser semantics in the Claude hydration revision so fixes to native
+// event classification are applied to already-persisted V2 message pages.
+const NATIVE_CLAUDE_HISTORY_PARSER_REVISION = 4;
+const buildNativeSessionSourceRevision = (
+  provider: SessionProvider,
+  fileStat: { mtimeMs: number; size: number },
+) =>
+  provider === 'claude'
+    ? `claude-${NATIVE_CLAUDE_HISTORY_PARSER_REVISION}:${fileStat.mtimeMs}:${fileStat.size}`
+    : `${fileStat.mtimeMs}:${fileStat.size}`;
 
 type NativeCatalogFileCacheEntry = {
   mtimeMs: number;
@@ -1778,6 +1789,7 @@ const getNativeClaudeBackgroundTaskState = (payload: unknown, toolUseId: string)
 
 export type NativeClaudeSessionParseOptions = {
   finalizeTrailingUserTurn?: boolean;
+  finalizeTrailingToolTurn?: boolean;
 };
 
 const getNativeClaudeMessageId = (
@@ -1789,6 +1801,27 @@ const getNativeClaudeMessageId = (
     return randomUUID();
   }
   return suffix ? `${uuid}:${suffix}` : uuid;
+};
+
+/**
+ * Collects the uuid of every prompt Claude recorded, on any branch. A queued
+ * prompt has no uuid until Claude dequeues it, so these ids prove delivery.
+ */
+const collectNativeDeliveredUserMessageIds = (rawEntries: Record<string, unknown>[]) => {
+  const ids = new Set<string>();
+  for (const entry of rawEntries) {
+    if (entry.type === 'user' && entry.isMeta !== true && typeof entry.uuid === 'string' && entry.uuid) {
+      ids.add(entry.uuid);
+      continue;
+    }
+    const attachment = entry.type === 'attachment'
+      ? entry.attachment as { type?: unknown; source_uuid?: unknown } | undefined
+      : undefined;
+    if (attachment?.type === 'queued_command' && typeof attachment.source_uuid === 'string' && attachment.source_uuid) {
+      ids.add(attachment.source_uuid);
+    }
+  }
+  return [...ids];
 };
 
 export const parseNativeClaudeSessionFile = async (
@@ -1809,6 +1842,7 @@ export const parseNativeClaudeSessionFile = async (
     }
   }
   const entries = selectActiveNativeClaudeHistoryEntries(rawEntries);
+  const deliveredUserMessageIds = collectNativeDeliveredUserMessageIds(rawEntries);
   const messages: ConversationMessage[] = [];
   const toolTraceById = new Map<string, ConversationMessage>();
   const interactiveQuestionToolIds = new Set<string>();
@@ -1830,16 +1864,22 @@ export const parseNativeClaudeSessionFile = async (
   let currentTurnMessageIdSeed: string | undefined;
   let currentTurnSawToolResult = false;
   let currentTurnHasUserPrompt = false;
+  let currentTurnRetryError: string | undefined;
+  let latestAssistantEventTime = -Infinity;
   const currentTurnActiveBackgroundTaskIds = new Set<string>();
   const importedQueuedCommandIds = new Set<string>();
 
-  const finalizeIncompleteNativeTurn = (explicitError?: string) => {
+  const finalizeIncompleteNativeTurn = (
+    explicitError?: string,
+    finalizeImplicitToolTurn = true,
+  ) => {
     const error =
       explicitError ??
-      (currentTurnLastAssistantStopReason === 'tool_use' &&
-      currentTurnSawToolResult &&
-      interactiveQuestionToolIds.size === 0 &&
-      currentTurnActiveBackgroundTaskIds.size === 0
+      (finalizeImplicitToolTurn &&
+        currentTurnLastAssistantStopReason === 'tool_use' &&
+        currentTurnSawToolResult &&
+        interactiveQuestionToolIds.size === 0 &&
+        currentTurnActiveBackgroundTaskIds.size === 0
         ? CLAUDE_INCOMPLETE_TOOL_TURN_ERROR
         : undefined);
     if (!error) {
@@ -1874,15 +1914,20 @@ export const parseNativeClaudeSessionFile = async (
   const beginNativeUserTurn = (
     timestamp: string | number | undefined,
     messageIdSeed?: string,
+    provesPreviousTurnEnded = true,
   ) => {
     const missingVisibleResponse =
+      provesPreviousTurnEnded &&
       currentTurnHasUserPrompt &&
       !currentTurnLastAssistantMessage &&
       currentTurnLastAssistantStopReason !== 'end_turn' &&
       interactiveQuestionToolIds.size === 0 &&
       currentTurnActiveBackgroundTaskIds.size === 0;
     finalizeIncompleteNativeTurn(
-      missingVisibleResponse ? CLAUDE_NO_VISIBLE_RESPONSE_ERROR : undefined,
+      provesPreviousTurnEnded && currentTurnRetryError
+        ? currentTurnRetryError
+        : missingVisibleResponse ? CLAUDE_NO_VISIBLE_RESPONSE_ERROR : undefined,
+      provesPreviousTurnEnded,
     );
     currentTurnLastAssistantStopReason = undefined;
     currentTurnLastAssistantMessage = undefined;
@@ -1890,6 +1935,8 @@ export const parseNativeClaudeSessionFile = async (
     currentTurnMessageIdSeed = messageIdSeed;
     currentTurnSawToolResult = false;
     currentTurnHasUserPrompt = true;
+    currentTurnRetryError = undefined;
+    latestAssistantEventTime = -Infinity;
     currentTurnActiveBackgroundTaskIds.clear();
     interactiveQuestionToolIds.clear();
   };
@@ -1975,6 +2022,7 @@ export const parseNativeClaudeSessionFile = async (
           beginNativeUserTurn(
             parsed.timestamp as string | number | undefined,
             sourceId,
+            false,
           );
           if (pendingBackgroundTaskResult) {
             flushPendingBackgroundTaskResult(parsed.timestamp as string | number | undefined);
@@ -2145,6 +2193,12 @@ export const parseNativeClaudeSessionFile = async (
 
     if (parsed.type === 'assistant') {
       const messageObj = parsed.message as { model?: string; stop_reason?: string; content?: unknown };
+      const timestamp = toUpdatedAt(parsed.timestamp as string | number | undefined) ?? NaN;
+      if (Number.isFinite(timestamp)) {
+        latestAssistantEventTime = Math.max(latestAssistantEventTime, timestamp);
+      }
+      currentTurnRetryError = undefined;
+      const syntheticApiError = getClaudeSyntheticApiError(parsed);
       const assistantStopReason =
         typeof messageObj?.stop_reason === 'string'
           ? messageObj.stop_reason
@@ -2153,6 +2207,10 @@ export const parseNativeClaudeSessionFile = async (
             : undefined;
       if (assistantStopReason) {
         currentTurnLastAssistantStopReason = assistantStopReason;
+      }
+      if (syntheticApiError) {
+        lastErrorText = syntheticApiError;
+        currentTurnLastAssistantStopReason = 'error';
       }
       currentTurnLastTimestamp = parsed.timestamp as string | number | undefined;
       if (typeof messageObj?.model === 'string' && !isClaudeSyntheticModel(messageObj.model)) {
@@ -2169,6 +2227,7 @@ export const parseNativeClaudeSessionFile = async (
           continue;
         }
         if (shouldSkipSyntheticAssistantPlaceholder(messageObj?.model, content)) {
+          currentTurnLastAssistantStopReason = 'end_turn';
           if (pendingBackgroundTaskResult) {
             flushPendingBackgroundTaskResult(parsed.timestamp as string | number | undefined);
           }
@@ -2188,9 +2247,9 @@ export const parseNativeClaudeSessionFile = async (
           role: 'assistant',
           kind: 'message',
           timestamp: toTimeLabel(parsed.timestamp as string | number | undefined),
-          title: text.slice(0, 42),
+          title: syntheticApiError ? 'Claude error' : text.slice(0, 42),
           content,
-          status: 'complete',
+          status: syntheticApiError ? 'error' : 'complete',
         };
         messages.push(assistantMessage);
         currentTurnLastAssistantMessage = assistantMessage;
@@ -2215,6 +2274,7 @@ export const parseNativeClaudeSessionFile = async (
             continue;
           }
           if (shouldSkipSyntheticAssistantPlaceholder(messageObj?.model, content)) {
+            currentTurnLastAssistantStopReason = 'end_turn';
             if (pendingBackgroundTaskResult) {
               flushPendingBackgroundTaskResult(parsed.timestamp as string | number | undefined);
             }
@@ -2237,9 +2297,9 @@ export const parseNativeClaudeSessionFile = async (
             role: 'assistant',
             kind: 'message',
             timestamp: toTimeLabel(parsed.timestamp as string | number | undefined),
-            title: text.slice(0, 42),
+            title: syntheticApiError ? 'Claude error' : text.slice(0, 42),
             content,
-            status: 'complete',
+            status: syntheticApiError ? 'error' : 'complete',
           };
           messages.push(assistantMessage);
           currentTurnLastAssistantMessage = assistantMessage;
@@ -2330,11 +2390,21 @@ export const parseNativeClaudeSessionFile = async (
       const error = parsed.error as
         | { error?: { message?: string; error?: string }; message?: string }
         | undefined;
-      lastErrorText =
+      const errorText =
         error?.error?.error?.trim?.() ||
         error?.error?.message?.trim?.() ||
         error?.message?.trim?.() ||
         'API error';
+      if (isClaudeRequestRetry(parsed)) {
+        const timestamp = toUpdatedAt(parsed.timestamp as string | number | undefined) ?? NaN;
+        // A retry notification is not a terminal failure. Ignore delayed
+        // notifications for requests that already produced newer output.
+        if (!Number.isFinite(timestamp) || timestamp > latestAssistantEventTime) {
+          currentTurnRetryError = errorText;
+        }
+        continue;
+      }
+      lastErrorText = errorText;
       finalizeIncompleteNativeTurn(lastErrorText);
       currentTurnLastAssistantStopReason = 'error';
       continue;
@@ -2348,6 +2418,7 @@ export const parseNativeClaudeSessionFile = async (
         currentTurnLastAssistantStopReason = 'error';
       } else {
         currentTurnLastAssistantStopReason = 'end_turn';
+        currentTurnRetryError = undefined;
       }
     }
   }
@@ -2360,7 +2431,10 @@ export const parseNativeClaudeSessionFile = async (
     interactiveQuestionToolIds.size === 0 &&
     currentTurnActiveBackgroundTaskIds.size === 0;
   finalizeIncompleteNativeTurn(
-    trailingTurnMissingVisibleResponse ? CLAUDE_NO_VISIBLE_RESPONSE_ERROR : undefined,
+    currentTurnRetryError && (options?.finalizeTrailingUserTurn === true || options?.finalizeTrailingToolTurn === true)
+      ? currentTurnRetryError
+      : trailingTurnMissingVisibleResponse ? CLAUDE_NO_VISIBLE_RESPONSE_ERROR : undefined,
+    options?.finalizeTrailingToolTurn !== false,
   );
 
   if (pendingBackgroundTaskResult) {
@@ -2395,16 +2469,18 @@ export const parseNativeClaudeSessionFile = async (
     timeLabel: toTimeLabel(lastTimestamp),
     updatedAt: toUpdatedAt(lastTimestamp),
     recoveryContext,
+    deliveredUserMessageIds,
   };
 };
 
 const parseCachedNativeClaudeSessionFile = async (
   filePath: string,
   cache?: NativeImportCache,
+  options?: NativeClaudeSessionParseOptions,
 ): Promise<ParsedNativeClaudeSession | null> => {
-  if (!cache) {
+  if (!cache || options) {
     try {
-      return await parseNativeClaudeSessionFile(filePath);
+      return await parseNativeClaudeSessionFile(filePath, options);
     } catch {
       return null;
     }
@@ -3068,7 +3144,7 @@ const readNativeCatalogEntryCached = async (
   const entry = parsedEntry
     ? {
         ...parsedEntry,
-        sourceRevision: `${fileStat.mtimeMs}:${fileStat.size}`,
+        sourceRevision: buildNativeSessionSourceRevision(provider, fileStat),
         updatedAt: parsedEntry.updatedAt ?? fileStat.mtimeMs,
         timeLabel: parsedEntry.updatedAt
           ? parsedEntry.timeLabel
@@ -3978,7 +4054,11 @@ const importNativeClaudeSessions = async (
       },
       branchSnapshot: existing?.branchSnapshot ?? makeEmptyBranchSnapshot(project.rootPath),
       messages: existing
-        ? mergeNativeConversationMessages(existing.messages, parsed.messages)
+        ? mergeNativeConversationMessages(
+            existing.messages,
+            parsed.messages,
+            parsed.deliveredUserMessageIds,
+          )
         : parsed.messages,
     };
     if (existing) {
@@ -4194,7 +4274,9 @@ export const recoverSessionFromNativeHistory = async (sessionId: string) => {
     return null;
   }
 
-  const parsed = await parseCachedNativeClaudeSessionFile(filePath);
+  const parsed = await parseCachedNativeClaudeSessionFile(filePath, undefined, {
+    finalizeTrailingToolTurn: false,
+  });
   if (!parsed || !shouldRecoverSessionFromNative(target, parsed)) {
     return null;
   }
@@ -4954,7 +5036,7 @@ const refreshNativeSessionSource = async (session: SessionRecord) => {
 
   try {
     const fileStat = await stat(source.filePath);
-    const sourceRevision = `${fileStat.mtimeMs}:${fileStat.size}`;
+    const sourceRevision = buildNativeSessionSourceRevision(source.provider, fileStat);
     if (
       source.sourceRevision !== sourceRevision ||
       session.nativeHistoryRevision !== sourceRevision
@@ -5016,6 +5098,7 @@ const hydrateNativeSessionMessages = async (
       ? mergeNativeHydrationMessages(
           await readAllV2SessionMessages(session.id),
           parsed.messages,
+          (parsed as { deliveredUserMessageIds?: readonly string[] }).deliveredUserMessageIds,
         )
       : parsed.messages;
     session.title = parsed.title || session.title;
@@ -5234,6 +5317,7 @@ export const getSessionRecordForBootstrap = async (
   ) {
     await hydrateNativeSessionMessages(session, {
       finalizeTrailingUserTurn: shouldFinalizeTrailingUserTurn,
+      finalizeTrailingToolTurn: options?.finalizeTrailingToolTurn,
     });
     page = await v2Store.readMessagePage(sessionId);
   }

@@ -42,15 +42,15 @@ run('resolveClaudeModelArg expands sonnet alias to a canonical Claude model when
 });
 
 run('resolveClaudeModelArg expands opus alias to the latest default Claude Opus model when env overrides are absent', () => {
-  assert.equal(resolveClaudeModelArg('opus[1m]'), 'claude-opus-5[1m]');
+  assert.equal(resolveClaudeModelArg('opus[1m]'), 'claude-opus-5-5[1m]');
 });
 
 run('resolveClaudeModelArg treats bare claude as the default fable alias', () => {
-  assert.equal(resolveClaudeModelArg('claude'), 'fable');
+  assert.equal(resolveClaudeModelArg('claude'), 'claude-fable-5-1');
 });
 
-run('resolveClaudeModelArg keeps fable alias as the CLI model name', () => {
-  assert.equal(resolveClaudeModelArg('fable'), 'fable');
+run('resolveClaudeModelArg pins the fable alias to Fable 5.1', () => {
+  assert.equal(resolveClaudeModelArg('fable'), 'claude-fable-5-1');
 });
 
 run('resolveClaudeModelArg keeps explicit model names unchanged', () => {
@@ -62,11 +62,11 @@ run('resolveClaudeModelArg ignores Claude synthetic placeholder models', () => {
 });
 
 run('resolveClaudeSessionModelArg falls back to the session model when no model is requested', () => {
-  assert.equal(resolveClaudeSessionModelArg(undefined, 'opus[1m]'), 'claude-opus-5[1m]');
+  assert.equal(resolveClaudeSessionModelArg(undefined, 'opus[1m]'), 'claude-opus-5-5[1m]');
 });
 
 run('resolveClaudeSessionModelArg falls back to fable for bare Claude sessions', () => {
-  assert.equal(resolveClaudeSessionModelArg(undefined, 'claude'), 'fable');
+  assert.equal(resolveClaudeSessionModelArg(undefined, 'claude'), 'claude-fable-5-1');
 });
 
 run('resolveClaudeSessionModelArg ignores synthetic session model fallbacks', () => {
@@ -74,7 +74,7 @@ run('resolveClaudeSessionModelArg ignores synthetic session model fallbacks', ()
 });
 
 run('resolveClaudeSessionModelArg upgrades legacy native Opus session models through the UI alias', () => {
-  assert.equal(resolveClaudeSessionModelArg(undefined, 'claude-opus-4-8[1m]'), 'claude-opus-5[1m]');
+  assert.equal(resolveClaudeSessionModelArg(undefined, 'claude-opus-4-8[1m]'), 'claude-opus-5-5[1m]');
 });
 
 run('resolveClaudeSessionModelArg keeps explicit model requests ahead of the session fallback', () => {
@@ -103,7 +103,7 @@ run('shouldSwitchClaudeSessionModel only switches persisted sessions and ignores
     shouldSwitchClaudeSessionModel({
       claudeSessionId: 'session-123',
       currentResolvedModel: 'claude-sonnet-4-6',
-      requestedResolvedModel: 'claude-opus-5[1m]',
+      requestedResolvedModel: 'claude-opus-5-5[1m]',
       prompt: 'continue this task',
     }),
     true,
@@ -121,7 +121,7 @@ run('shouldSwitchClaudeSessionModel only switches persisted sessions and ignores
     shouldSwitchClaudeSessionModel({
       claudeSessionId: 'session-123',
       currentResolvedModel: 'claude-sonnet-4-6',
-      requestedResolvedModel: 'claude-opus-5[1m]',
+      requestedResolvedModel: 'claude-opus-5-5[1m]',
       prompt: '/clear',
     }),
     false,

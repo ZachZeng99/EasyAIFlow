@@ -68,6 +68,36 @@ const assistantEntry = (input: {
   },
 });
 
+await run('late retry chains retain successful execution before a follow-up instead of rewinding it', async () => {
+  const user = userEntry({ uuid: 'user', parentUuid: null, timestamp: '2026-09-07T10:09:00Z', content: 'Run after reboot.' });
+  const intro = assistantEntry({ uuid: 'intro', parentUuid: 'user', timestamp: '2026-09-07T10:09:01Z', content: [{ type: 'text', text: 'Checking the machine.' }] });
+  const final = assistantEntry({ uuid: 'final', parentUuid: 'intro', timestamp: '2026-09-07T10:29:46Z', content: [{ type: 'text', text: 'The game is stuck at its main menu; no pawn exists.' }] });
+  const retries = [
+    { type: 'system', subtype: 'api_error', source: 'request_retry', uuid: 'retry-1', parentUuid: 'intro', timestamp: '2026-09-07T10:09:02Z', error: { message: 'Connection error.' }, retryAttempt: 1, maxRetries: 10 },
+    { type: 'system', subtype: 'api_error', source: 'request_retry', uuid: 'retry-2', parentUuid: 'retry-1', timestamp: '2026-09-07T10:29:23Z', error: { message: 'Connection error.' }, retryAttempt: 2, maxRetries: 10 },
+  ];
+  const followup = userEntry({ uuid: 'followup', parentUuid: 'retry-2', timestamp: '2026-09-07T10:30:00Z', content: 'A' });
+  const parsed = await parseNativeClaudeSessionFile(await writeNativeSession([user, intro, final, ...retries, followup]));
+  assert.ok(parsed);
+  assert.deepEqual(parsed.messages.map(m => m.content), ['Run after reboot.', 'Checking the machine.', 'The game is stuck at its main menu; no pawn exists.', 'A']);
+  assert.equal(parsed.messages.some(m => m.status === 'error'), false);
+});
+
+await run('retry reattachment never crosses an abandoned user prompt', async () => {
+  const records = [
+    userEntry({ uuid: 'root', parentUuid: null, timestamp: '2026-09-07T10:00:00Z', content: 'Root prompt' }),
+    assistantEntry({ uuid: 'root-answer', parentUuid: 'root', timestamp: '2026-09-07T10:00:01Z', content: [{ type: 'text', text: 'Root answer' }] }),
+    userEntry({ uuid: 'abandoned', parentUuid: 'root-answer', timestamp: '2026-09-07T10:00:02Z', content: 'Abandoned prompt' }),
+    assistantEntry({ uuid: 'abandoned-answer', parentUuid: 'abandoned', timestamp: '2026-09-07T10:00:04Z', content: [{ type: 'text', text: 'Abandoned answer' }] }),
+    { type: 'system', subtype: 'api_error', source: 'request_retry', uuid: 'retry', parentUuid: 'root-answer', timestamp: '2026-09-07T10:00:03Z', error: { message: 'Connection error.' } },
+    userEntry({ uuid: 'active', parentUuid: 'retry', timestamp: '2026-09-07T10:00:05Z', content: 'Replacement prompt' }),
+  ];
+  const parsed = await parseNativeClaudeSessionFile(await writeNativeSession(records));
+  assert.ok(parsed);
+  assert.equal(parsed.messages.some(m => m.content.includes('Abandoned')), false);
+  assert.equal(parsed.messages.at(-1)?.content, 'Replacement prompt');
+});
+
 await run('native Claude hydration follows the newest UUID branch and keeps stable IDs', async () => {
   const entries = [
     userEntry({
@@ -125,6 +155,79 @@ await run('native Claude hydration follows the newest UUID branch and keeps stab
   assert.deepEqual(
     second.messages.map((message) => message.id),
     first.messages.map((message) => message.id),
+  );
+});
+
+await run('native Claude hydration stitches a newest segment whose parent is missing', async () => {
+  const entries = [
+    userEntry({
+      uuid: 'user-root',
+      parentUuid: null,
+      timestamp: '2026-08-19T11:00:00.000Z',
+      content: 'Root prompt',
+    }),
+    assistantEntry({
+      uuid: 'assistant-root',
+      parentUuid: 'user-root',
+      timestamp: '2026-08-19T11:00:01.000Z',
+      content: [{ type: 'text', text: 'Root answer' }],
+    }),
+    userEntry({
+      uuid: 'user-abandoned',
+      parentUuid: 'assistant-root',
+      timestamp: '2026-08-19T11:00:02.000Z',
+      content: 'Abandoned branch prompt',
+    }),
+    assistantEntry({
+      uuid: 'assistant-abandoned',
+      parentUuid: 'user-abandoned',
+      timestamp: '2026-08-19T11:00:03.000Z',
+      content: [{ type: 'text', text: 'Abandoned branch answer' }],
+    }),
+    userEntry({
+      uuid: 'user-active',
+      parentUuid: 'assistant-root',
+      timestamp: '2026-08-19T11:00:04.000Z',
+      content: 'Active branch prompt',
+    }),
+    assistantEntry({
+      uuid: 'assistant-active',
+      parentUuid: 'user-active',
+      timestamp: '2026-08-19T11:00:05.000Z',
+      content: [{ type: 'text', text: 'Active branch answer' }],
+    }),
+    userEntry({
+      uuid: 'user-after-restart',
+      parentUuid: 'missing-resident-parent',
+      timestamp: '2026-08-19T11:10:00.000Z',
+      content: 'Prompt after resident restart',
+    }),
+    assistantEntry({
+      uuid: 'assistant-after-restart',
+      parentUuid: 'user-after-restart',
+      timestamp: '2026-08-19T11:10:01.000Z',
+      content: [{ type: 'text', text: 'Answer after resident restart' }],
+    }),
+  ];
+  const filePath = await writeNativeSession(entries);
+
+  const parsed = await parseNativeClaudeSessionFile(filePath);
+  assert.ok(parsed);
+
+  assert.deepEqual(
+    parsed.messages.map((message) => message.content),
+    [
+      'Root prompt',
+      'Root answer',
+      'Active branch prompt',
+      'Active branch answer',
+      'Prompt after resident restart',
+      'Answer after resident restart',
+    ],
+  );
+  assert.equal(
+    parsed.messages.some((message) => message.content.includes('Abandoned branch')),
+    false,
   );
 });
 

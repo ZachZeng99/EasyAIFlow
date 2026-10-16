@@ -1,6 +1,6 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { getProviderBadgeLabel, normalizeSessionProvider } from '../data/sessionProvider';
-import { collectPinnedSessions, sortSessionsWithPinnedFirst } from '../data/sessionOrder';
+import { collectPinnedSessions } from '../data/sessionOrder';
 import { buildInitialCollapsedStreamworks } from '../data/streamworkCollapse';
 import { sortDreamsWithTemporaryFirst } from '../data/streamworkOrder';
 import type { DreamRecord, ProjectRecord, SessionActivityState, SessionSummary } from '../data/types';
@@ -189,9 +189,7 @@ function ChatHistoryComponent({
         ...project,
         dreams: sortDreamsWithTemporaryFirst(project.dreams).map((dream) => ({
           ...dream,
-          sessions: sortSessionsWithPinnedFirst(
-            dream.sessions.filter((session) => !session.hidden && !session.pinned),
-          ),
+          sessions: dream.sessions.filter((session) => !session.hidden && !session.pinned),
         })),
       }));
     }
@@ -221,10 +219,8 @@ function ChatHistoryComponent({
 
             return {
               ...dream,
-              sessions: sortSessionsWithPinnedFirst(
-                (projectMatch || dreamMatch ? dream.sessions : sessions).filter(
-                  (session) => !session.hidden && !session.pinned,
-                ),
+              sessions: (projectMatch || dreamMatch ? dream.sessions : sessions).filter(
+                (session) => !session.hidden && !session.pinned,
               ),
             };
           })
@@ -239,9 +235,7 @@ function ChatHistoryComponent({
           dreams: sortDreamsWithTemporaryFirst(
             (projectMatch ? project.dreams : dreams).map((dream) => ({
               ...dream,
-              sessions: sortSessionsWithPinnedFirst(
-                dream.sessions.filter((session) => !session.hidden && !session.pinned),
-              ),
+              sessions: dream.sessions.filter((session) => !session.hidden && !session.pinned),
             })),
           ),
         };

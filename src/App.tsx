@@ -94,6 +94,7 @@ const isTerminalBackgroundTaskStatus = (
 ) => status === 'completed' || status === 'failed' || status === 'stopped';
 
 const CREATE_SESSION_TIMEOUT_MS = 15_000;
+const SESSION_HISTORY_TIMEOUT_MS = 30_000;
 const PROJECT_FOCUS_REFRESH_MIN_INTERVAL_MS = 5_000;
 const NATIVE_SESSION_REFRESH_INTERVAL_MS = 2_000;
 
@@ -331,6 +332,10 @@ type SessionIndicator = {
 
 type MobilePanel = 'history' | 'session' | 'context';
 
+type SessionHistoryLoadState =
+  | { status: 'loading' | 'loaded' }
+  | { status: 'error'; message: string };
+
 export default function App() {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState('');
@@ -348,6 +353,7 @@ export default function App() {
   const [dialogState, setDialogState] = useState<DialogState | null>(null);
   const [sessionInteractions, setSessionInteractions] = useState<Map<string, SessionInteractionState>>(new Map());
   const [loadingOlderHistoryIds, setLoadingOlderHistoryIds] = useState<string[]>([]);
+  const [sessionHistoryLoads, setSessionHistoryLoads] = useState<Record<string, SessionHistoryLoadState>>({});
 
   const updateSessionInteraction = useCallback(
     (sessionId: string, updater: (state: SessionInteractionState) => SessionInteractionState) => {
@@ -433,7 +439,7 @@ export default function App() {
   const setSessionDraft = useCallback((sessionId: string, value: string) => {
     setDraftsBySessionId((current) => setSessionDraftValue(current, sessionId, value));
   }, []);
-  const ensureSessionRecordLoaded = useCallback((sessionId: string) => {
+  const ensureSessionRecordLoaded = useCallback((sessionId: string, retry = false) => {
     const existing = allSessions.find((session) => session.id === sessionId);
     if (!existing) {
       return;
@@ -445,23 +451,37 @@ export default function App() {
       );
       return;
     }
-    if (loadingSessionRecordIds.current.has(sessionId)) {
+    if (
+      loadingSessionRecordIds.current.has(sessionId) ||
+      (!retry && sessionHistoryLoads[sessionId]?.status === 'error')
+    ) {
       return;
     }
 
     loadingSessionRecordIds.current.add(sessionId);
-    void bridge
-      .getSessionRecord({ sessionId })
+    setSessionHistoryLoads((current) => ({ ...current, [sessionId]: { status: 'loading' } }));
+    void withTimeout(
+      bridge.getSessionRecord({ sessionId }),
+      SESSION_HISTORY_TIMEOUT_MS,
+      'Loading session history timed out. Please retry.',
+    )
       .then((sessionRecord) => {
         hydrateSessionRecord(sessionRecord);
+        setSessionHistoryLoads((current) => ({ ...current, [sessionId]: { status: 'loaded' } }));
       })
       .catch((error) => {
-        setUiError(error instanceof Error ? error.message : 'Failed to load session history.');
+        setSessionHistoryLoads((current) => ({
+          ...current,
+          [sessionId]: {
+            status: 'error',
+            message: error instanceof Error ? error.message : 'Failed to load session history.',
+          },
+        }));
       })
       .finally(() => {
         loadingSessionRecordIds.current.delete(sessionId);
       });
-  }, [allSessions, hydrateSessionRecord]);
+  }, [allSessions, hydrateSessionRecord, sessionHistoryLoads]);
   const loadOlderSessionHistory = useCallback(async (sessionId: string) => {
     const session = allSessions.find((candidate) => candidate.id === sessionId);
     const before = session?.historyPage?.nextBefore;
@@ -657,6 +677,7 @@ export default function App() {
     );
   }, [historyPinnedSessionIds, projects, selectedSession?.id]);
   const activeSelectedSessionId = selectedSession?.id ?? selectedSessionId;
+  const selectedHistoryLoad = sessionHistoryLoads[activeSelectedSessionId];
   const activeSelectedSessionIdRef = useRef(activeSelectedSessionId);
   useEffect(() => {
     setComposerNotice(null);
@@ -2372,7 +2393,13 @@ export default function App() {
               <ChatThread
                 session={selectedSession}
                 messages={selectedSession.messages ?? []}
-                isLoadingHistory={selectedSession.messagesLoaded === false}
+                isLoadingHistory={selectedSession.messagesLoaded === false && selectedHistoryLoad?.status === 'loading'}
+                historyLoadError={
+                  selectedSession.messagesLoaded === false && selectedHistoryLoad?.status === 'error'
+                    ? selectedHistoryLoad.message
+                    : undefined
+                }
+                onRetryLoadHistory={() => ensureSessionRecordLoaded(selectedSession.id, true)}
                 hasMoreHistory={Boolean(selectedSession.historyPage?.hasMoreBefore)}
                 isLoadingOlderHistory={loadingOlderHistoryIds.includes(selectedSession.id)}
                 onLoadOlderHistory={() => {

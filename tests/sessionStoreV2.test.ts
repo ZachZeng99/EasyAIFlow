@@ -88,6 +88,51 @@ const stateWithSessions = (sessions: SessionRecord[]): SessionStoreAppState => (
   },
 });
 
+await run('recovers a zero-filled index from the latest V2 copy and preserves messages and corrupt bytes', async () => {
+  await mkdir(path.resolve('.tmp-tests'), { recursive: true });
+  const root = await mkdtemp(path.join(path.resolve('.tmp-tests'), 'session-store-v2-index-recovery-'));
+  const state = stateWithSessions([session('session-1', [message('m1')])]);
+  const store = await migrateSessionStoreV2(root, state, { maxMessages: 0 });
+  state.projects[0].dreams[0].sessions[0].title = 'Latest title';
+  state.deletedImports.codexThreadIds.push('deleted-thread');
+  await store.persist(state, {
+    immediateIndex: true,
+    sessionMutations: [{ type: 'append-messages', sessionId: 'session-1', messages: [message('m2')] }],
+  });
+  const paths = getSessionStoreV2Paths(root);
+  const goodBytes = await readFile(paths.indexPath);
+  assert.deepEqual(await readFile(`${paths.indexPath}.last-good.json`), goodBytes);
+  const corruptBytes = Buffer.alloc(goodBytes.length);
+  await writeFile(paths.indexPath, corruptBytes);
+  const loaded = await openSessionStoreV2(root, { maxMessages: 0 });
+  assert.equal(loaded?.state.projects[0].dreams[0].sessions[0].title, 'Latest title');
+  assert.deepEqual(loaded?.state.deletedImports.codexThreadIds, ['deleted-thread']);
+  assert.deepEqual((await loaded!.store.readMessagePage('session-1')).messages.map((item) => item.id), ['m1', 'm2']);
+  assert.deepEqual(await readFile(paths.indexPath), goodBytes);
+  const saved = (await readdir(paths.rootPath)).filter((name) => name.startsWith('index.json.corrupt-'));
+  assert.equal(saved.length, 1);
+  assert.deepEqual(await readFile(path.join(paths.rootPath, saved[0])), corruptBytes);
+  assert.ok(await openSessionStoreV2(root, { maxMessages: 0 }));
+});
+
+await run('recovers a missing primary index and rejects corruption when all V2 copies are invalid', async () => {
+  const root = await mkdtemp(path.join(path.resolve('.tmp-tests'), 'session-store-v2-index-copies-'));
+  await migrateSessionStoreV2(root, stateWithSessions([session('session-1')]), { maxMessages: 0 });
+  const paths = getSessionStoreV2Paths(root);
+  await rm(paths.indexPath);
+  assert.ok(await openSessionStoreV2(root, { maxMessages: 0 }));
+  const goodBytes = await readFile(paths.indexPath);
+  await writeFile(`${paths.indexPath}.last-good.json`, '{"schemaVersion":2}');
+  await writeFile(paths.indexPath, '\0\0');
+  await assert.rejects(() => openSessionStoreV2(root, { maxMessages: 0 }), /Invalid V2 session store index/);
+  assert.equal(await readFile(paths.indexPath, 'utf8'), '\0\0');
+  await writeFile(`${paths.indexPath}.previous`, goodBytes);
+  assert.ok(await openSessionStoreV2(root, { maxMessages: 0 }));
+  await rm(paths.indexPath);
+  await rm(`${paths.indexPath}.previous`);
+  await assert.rejects(() => openSessionStoreV2(root, { maxMessages: 0 }), /index is missing and no valid V2 recovery copy/);
+});
+
 await run('replays only events newer than the snapshot and caps the result', () => {
   const events: SessionStoreV2Event[] = [
     {
@@ -185,19 +230,88 @@ await run('opens only the catalog and reads session history one bounded page at 
   assert.equal(catalogSession?.messagesLoaded, false);
 
   const newest = await opened!.store.readMessagePage('session-1');
-  assert.equal(newest.messages.length, 50);
-  assert.deepEqual(newest.messages.map((item) => item.id), messages.slice(200).map((item) => item.id));
+  assert.equal(newest.messages.length, 100);
+  assert.deepEqual(newest.messages.map((item) => item.id), messages.slice(150).map((item) => item.id));
   assert.equal(newest.hasMoreBefore, true);
   assert.ok(newest.nextBefore);
 
   const middle = await opened!.store.readMessagePage('session-1', newest.nextBefore);
   const oldest = await opened!.store.readMessagePage('session-1', middle.nextBefore);
+  assert.equal(middle.messages.length, 100);
+  assert.equal(oldest.messages.length, 50);
   assert.deepEqual(
     [...oldest.messages, ...middle.messages, ...newest.messages].map((item) => item.id),
     messages.map((item) => item.id),
   );
   assert.equal(oldest.hasMoreBefore, false);
   assert.equal(oldest.nextBefore, undefined);
+});
+
+await run('fills a one-tool tail page and traverses all 801 records exactly once', async () => {
+  const root = await mkdtemp(path.join(path.resolve('.tmp-tests'), 'session-store-v2-tail-'));
+  const messages = Array.from({ length: 800 }, (_, index) => message(`m${index}`));
+  messages.push({ ...message('last-edit'), role: 'system', kind: 'tool_use', title: 'Edit', status: 'success' });
+  const store = await migrateSessionStoreV2(root, stateWithSessions([session('session-1', messages)]), { maxMessages: 0 });
+  const paths = getSessionStoreV2Paths(root, 'session-1');
+  const metaBefore = await readFile(paths.metaPath, 'utf8');
+  const newest = await store.readMessagePage('session-1');
+
+  assert.deepEqual(newest.messages, messages.slice(-100));
+  const pages = [newest.messages];
+  let page = newest;
+  while (page.hasMoreBefore) {
+    assert.ok(page.nextBefore);
+    page = await store.readMessagePage('session-1', page.nextBefore);
+    assert.ok(page.messages.length > 0 && page.messages.length <= 100);
+    pages.push(page.messages);
+    assert.ok(pages.length <= 9, 'cursor must advance');
+  }
+  assert.deepEqual(pages.reverse().flat(), messages);
+  assert.equal(page.nextBefore, undefined);
+  assert.equal(await readFile(paths.metaPath, 'utf8'), metaBefore, 'reads must not repartition persisted history');
+});
+
+await run('honors the byte budget when a display window stops inside a physical page', async () => {
+  const root = await mkdtemp(path.join(path.resolve('.tmp-tests'), 'session-store-v2-window-bytes-'));
+  const messages = ['a', 'b', 'c', 'd', 'e'].map((id) => message(id, id.repeat(2 * 1024 * 1024)));
+  const store = await migrateSessionStoreV2(root, stateWithSessions([session('session-1', messages)]), { maxMessages: 0 });
+  const newest = await store.readMessagePage('session-1');
+  const middle = await store.readMessagePage('session-1', newest.nextBefore);
+  const oldest = await store.readMessagePage('session-1', middle.nextBefore);
+
+  assert.deepEqual(newest.messages.map((item) => item.id), ['d', 'e']);
+  assert.deepEqual(middle.messages.map((item) => item.id), ['b', 'c']);
+  assert.deepEqual(oldest.messages.map((item) => item.id), ['a']);
+  for (const page of [newest, middle, oldest]) {
+    assert.ok(page.messages.reduce((sum, item) => sum + Buffer.byteLength(JSON.stringify(item)), 0) <= 5 * 1024 * 1024);
+  }
+  assert.equal(oldest.hasMoreBefore, false);
+});
+
+await run('accepts legacy page cursors and rejects invalid or replaced within-page cursors', async () => {
+  const root = await mkdtemp(path.join(path.resolve('.tmp-tests'), 'session-store-v2-window-cursor-'));
+  const messages = Array.from({ length: 201 }, (_, index) => message(`m${index}`));
+  const state = stateWithSessions([session('session-1', messages)]);
+  const store = await migrateSessionStoreV2(root, state, { maxMessages: 0 });
+  const paths = getSessionStoreV2Paths(root, 'session-1');
+  const meta = JSON.parse(await readFile(paths.metaPath, 'utf8')) as { pages: Array<{ id: string }> };
+  const legacy = await store.readMessagePage('session-1', meta.pages[1].id);
+  assert.deepEqual(legacy.messages, messages.slice(100, 200));
+
+  const newest = await store.readMessagePage('session-1');
+  assert.ok(newest.nextBefore);
+  for (const cursor of [
+    `${meta.pages[1].id}:0`,
+    `${meta.pages[1].id}:101`,
+    `${meta.pages[1].id}:bad`,
+    `${meta.pages[1].id}:1:extra`,
+  ]) {
+    await assert.rejects(() => store.readMessagePage('session-1', cursor), { name: 'SessionStoreV2StaleCursorError' });
+  }
+  await store.persist(state, {
+    sessionMutations: [{ type: 'replace-messages', sessionId: 'session-1', messages: [...messages, message('new')] }],
+  });
+  await assert.rejects(() => store.readMessagePage('session-1', newest.nextBefore), { name: 'SessionStoreV2StaleCursorError' });
 });
 
 await run('isolates a message larger than the page byte budget without losing it', async () => {

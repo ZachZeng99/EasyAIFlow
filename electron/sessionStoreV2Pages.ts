@@ -86,7 +86,7 @@ const atomicReplaceFile = async (filePath: string, content: string) => {
   await mkdir(path.dirname(filePath), { recursive: true });
   const tempPath = makeTempPath(filePath);
   const previousPath = `${filePath}.previous`;
-  await writeFile(tempPath, content, 'utf8');
+  await writeFile(tempPath, content, { encoding: 'utf8', flush: true });
 
   try {
     await rename(tempPath, filePath);
@@ -508,20 +508,66 @@ export const readSessionStoreV2MessagePage = async (
     };
   }
 
-  const pageIndex = before === undefined
+  // A cursor may stop inside a physical page. Plain page IDs from older
+  // clients still mean "read through the end of this page".
+  const cursor = before?.split(':');
+  let pageIndex = before === undefined
     ? meta.pages.length - 1
-    : meta.pages.findIndex((page) => page.id === before);
+    : meta.pages.findIndex((page) => page.id === cursor?.[0]);
   if (pageIndex < 0) {
     throw new SessionStoreV2StaleCursorError(sessionId, before ?? '');
   }
   const descriptor = meta.pages[pageIndex];
-  const messages = await readPageMessages(sessionPath, sessionId, descriptor.id);
+  let endOffset = cursor && cursor.length > 1 ? Number(cursor[1]) : descriptor.messageCount;
+  if (
+    (cursor && cursor.length > 2) ||
+    !Number.isSafeInteger(endOffset) ||
+    endOffset < 1 ||
+    endOffset > descriptor.messageCount
+  ) {
+    throw new SessionStoreV2StaleCursorError(sessionId, before ?? '');
+  }
+
+  // Physical pages are filled oldest-first, so the tail may contain only a
+  // single tool event. Fill a bounded display window backwards across pages.
+  const messages: ConversationMessage[] = [];
+  let bytes = 0;
+  while (pageIndex >= 0) {
+    const page = await readPageMessages(sessionPath, sessionId, meta.pages[pageIndex].id);
+    if (endOffset > page.length) {
+      throw new SessionStoreV2StaleCursorError(sessionId, before ?? '');
+    }
+    while (endOffset > 0) {
+      const message = page[endOffset - 1];
+      const messageBytes = messageByteLength(message);
+      if (
+        messages.length >= SESSION_MESSAGE_PAGE_MAX_MESSAGES ||
+        (messages.length > 0 && bytes + messageBytes > SESSION_MESSAGE_PAGE_MAX_BYTES)
+      ) {
+        break;
+      }
+      messages.push(message);
+      bytes += messageBytes;
+      endOffset -= 1;
+    }
+    if (endOffset > 0) {
+      break;
+    }
+    pageIndex -= 1;
+    endOffset = meta.pages[pageIndex]?.messageCount ?? 0;
+    if (messages.length >= SESSION_MESSAGE_PAGE_MAX_MESSAGES || bytes >= SESSION_MESSAGE_PAGE_MAX_BYTES) {
+      break;
+    }
+  }
+  const nextPage = meta.pages[pageIndex];
   return {
     sessionId,
     pageId: descriptor.id,
-    messages,
-    nextBefore: pageIndex > 0 ? meta.pages[pageIndex - 1].id : undefined,
-    hasMoreBefore: pageIndex > 0,
+    messages: messages.reverse(),
+    nextBefore: nextPage
+      ? endOffset === nextPage.messageCount ? nextPage.id : `${nextPage.id}:${endOffset}`
+      : undefined,
+    hasMoreBefore: Boolean(nextPage),
     sessionRevision: meta.revision,
   };
 };

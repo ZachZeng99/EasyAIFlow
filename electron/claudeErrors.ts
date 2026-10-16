@@ -1,3 +1,9 @@
+export const isClaudeRequestRetry = (parsed: Record<string, unknown>) =>
+  parsed.type === 'system' && parsed.subtype === 'api_error' && (
+    parsed.source === 'request_retry' ||
+    (typeof parsed.retryAttempt === 'number' && typeof parsed.maxRetries === 'number')
+  );
+
 export const getClaudeSyntheticApiError = (parsed: Record<string, unknown>) => {
   if (parsed.type !== 'assistant' || parsed.isApiErrorMessage !== true) {
     return undefined;

@@ -83,6 +83,38 @@ run('ChatThread keeps process groups collapsed by default', () => {
   assert.ok(html.indexOf('Process') < html.indexOf('Implemented.'));
 });
 
+run('ChatThread offers history retry after failure without showing loading or an empty-session claim', () => {
+  const html = renderToStaticMarkup(createElement(ChatThread, {
+    session: { ...session, messagesLoaded: false },
+    messages: [],
+    historyLoadError: 'History request failed.',
+    onRetryLoadHistory: () => undefined,
+  }));
+  assert.match(html, /role="alert"/);
+  assert.match(html, /History request failed/);
+  assert.match(html, /Retry loading history/);
+  assert.doesNotMatch(html, /Loading session history|No saved messages/);
+});
+
+run('ChatThread distinguishes a pending history request from unloaded and empty history', () => {
+  const unloaded = { ...session, messagesLoaded: false };
+  const pending = renderToStaticMarkup(createElement(ChatThread, { session: unloaded, messages: [], isLoadingHistory: true }));
+  const idle = renderToStaticMarkup(createElement(ChatThread, { session: unloaded, messages: [] }));
+  const empty = renderToStaticMarkup(createElement(ChatThread, { session: { ...session, messagesLoaded: true }, messages: [] }));
+  assert.match(pending, /Loading session history/);
+  assert.doesNotMatch(idle, /Loading session history|No saved messages/);
+  assert.match(empty, /No saved messages/);
+});
+
+run('ChatThread updates memoized history controls and callbacks without requiring new messages', () => {
+  const props = { session, messages, hasMoreHistory: true, onLoadOlderHistory: () => undefined };
+  assert.equal(ChatThread.compare!(props, { ...props, isLoadingOlderHistory: true }), false);
+  assert.equal(ChatThread.compare!(props, { ...props, hasMoreHistory: false }), false);
+  assert.equal(ChatThread.compare!(props, { ...props, onLoadOlderHistory: () => undefined }), false);
+  assert.equal(ChatThread.compare!(props, { ...props, historyLoadError: 'Failed' }), false);
+  assert.equal(ChatThread.compare!(props, { ...props, onRetryLoadHistory: () => undefined }), false);
+});
+
 run('ChatThread defers Markdown parsing while an assistant reply is streaming', () => {
   const html = renderToStaticMarkup(
     createElement(ChatThread, {

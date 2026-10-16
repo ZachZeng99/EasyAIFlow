@@ -1,5 +1,7 @@
 import type { ConversationMessage, SessionRecord } from '../src/data/types.js';
 import { isIgnorableBackgroundTaskFollowupText } from './claudeRunState.js';
+import { isBackgroundTaskNotificationContent } from './backgroundTaskNotification.js';
+import { isClaudeRequestRetry } from './claudeErrors.js';
 
 export type ParsedNativeSession = {
   nativeSessionId: string;
@@ -9,6 +11,8 @@ export type ParsedNativeSession = {
   updatedAt?: number;
   model: string;
   messages: ConversationMessage[];
+  /** Uuids of every user prompt Claude recorded, including compacted or rewound branches. */
+  deliveredUserMessageIds?: readonly string[];
 };
 
 type NativeClaudeHistoryEntry = Record<string, unknown>;
@@ -78,6 +82,7 @@ export const selectActiveNativeClaudeHistoryEntries = (
   const progressParents = new Map<string, string | null>();
   const nodesByUuid = new Map<string, NativeClaudeTranscriptNode>();
   const orderedNodes: NativeClaudeTranscriptNode[] = [];
+  let lastTranscriptNode: NativeClaudeTranscriptNode | undefined;
 
   const resolveProgressParent = (parentUuid: string | null) => {
     const seen = new Set<string>();
@@ -111,8 +116,33 @@ export const selectActiveNativeClaudeHistoryEntries = (
       timestampMs: getNativeTimestampMs(entry.timestamp, index),
       isSidechain: entry.isSidechain === true,
     };
+    // Request retries can be flushed after the successful response, still
+    // parented to the request's starting node. Later typed prompts reference
+    // that retry chain. Reattach this auxiliary chain to the intervening
+    // continuation, but never cross another user prompt (a possible rewind).
+    if (isClaudeRequestRetry(entry) && lastTranscriptNode && !node.isSidechain &&
+        lastTranscriptNode.timestampMs >= node.timestampMs) {
+      let candidate: NativeClaudeTranscriptNode | undefined = lastTranscriptNode;
+      const visited = new Set<string>();
+      while (candidate && !visited.has(candidate.uuid)) {
+        if (candidate.uuid === node.parentUuid) {
+          node.parentUuid = lastTranscriptNode.uuid;
+          break;
+        }
+        if (candidate.isSidechain || (
+          candidate.type === 'user' && candidate.entry.isMeta !== true && !isNativeToolResultNode(candidate)
+        )) {
+          break;
+        }
+        visited.add(candidate.uuid);
+        candidate = candidate.parentUuid ? nodesByUuid.get(candidate.parentUuid) : undefined;
+      }
+    }
     nodesByUuid.set(uuid, node);
     orderedNodes.push(node);
+    if (!node.isSidechain && node.type !== 'system') {
+      lastTranscriptNode = node;
+    }
   });
 
   // Synthetic fixtures and older exports may omit UUID linkage entirely.
@@ -169,13 +199,35 @@ export const selectActiveNativeClaudeHistoryEntries = (
 
   const chain: NativeClaudeTranscriptNode[] = [];
   const selectedUuids = new Set<string>();
+  let danglingPrefixEnd: number | undefined;
   let current: NativeClaudeTranscriptNode | undefined = leaf;
   while (current && !selectedUuids.has(current.uuid)) {
     selectedUuids.add(current.uuid);
     chain.push(current);
-    current = current.parentUuid ? nodesByUuid.get(current.parentUuid) : undefined;
+    const parent: NativeClaudeTranscriptNode | undefined = current.parentUuid
+      ? nodesByUuid.get(current.parentUuid)
+      : undefined;
+    if (current.parentUuid && !parent) {
+      danglingPrefixEnd = current.index;
+    }
+    current = parent;
   }
   chain.reverse();
+
+  // Resident restarts can append a legitimate new segment whose first parent
+  // refers to an in-memory node that never reached JSONL. Recover the active
+  // branch from the physical prefix instead of discarding the entire earlier
+  // conversation. Recursing on a strictly shorter prefix also handles more
+  // than one restart gap while preserving the existing abandoned-branch rules.
+  if (danglingPrefixEnd !== undefined && danglingPrefixEnd > 0) {
+    for (const entry of selectActiveNativeClaudeHistoryEntries(entries.slice(0, danglingPrefixEnd))) {
+      const uuid = asNativeString(entry.uuid);
+      const type = asNativeString(entry.type);
+      if (uuid && type && nativeClaudeTranscriptTypes.has(type as NativeClaudeTranscriptNode['type'])) {
+        selectedUuids.add(uuid);
+      }
+    }
+  }
 
   // Claude streams parallel content blocks as assistant siblings sharing one
   // message.id, with tool_result records parented to their specific sibling.
@@ -372,6 +424,7 @@ const hasRawNativeRecoveryPrompt = (messages: ConversationMessage[]) =>
 export const mergeNativeConversationMessages = (
   existingMessages: ConversationMessage[] | undefined,
   parsedMessages: ConversationMessage[],
+  deliveredUserMessageIds?: readonly string[],
 ) => {
   const normalizedParsedMessages = normalizeRecoveredNativeMessages(parsedMessages);
   const currentMessages = existingMessages ?? [];
@@ -389,7 +442,11 @@ export const mergeNativeConversationMessages = (
     return appendMissingMessageSuffix(currentMessages.map(cloneMessage), normalizedParsedMessages);
   }
 
-  return normalizedParsedMessages;
+  return mergeNativeHydrationMessages(
+    currentMessages,
+    normalizedParsedMessages,
+    deliveredUserMessageIds,
+  );
 };
 
 const isPendingAssistantMessage = (message: ConversationMessage | undefined) =>
@@ -402,6 +459,63 @@ const isPendingAssistantMessage = (message: ConversationMessage | undefined) =>
     message.status === 'background');
 
 const normalizePromptContent = (content: string) => content.replace(/\r\n/g, '\n').trim();
+
+const collapseWhitespace = (content: string) => content.replace(/\s+/g, '');
+
+/**
+ * A completed runtime reply aggregates every text block of a turn into one
+ * message, joined with whatever whitespace the model streamed. Native history
+ * instead stores one assistant record per text block, and a queued interjection
+ * can push a turn's tail blocks after the interjection's own reply. Treat the
+ * local aggregate as already covered by native history when its text, ignoring
+ * whitespace, is reconstructable in order from the native assistant blocks
+ * starting inside the matched turn. This lets hydration drop the local aggregate
+ * once native catches up even when the block join whitespace differs or the tail
+ * lands after a later prompt, while still preserving a reply whose real text has
+ * not reached native yet.
+ */
+const nativeAssistantBlocksCoverLocalReply = (
+  parsedMessages: ConversationMessage[],
+  nativeStart: number,
+  nativeEnd: number,
+  localText: string,
+) => {
+  const target = collapseWhitespace(localText);
+  if (!target) {
+    return false;
+  }
+  let cursor = 0;
+  let anchored = false;
+  for (
+    let index = nativeStart + 1;
+    index < parsedMessages.length && cursor < target.length;
+    index += 1
+  ) {
+    const candidate = parsedMessages[index];
+    if (
+      candidate.role !== 'assistant' ||
+      candidate.kind === 'tool_use' ||
+      candidate.kind === 'tool_result'
+    ) {
+      continue;
+    }
+    const block = collapseWhitespace(candidate.content);
+    if (!block || !target.startsWith(block, cursor)) {
+      continue;
+    }
+    if (!anchored) {
+      // The first matched block must belong to the matched turn, so a reply whose
+      // real text has not yet reached native is preserved rather than matched
+      // against an unrelated later turn that happens to repeat its opening.
+      if (index >= nativeEnd) {
+        return false;
+      }
+      anchored = true;
+    }
+    cursor += block.length;
+  }
+  return cursor === target.length;
+};
 
 const nativePromptContainsLocalPrompt = (
   localMessage: ConversationMessage,
@@ -429,22 +543,32 @@ const nativePromptContainsLocalPrompt = (
 /**
  * Native history is authoritative for turns already written to Claude, but it
  * cannot contain prompts that EasyAIFlow has queued behind the current turn.
- * Preserve those local pending pairs while the native snapshot catches up.
+ * Preserve those local pending pairs and explicitly completed local replies
+ * while the native snapshot catches up. Only retain replies whose user turn
+ * still exists on the selected native branch. A prompt that Claude already
+ * recorded but that is missing from the selected branch was compacted or
+ * rewound away. It is not queued, so its local pending pair is dropped.
  */
 export const mergeNativeHydrationMessages = (
   existingMessages: ConversationMessage[] | undefined,
   parsedMessages: ConversationMessage[],
+  deliveredUserMessageIds?: readonly string[],
 ) => {
   const currentMessages = existingMessages ?? [];
-  const parsedUserMessages = parsedMessages.filter(
-    (message) => message.role === 'user' && message.kind !== 'tool_result',
-  );
+  const deliveredPromptIds = new Set(deliveredUserMessageIds);
+  const isUserPrompt = (message: ConversationMessage) =>
+    message.role === 'user' &&
+    message.kind !== 'tool_result' &&
+    !isBackgroundTaskNotificationContent(message.content);
+  const parsedUserIndices = parsedMessages.flatMap((message, index) => isUserPrompt(message) ? [index] : []);
+  const parsedUserMessages = parsedUserIndices.map((index) => parsedMessages[index]);
   const pendingLocalMessages: ConversationMessage[] = [];
+  const completedRepliesByEndIndex = new Map<number, ConversationMessage[]>();
   let parsedUserCursor = 0;
 
   for (let index = 0; index < currentMessages.length; index += 1) {
     const message = currentMessages[index];
-    if (message?.role !== 'user' || message.kind === 'tool_result') {
+    if (!isUserPrompt(message)) {
       continue;
     }
 
@@ -458,19 +582,65 @@ export const mergeNativeHydrationMessages = (
 
     if (matchingParsedIndex >= 0) {
       parsedUserCursor = matchingParsedIndex + 1;
+      const nativeStart = parsedUserIndices[matchingParsedIndex];
+      const nativeEnd = parsedUserIndices[matchingParsedIndex + 1] ?? parsedMessages.length;
+      const nativeAssistantText = parsedMessages.slice(nativeStart + 1, nativeEnd)
+        .filter((candidate) => candidate.role === 'assistant')
+        .map((candidate) => normalizePromptContent(candidate.content))
+        .join('\n\n');
+      for (let localIndex = index + 1; localIndex < currentMessages.length; localIndex += 1) {
+        const reply = currentMessages[localIndex];
+        if (isUserPrompt(reply)) {
+          break;
+        }
+        const localText = normalizePromptContent(reply.content);
+        // Older runtime snapshots lack provenance. Keep a strictly richer
+        // aggregate only when the native assistant text is its exact prefix.
+        const extendsNativeText = reply.kind === undefined &&
+          nativeAssistantText.length > 0 &&
+          localText.length > nativeAssistantText.length &&
+          localText.startsWith(nativeAssistantText);
+        if (
+          reply.role !== 'assistant' ||
+          reply.status !== 'complete' ||
+          (!reply.completionOrigin && !extendsNativeText) ||
+          !reply.content.trim() ||
+          isIgnorableBackgroundTaskFollowupText(reply.content) ||
+          parsedMessages.some((candidate) => candidate.id === reply.id) ||
+          nativeAssistantBlocksCoverLocalReply(parsedMessages, nativeStart, nativeEnd, localText) ||
+          collapseWhitespace(nativeAssistantText).includes(collapseWhitespace(localText))
+        ) {
+          continue;
+        }
+        const replies = completedRepliesByEndIndex.get(nativeEnd) ?? [];
+        if (!replies.some((candidate) => candidate.id === reply.id)) {
+          replies.push(cloneMessage(reply));
+          completedRepliesByEndIndex.set(nativeEnd, replies);
+        }
+      }
       continue;
     }
 
     const assistant = currentMessages[index + 1];
     if (isPendingAssistantMessage(assistant)) {
-      pendingLocalMessages.push(cloneMessage(message), cloneMessage(assistant!));
+      if (!deliveredPromptIds.has(message.id)) {
+        pendingLocalMessages.push(cloneMessage(message), cloneMessage(assistant!));
+      }
       index += 1;
     }
   }
 
-  return pendingLocalMessages.length > 0
-    ? [...parsedMessages, ...pendingLocalMessages]
-    : parsedMessages;
+  if (pendingLocalMessages.length === 0 && completedRepliesByEndIndex.size === 0) {
+    return parsedMessages;
+  }
+  return [
+    ...parsedMessages.flatMap((message, index) => [
+      ...(completedRepliesByEndIndex.get(index) ?? []),
+      message,
+    ]),
+    ...(completedRepliesByEndIndex.get(parsedMessages.length) ?? []),
+    ...pendingLocalMessages,
+  ];
 };
 
 export const shouldRecoverSessionFromNative = (
@@ -528,6 +698,10 @@ export const mergeNativeSessionIntoExisting = (
     timeLabel: display.timeLabel,
     updatedAt: display.updatedAt,
     model: parsed.model,
-    messages: mergeNativeConversationMessages(existing.messages, parsed.messages),
+    messages: mergeNativeConversationMessages(
+      existing.messages,
+      parsed.messages,
+      parsed.deliveredUserMessageIds,
+    ),
   };
 };

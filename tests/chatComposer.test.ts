@@ -143,9 +143,9 @@ run('ChatComposer includes the current Claude model options', () => {
     }),
   );
 
-  assert.ok(html.includes('opus5[1M]'));
+  assert.ok(html.includes('opus5.5[1M]'));
   assert.match(html, /value="fable"/);
-  assert.match(html, />fable\[1M\]</);
+  assert.match(html, />fable5\.1\[1M\]</);
 });
 
 run('ChatComposer offers GPT-5.6 Sol while retaining older Codex models', () => {

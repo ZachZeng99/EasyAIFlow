@@ -3,10 +3,10 @@ type ClaudeSettings = {
   _env?: Record<string, unknown>;
 };
 
-const DEFAULT_OPUS_MODEL = 'claude-opus-5';
+const DEFAULT_OPUS_MODEL = 'claude-opus-5-5';
 const DEFAULT_SONNET_MODEL = 'claude-sonnet-4-6';
 const DEFAULT_HAIKU_MODEL = 'claude-haiku-4-5';
-const DEFAULT_FABLE_MODEL = 'fable';
+const DEFAULT_FABLE_MODEL = 'claude-fable-5-1';
 
 export const isClaudeSyntheticModel = (value: string | undefined) =>
   value?.trim().toLowerCase() === '<synthetic>';

@@ -164,8 +164,8 @@ await run('preserves legacy histories larger than the old monolithic-store cap',
   const loadedSession = loaded?.state.projects[0]?.dreams[0]?.sessions[0] as SessionRecord | undefined;
   assert.equal(loadedSession?.messages.length, 0);
   const newest = await loaded!.store.readMessagePage('long-session');
-  assert.equal(newest.messages.length, 50);
-  assert.equal(newest.messages[0]?.id, 'assistant-400');
+  assert.equal(newest.messages.length, 100);
+  assert.equal(newest.messages[0]?.id, 'assistant-350');
   assert.equal(newest.messages.at(-1)?.id, 'assistant-449');
   assert.equal(newest.hasMoreBefore, true);
 });

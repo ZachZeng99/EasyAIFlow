@@ -553,6 +553,9 @@ const syncRunSessionRuntime = async (sessionId: string, runState: ClaudeRunState
 const hasActiveBackgroundTasks = (runState: ClaudeRunState) =>
   [...runState.backgroundTasks.values()].some(isActiveBackgroundTask);
 
+const isClaudeToolLoopPending = (runState: ClaudeRunState) =>
+  !runState.receivedResult && runState.lastAssistantStopReason === 'tool_use';
+
 type NativeClaudeBackgroundTaskCacheEntry = {
   mtimeMs: number;
   taskIdsKey: string;
@@ -778,7 +781,15 @@ const reconcileResidentBackgroundTasksFromNativeHistory = (resident: ResidentCla
   if (runStates.length === 0) {
     return;
   }
+  // Orphan tasks start while no turn owns stdout. Their terminal event can be
+  // routed to a later turn, so reconcile them from native history as well.
+  const orphanTasks = getResidentOrphanBackgroundTasks(resident);
   const unsettledTaskIds = getUnsettledBackgroundTaskIds(runStates);
+  orphanTasks.forEach((task, taskId) => {
+    if (isUnsettledBackgroundTask(task)) {
+      unsettledTaskIds.add(task.taskId || taskId);
+    }
+  });
   if (unsettledTaskIds.size === 0) {
     return;
   }
@@ -804,15 +815,15 @@ const reconcileResidentBackgroundTasksFromNativeHistory = (resident: ResidentCla
     return;
   }
 
-  runStates.forEach((runState) => {
-    runState.backgroundTasks.forEach((task, taskId) => {
+  const settleTasks = (tasks: Map<string, BackgroundTaskRecord>) => {
+    tasks.forEach((task, taskId) => {
       if (!isUnsettledBackgroundTask(task)) {
         return;
       }
 
       const terminalTask = terminalTasks.get(taskId);
       if (terminalTask) {
-        runState.backgroundTasks.set(taskId, {
+        tasks.set(taskId, {
           ...task,
           ...terminalTask,
           detached: undefined,
@@ -822,13 +833,16 @@ const reconcileResidentBackgroundTasksFromNativeHistory = (resident: ResidentCla
       }
 
       if (detachedTaskIds.has(taskId)) {
-        runState.backgroundTasks.set(taskId, {
+        tasks.set(taskId, {
           ...task,
           detached: true,
         });
       }
     });
-  });
+  };
+
+  runStates.forEach((runState) => settleTasks(runState.backgroundTasks));
+  settleTasks(orphanTasks);
 };
 
 const emitRuntimeState = (
@@ -970,6 +984,24 @@ export const recordUnownedResidentBackgroundTask = (
     task: mergedTask,
   });
   syncResidentRuntimeState(ctx, state, sessionId, resident);
+};
+
+/**
+ * Applies a task event that was routed to a turn or owner run state to the
+ * orphan record with the same id. Without this, an orphan task whose terminal
+ * notification arrives during a later turn stays "running" forever.
+ */
+export const settleResidentOrphanBackgroundTask = (
+  resident: ResidentClaudeSession,
+  task: BackgroundTaskRecord,
+) => {
+  const orphanTasks = getResidentOrphanBackgroundTasks(resident);
+  const existing = orphanTasks.get(task.taskId);
+  if (!existing) {
+    return;
+  }
+
+  orphanTasks.set(task.taskId, mergeBackgroundTaskRecords(existing, task));
 };
 
 const handoffResidentTurnToBackground = (
@@ -1474,11 +1506,8 @@ export const getResidentIdleTurnOutcome = (runState: ClaudeRunState) => {
     return null;
   }
 
-  if (!runState.receivedResult && runState.lastAssistantStopReason === 'tool_use') {
-    return {
-      kind: 'error' as const,
-      content: CLAUDE_INCOMPLETE_TOOL_TURN_ERROR,
-    };
+  if (isClaudeToolLoopPending(runState)) {
+    return null;
   }
 
   const content = resolveResidentIdleVisibleContent(runState);
@@ -1577,6 +1606,7 @@ export const completeAssistantRun = async (
     message.content = content;
     message.status = 'complete';
     message.title = buildMessageTitle(message.content, 'Claude response');
+    message.completionOrigin = 'runtime';
   });
 
   await setSessionRuntime(sessionId, {
@@ -1770,8 +1800,24 @@ export const handleClaudeLine = async (
   if (parsed.type === 'system') {
     const systemState = typeof parsed.state === 'string' ? parsed.state : undefined;
     if (parsed.subtype === 'session_state_changed' && systemState === 'idle') {
-      emitRuntimeState(ctx, sessionId, 'idle', true, options?.appliedEffort);
-      if (!options?.persistentSession && isWritableStdin(activeRun.child) && activeRun.child.stdin) {
+      const toolLoopPending = isClaudeToolLoopPending(runState);
+      emitRuntimeState(
+        ctx,
+        sessionId,
+        toolLoopPending
+          ? hasActiveBackgroundTasks(runState)
+            ? 'background'
+            : 'running'
+          : 'idle',
+        true,
+        options?.appliedEffort,
+      );
+      if (
+        !toolLoopPending &&
+        !options?.persistentSession &&
+        isWritableStdin(activeRun.child) &&
+        activeRun.child.stdin
+      ) {
         activeRun.child.stdin.end();
       }
       return;
@@ -2414,6 +2460,14 @@ const finalizeResidentSessionClose = async (
           preview: turn.runState.terminalError,
           timeLabel: 'Just now',
         });
+      } else if (isClaudeToolLoopPending(turn.runState)) {
+        await failAssistantRun(
+          ctx,
+          resident.sessionId,
+          turn.assistantMessageId,
+          turn.runState,
+          CLAUDE_INCOMPLETE_TOOL_TURN_ERROR,
+        );
       } else if (shouldCompleteClaudeRunOnClose(turn.runState)) {
         await completeAssistantRun(
           ctx,
@@ -2688,6 +2742,10 @@ const ensureResidentClaudeSession = async (
         return;
       }
 
+      if (parsedBackgroundTask) {
+        settleResidentOrphanBackgroundTask(currentResident, parsedBackgroundTask);
+      }
+
       await handleClaudeLine(
         ctx,
         state,
@@ -2770,7 +2828,8 @@ const ensureResidentClaudeSession = async (
       const shouldFinalizeResidentTurn =
         (parsed.type === 'system' &&
           parsed.subtype === 'session_state_changed' &&
-          parsed.state === 'idle') ||
+          parsed.state === 'idle' &&
+          !isClaudeToolLoopPending(runState)) ||
         shouldFinalizeAssistantTurn;
       if (shouldFinalizeResidentTurn) {
         const matchedTurn =

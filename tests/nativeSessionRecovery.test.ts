@@ -337,6 +337,63 @@ run('mergeNativeHydrationMessages preserves a queued local turn missing from nat
   );
 });
 
+run('native hydration retains a completed result absent from JSONL across later turns and repeated refreshes', () => {
+  const user = makeMessage({ id: 'baseline-user', role: 'user', content: 'Run six A-base baselines for the XMP comparison.' });
+  const final = {
+    ...makeMessage({ id: 'local-final', content: 'Six runs completed. FPS: 46.91 ± 0.19.\n\n| Run | FPS |\n| 2 | 46.64 |' }),
+    completionOrigin: 'runtime' as const,
+  };
+  const followup = makeMessage({ id: 'followup', role: 'user', content: 'What should I compare after enabling XMP?' });
+  const parsed = [
+    user,
+    makeMessage({ id: 'native-progress', content: 'The batch finished. Reading the six runs and the noise stats:' }),
+    makeMessage({ id: 'task-notification', role: 'user', content: '<task-notification><task-id>baseline</task-id><status>completed</status></task-notification>' }),
+    makeMessage({ id: 'edit-report', role: 'system', kind: 'tool_use', content: 'Edit baseline.md', status: 'success' }),
+    followup,
+    makeMessage({ id: 'followup-answer', content: 'Use the same replay and resolution.' }),
+  ];
+  const existing = [user, final, followup];
+  const merged = mergeNativeHydrationMessages(existing, parsed);
+  assert.equal(merged.find((message) => message.id === final.id)?.content, final.content);
+  assert.ok(merged.indexOf(merged.find((message) => message.id === final.id)!) < merged.indexOf(followup));
+  assert.deepEqual(mergeNativeHydrationMessages(merged, parsed), merged);
+  assert.deepEqual(mergeNativeConversationMessages(existing, parsed), merged, 'resident recovery must use the same preservation rule');
+});
+
+run('native hydration deduplicates a local final once its native assistant blocks arrive', () => {
+  const user = makeMessage({ id: 'user', role: 'user', content: 'Run the baseline.' });
+  const final = { ...makeMessage({ id: 'local-final', content: 'Baseline complete.\n\nFPS 46.91.' }), completionOrigin: 'runtime' as const };
+  const parsed = [
+    user,
+    makeMessage({ id: 'native-first', content: 'Baseline complete.' }),
+    makeMessage({ id: 'native-last', content: 'FPS 46.91.' }),
+  ];
+  assert.equal(mergeNativeHydrationMessages([user, final], parsed), parsed);
+});
+
+run('native hydration does not resurrect completed replies from an abandoned user branch', () => {
+  const oldUser = makeMessage({ id: 'old-user', role: 'user', content: 'Abandoned prompt.' });
+  const final = { ...makeMessage({ id: 'local-final', content: 'Old final.' }), completionOrigin: 'runtime' as const };
+  const parsed = [makeMessage({ id: 'new-user', role: 'user', content: 'Replacement prompt.' })];
+  assert.equal(mergeNativeHydrationMessages([oldUser, final], parsed), parsed);
+});
+
+run('native hydration retains a recovered report with explicit provenance', () => {
+  const user = makeMessage({ id: 'baseline-user', role: 'user', content: 'Run six baselines.' });
+  const report = { ...makeMessage({ id: 'report', content: 'Recovered from baseline.md; original reply unavailable.\n\nFPS 46.91.' }), completionOrigin: 'recovered-report' as const };
+  const parsed = [user, makeMessage({ id: 'edit-report', role: 'system', kind: 'tool_use', content: 'Edit baseline.md', status: 'success' })];
+  const recovered = mergeNativeHydrationMessages([user, report], parsed);
+  assert.deepEqual(recovered.at(-1), report);
+  assert.deepEqual(mergeNativeHydrationMessages(recovered, parsed), recovered);
+});
+
+run('native hydration keeps richer legacy runtime text when native history is only its prefix', () => {
+  const user = makeMessage({ id: 'user', role: 'user', content: 'Run the baseline.' });
+  const final = makeMessage({ id: 'legacy-final', content: 'Reading the six runs.\n\nFPS 46.91 ± 0.19.' });
+  const parsed = [user, makeMessage({ id: 'native-progress', kind: 'message', content: 'Reading the six runs.' })];
+  assert.deepEqual(mergeNativeHydrationMessages([user, final], parsed).at(-1), final);
+});
+
 run('mergeNativeHydrationMessages uses prompt order when queued text repeats', () => {
   const existing = [
     makeMessage({ id: 'user-1', role: 'user', content: '继续' }),
@@ -475,4 +532,99 @@ run('shouldRecoverSessionFromNative detects missing intermediate assistant repli
   };
 
   assert.equal(shouldRecoverSessionFromNative(existing, parsed), true);
+});
+
+run('native hydration drops a runtime aggregate whose block join whitespace differs from native', () => {
+  // The runtime accumulates every text block of a turn into one message using
+  // whatever whitespace the model streamed, while native stores one record per
+  // block. The block boundaries line up but the join whitespace differs, so a
+  // naive "\n\n"-join substring check fails to recognize the duplicate.
+  const user = makeMessage({ id: 'user', role: 'user', content: 'Investigate the motion blur flag.' });
+  const final = {
+    ...makeMessage({
+      id: 'local-final',
+      content: 'First finding about the flag.\nSecond finding after the search.\nThird finding with the fix.',
+    }),
+    completionOrigin: 'runtime' as const,
+  };
+  const parsed = [
+    user,
+    makeMessage({ id: 'native-1', content: 'First finding about the flag.' }),
+    makeMessage({ id: 'native-tool', role: 'system', kind: 'tool_use', content: 'Grep flag', status: 'success' }),
+    makeMessage({ id: 'native-2', content: 'Second finding after the search.' }),
+    makeMessage({ id: 'native-3', content: 'Third finding with the fix.' }),
+  ];
+
+  const merged = mergeNativeHydrationMessages([user, final], parsed);
+  assert.equal(merged, parsed, 'the runtime aggregate must be dropped once native holds every block');
+  assert.equal(merged.some((message) => message.id === 'local-final'), false);
+});
+
+run('native hydration drops a runtime aggregate whose tail lands after a queued interjection', () => {
+  // A queued user message can interrupt a turn; Claude records the turn's tail
+  // blocks after the interjection's own reply. The runtime aggregate still holds
+  // the whole original answer, so dedup must span past the next prompt in order.
+  const userA = makeMessage({ id: 'user-a', role: 'user', content: 'Do task A.' });
+  const final = {
+    ...makeMessage({
+      id: 'local-final',
+      content: 'Working on A.\n\nStill on A.\n\nFinished A after your note.',
+    }),
+    completionOrigin: 'runtime' as const,
+  };
+  const interjection = makeMessage({ id: 'user-b', role: 'user', content: 'Do not rush the change.' });
+  const parsed = [
+    userA,
+    makeMessage({ id: 'native-a1', content: 'Working on A.' }),
+    makeMessage({ id: 'native-a2', content: 'Still on A.' }),
+    interjection,
+    makeMessage({ id: 'native-b1', content: 'Understood, holding the change.' }),
+    makeMessage({ id: 'native-a3', content: 'Finished A after your note.' }),
+  ];
+
+  const merged = mergeNativeHydrationMessages([userA, final], parsed);
+  assert.equal(merged, parsed, 'the aggregate is covered by A blocks even across the interjection reply');
+  assert.equal(merged.some((message) => message.id === 'local-final'), false);
+});
+
+run('native hydration drops a delivered pending turn that compaction removed from the active branch', () => {
+  const compactSummary = makeMessage({
+    id: 'native-compact-summary',
+    role: 'user',
+    content: 'This session is being continued from a previous conversation that ran out of context.',
+  });
+  const followup = makeMessage({ id: 'native-followup', role: 'user', content: '你已经push完了吧' });
+  const parsed = [
+    compactSummary,
+    makeMessage({ id: 'native-after-compact', content: 'push 成功。' }),
+    followup,
+    makeMessage({ id: 'native-followup-answer', content: '是的，push 已经完成。' }),
+  ];
+  // The prompt reached Claude before compaction, so native has its uuid on a
+  // dropped branch, but the active branch starts at the compact summary.
+  const deliveredPrompt = makeMessage({
+    id: 'delivered-before-compact',
+    role: 'user',
+    content: '你把dev拉到最新，然后把这个提交到本地，我review一下',
+  });
+  const staleReply = makeMessage({
+    id: 'local-live-reply',
+    content: '我先看一下仓库里约定的 pull 流程和提交规范，再动手。',
+    status: 'background',
+  });
+  const queuedPrompt = makeMessage({ id: 'still-queued', role: 'user', content: '再跑一次编译' });
+  const queuedReply = makeMessage({ id: 'still-queued-reply', content: 'Queued.', status: 'queued' });
+  const deliveredUserMessageIds = [compactSummary.id, followup.id, deliveredPrompt.id];
+
+  for (const existing of [
+    [deliveredPrompt, staleReply, followup, queuedPrompt, queuedReply],
+    // A previous faulty merge already moved the stale pair to the tail.
+    [...parsed, deliveredPrompt, staleReply, queuedPrompt, queuedReply],
+  ]) {
+    const merged = mergeNativeHydrationMessages(existing, parsed, deliveredUserMessageIds);
+    assert.deepEqual(
+      merged.map((message) => message.id),
+      [...parsed.map((message) => message.id), 'still-queued', 'still-queued-reply'],
+    );
+  }
 });

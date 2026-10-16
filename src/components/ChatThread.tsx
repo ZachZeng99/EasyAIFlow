@@ -64,6 +64,8 @@ type ChatThreadProps = {
   session: SessionSummary;
   messages: ConversationMessage[];
   isLoadingHistory?: boolean;
+  historyLoadError?: string;
+  onRetryLoadHistory?: () => void;
   hasMoreHistory?: boolean;
   isLoadingOlderHistory?: boolean;
   onLoadOlderHistory?: () => void;
@@ -201,6 +203,8 @@ function ChatThreadComponent({
   session,
   messages,
   isLoadingHistory = false,
+  historyLoadError,
+  onRetryLoadHistory,
   hasMoreHistory = false,
   isLoadingOlderHistory = false,
   onLoadOlderHistory,
@@ -464,6 +468,14 @@ function ChatThreadComponent({
           }
         }}
       >
+        {historyLoadError ? (
+          <div className="history-page-loader" role="alert">
+            <p>{historyLoadError}</p>
+            {onRetryLoadHistory ? (
+              <button type="button" onClick={onRetryLoadHistory}>Retry loading history</button>
+            ) : null}
+          </div>
+        ) : null}
         {hasMoreHistory ? (
           <div className="history-page-loader">
             <button
@@ -506,9 +518,13 @@ function ChatThreadComponent({
           </section>
         ) : null}
 
-        {displayItems.length === 0 && !activePermissionRequest && !interaction?.askUserQuestion && !interaction?.planModeRequest ? (
+        {displayItems.length === 0 && !historyLoadError && !activePermissionRequest && !interaction?.askUserQuestion && !interaction?.planModeRequest ? (
           <div className="thread-placeholder">
-            {isLoadingHistory ? 'Loading session history...' : 'No saved messages in this session.'}
+            {isLoadingHistory
+              ? 'Loading session history...'
+              : session.messagesLoaded === false
+                ? 'Session history has not been loaded.'
+                : 'No saved messages in this session.'}
           </div>
         ) : null}
 
@@ -771,6 +787,11 @@ const areChatThreadPropsEqual = (current: ChatThreadProps, next: ChatThreadProps
   current.session === next.session &&
   current.messages === next.messages &&
   current.isLoadingHistory === next.isLoadingHistory &&
+  current.historyLoadError === next.historyLoadError &&
+  current.onRetryLoadHistory === next.onRetryLoadHistory &&
+  current.hasMoreHistory === next.hasMoreHistory &&
+  current.isLoadingOlderHistory === next.isLoadingOlderHistory &&
+  current.onLoadOlderHistory === next.onLoadOlderHistory &&
   current.isCliOnline === next.isCliOnline &&
   current.groupCliStatuses === next.groupCliStatuses &&
   current.interaction === next.interaction;

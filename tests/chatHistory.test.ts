@@ -122,6 +122,21 @@ run('ChatHistory exposes direct Pin and Unpin actions on session cards', () => {
   assert.match(pinnedHtml, /title="Unpin thread"/);
 });
 
+run('ChatHistory keeps ordinary sessions in stored order when activity timestamps change', () => {
+  const beforeDisconnect = renderHistory([
+    makeSession({ id: 'first', title: 'First stored thread', updatedAt: 10 }),
+    makeSession({ id: 'second', title: 'Second stored thread', updatedAt: 20 }),
+  ]);
+  const afterDisconnect = renderHistory([
+    makeSession({ id: 'first', title: 'First stored thread', updatedAt: 30 }),
+    makeSession({ id: 'second', title: 'Second stored thread', updatedAt: 20 }),
+  ]);
+
+  for (const html of [beforeDisconnect, afterDisconnect]) {
+    assert.ok(html.indexOf('First stored thread') < html.indexOf('Second stored thread'));
+  }
+});
+
 run('getSessionPinActionLabel describes the inverse action', () => {
   assert.equal(getSessionPinActionLabel(makeSession({ pinned: true })), 'Unpin thread');
   assert.equal(getSessionPinActionLabel(makeSession({ pinned: false })), 'Pin thread');

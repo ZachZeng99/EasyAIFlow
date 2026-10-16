@@ -76,17 +76,37 @@ run('getResidentIdleTurnOutcome completes turns that reached idle with visible a
   });
 });
 
-run('getResidentIdleTurnOutcome rejects partial text when Claude goes idle after tool use', () => {
-  const outcome = getResidentIdleTurnOutcome(
-    makeRunState({
-      content: 'I found the likely cause. Let me verify the final mechanism.',
-      lastAssistantStopReason: 'tool_use',
-    }),
-  );
+run('getResidentIdleTurnOutcome keeps a foreground tool loop alive across intermediate idle events', () => {
+  const runState = makeRunState({
+    content: 'I found the likely cause. Let me verify the final mechanism.',
+    lastAssistantStopReason: 'tool_use',
+    toolTraces: new Map([
+      [
+        'tool-1',
+        {
+          id: 'tool-1',
+          role: 'system',
+          kind: 'tool_use',
+          timestamp: 'Now',
+          title: 'Bash',
+          content: 'sleep 235',
+          status: 'running',
+        },
+      ],
+    ]),
+  });
 
-  assert.deepEqual(outcome, {
-    kind: 'error',
-    content: 'Claude stopped after tool use without returning a final response.',
+  assert.equal(getResidentIdleTurnOutcome(runState), null);
+
+  runState.toolTraces.get('tool-1')!.status = 'success';
+  runState.lastToolResultContent = 'Deployment completed.';
+  assert.equal(getResidentIdleTurnOutcome(runState), null);
+
+  runState.lastAssistantStopReason = 'end_turn';
+  runState.content = 'Deployment completed and the verification passed.';
+  assert.deepEqual(getResidentIdleTurnOutcome(runState), {
+    kind: 'complete',
+    content: 'Deployment completed and the verification passed.',
   });
 });
 

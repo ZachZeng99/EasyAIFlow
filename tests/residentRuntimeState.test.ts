@@ -6,6 +6,7 @@ import {
   getSessionInteractionSnapshots,
   readNativeClaudeTerminalBackgroundTasks,
   recordUnownedResidentBackgroundTask,
+  settleResidentOrphanBackgroundTask,
   syncResidentRuntimeState,
 } from '../backend/claudeInteraction.ts';
 import {
@@ -530,4 +531,166 @@ run('recordUnownedResidentBackgroundTask surfaces task notifications without a f
   assert.equal(events[1]?.runtime?.phase, 'background');
   assert.equal(snapshots['session-orphan']?.runtime?.phase, 'background');
   assert.equal(snapshots['session-orphan']?.backgroundTasks?.[0]?.summary, 'Intermediate monitor output');
+});
+
+run('settleResidentOrphanBackgroundTask applies routed terminal events to matching orphan tasks', () => {
+  const state = createClaudeInteractionState();
+  const ctx: ClaudeInteractionContext = {
+    broadcastEvent: () => undefined,
+    attachmentRoot: () => 'D:\AIAgent\EasyAIFlow',
+    claudeSettingsPath: () => 'D:\AIAgent\EasyAIFlow\.claude.json',
+    homePath: () => 'D:\AIAgent\EasyAIFlow',
+  };
+
+  const resident = {
+    child: {
+      killed: false,
+      exitCode: null,
+      signalCode: null,
+    },
+    configuredEffort: 'max',
+    currentTurn: undefined,
+    activeOutputTurn: undefined,
+    backgroundTaskOwners: new Map(),
+    queuedTurns: new Map(),
+  } as unknown as ResidentClaudeSession;
+
+  state.residentSessions.set('session-orphan-routed', resident);
+  recordUnownedResidentBackgroundTask(ctx, state, 'session-orphan-routed', resident, {
+    taskId: 'task-orphan-routed',
+    status: 'running',
+    description: 'Run repro with VRAM hog',
+    taskType: 'local_bash',
+    updatedAt: 10,
+  });
+  assert.equal(getSessionInteractionSnapshots(state)['session-orphan-routed']?.runtime?.phase, 'background');
+
+  // The terminal notification arrives while a later turn owns stdout, so the
+  // stream handler routes it to that turn instead of the orphan map.
+  settleResidentOrphanBackgroundTask(resident, {
+    taskId: 'task-orphan-routed',
+    status: 'completed',
+    description: 'Background command completed',
+    updatedAt: 20,
+  });
+  settleResidentOrphanBackgroundTask(resident, {
+    taskId: 'task-unrelated',
+    status: 'running',
+    description: 'Owned by the current turn',
+    updatedAt: 30,
+  });
+
+  const snapshot = getSessionInteractionSnapshots(state)['session-orphan-routed'];
+  assert.equal(snapshot?.runtime?.phase, 'idle');
+  assert.equal(
+    snapshot?.backgroundTasks?.find((task) => task.taskId === 'task-orphan-routed')?.status,
+    'completed',
+  );
+  assert.equal(
+    snapshot?.backgroundTasks?.some((task) => task.taskId === 'task-unrelated'),
+    false,
+  );
+});
+
+run('resident runtime reconciles stale orphan tasks from native Claude history', () => {
+  const state = createClaudeInteractionState();
+
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousHomePath = getRuntimePaths().homePath;
+  const tempHome = mkdtempSync(path.join(os.tmpdir(), 'resident-runtime-orphan-native-'));
+
+  try {
+    process.env.USERPROFILE = tempHome;
+    configureRuntimePaths({ homePath: tempHome });
+
+    const projectRoot = 'D:\PBZ';
+    const claudeSessionId = 'native-orphan-session';
+    const nativeDir = path.join(
+      tempHome,
+      '.claude',
+      'projects',
+      toClaudeProjectDirName(projectRoot) ?? 'workspace',
+    );
+    mkdirSync(nativeDir, { recursive: true });
+    writeFileSync(
+      path.join(nativeDir, `${claudeSessionId}.jsonl`),
+      `${JSON.stringify({
+        type: 'queue-operation',
+        operation: 'enqueue',
+        sessionId: claudeSessionId,
+        content: `<task-notification>
+<task-id>task-orphan-native</task-id>
+<tool-use-id>tool-orphan-native</tool-use-id>
+<status>completed</status>
+<summary>Background command finished cleanly</summary>
+</task-notification>`,
+      })}\n`,
+      'utf8',
+    );
+
+    // A settled owner run state still exposes the resident's Claude session id.
+    const ownerRunState: ClaudeRunState = {
+      ...createClaudeRunState(),
+      claudeSessionId,
+      backgroundTasks: new Map([
+        [
+          'task-owned-done',
+          {
+            taskId: 'task-owned-done',
+            status: 'completed',
+            description: 'Finished command',
+            updatedAt: 1,
+          },
+        ],
+      ]),
+      toolTraces: new Map(),
+      toolUseBlockIds: new Map(),
+      toolUseJsonBuffers: new Map(),
+    };
+
+    const resident = {
+      child: {
+        killed: false,
+        exitCode: null,
+        signalCode: null,
+      },
+      configuredEffort: 'max',
+      projectRoot,
+      currentTurn: undefined,
+      activeOutputTurn: undefined,
+      backgroundTaskOwners: new Map([
+        ['task-owned-done', { assistantMessageId: 'assistant-owner', runState: ownerRunState }],
+      ]),
+      orphanBackgroundTasks: new Map([
+        [
+          'task-orphan-native',
+          {
+            taskId: 'task-orphan-native',
+            status: 'running',
+            description: 'Run repro with VRAM hog',
+            taskType: 'local_bash',
+            updatedAt: 2,
+          },
+        ],
+      ]),
+      queuedTurns: new Map(),
+    } as unknown as ResidentClaudeSession;
+
+    state.residentSessions.set('session-orphan-native', resident);
+    const snapshot = getSessionInteractionSnapshots(state)['session-orphan-native'];
+
+    assert.equal(snapshot?.runtime?.phase, 'idle');
+    assert.equal(
+      snapshot?.backgroundTasks?.find((task) => task.taskId === 'task-orphan-native')?.status,
+      'completed',
+    );
+  } finally {
+    if (previousUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = previousUserProfile;
+    }
+    configureRuntimePaths({ homePath: previousHomePath });
+    rmSync(tempHome, { recursive: true, force: true });
+  }
 });
