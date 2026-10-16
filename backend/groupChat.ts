@@ -42,6 +42,7 @@ import { resolveGroupTargets } from '../src/data/groupChat.js';
 import { GroupTurnCoordinator } from './groupTurnCoordinator.js';
 import type { SessionInteractionState } from '../src/data/sessionInteraction.js';
 import { RpcRejectedError } from '../src/data/rpcOperations.js';
+import { agentMessagingFor, type TeamTaskContext, type TeamToolConfig } from './agentMessaging.js';
 
 const coordinators = new WeakMap<ClaudeInteractionState, GroupTurnCoordinator>();
 const coordinatorFor = (state: ClaudeInteractionState) => {
@@ -53,13 +54,13 @@ export const hasActiveGroupTurns = (state: ClaudeInteractionState, roomId?: stri
 export const updateGroupParticipants = (
   ctx: ClaudeInteractionContext,
   state: ClaudeInteractionState,
-  payload: { sessionId: string; expectedRevision: number; participants: GroupParticipantConfig[] },
+  payload: { sessionId: string; expectedRevision: number; participants: GroupParticipantConfig[]; collaborationEnabled?: boolean },
 ) => coordinatorFor(state).dispatch(payload.sessionId, async () => {
   const session = await findSession(payload.sessionId);
   if (hasActiveGroupTurns(state, payload.sessionId) || session?.messages.some((message) => ['queued', 'streaming', 'running', 'background'].includes(message.status ?? ''))) {
     throw new RpcRejectedError('请等待群聊任务结束，或先停止任务，再修改成员。');
   }
-  const result = await configureGroupParticipants(payload.sessionId, payload.expectedRevision, payload.participants);
+  const result = await configureGroupParticipants(payload.sessionId, payload.expectedRevision, payload.participants, payload.collaborationEnabled);
   ctx.broadcastEvent({ type: 'session-sync', sessionId: result.session.id, session: result.session });
   return result;
 });
@@ -704,6 +705,7 @@ const runGroupParticipantTurn = async (
   pendingAttachments: PendingAttachment[],
   payload: GroupSendPayload,
   signal: AbortSignal,
+  teamContext: TeamTaskContext,
 ) => {
   signal.throwIfAborted();
   const backingSession = await findSession(participant.backingSessionId);
@@ -713,9 +715,11 @@ const runGroupParticipantTurn = async (
 
   signal.throwIfAborted();
   const syncMessages = roomSession.messages;
-  const syncPrompt = participant.provider === 'codex'
+  const basePrompt = participant.provider === 'codex'
     ? buildCodexRoomChatPrompt(participant, syncMessages)
     : buildRoomSyncPrompt(roomSession, participant, syncMessages, snapshotSeq);
+  const collaboration = roomSession.group?.kind === 'room' && roomSession.group.collaborationEnabled === true;
+  const syncPrompt = basePrompt + (collaboration ? '\n\nEAF_TEAM_TOOLS: The user enabled team collaboration for this room. Use the eaf_team MCP tools team_members, team_send and team_wait when delegation helps the task. Send only to listed enabled members. Native subagent tools do not address EAF members. A queued receipt is not a reply; use team_wait for the actual result before claiming completion. Return results to your requester by finishing your current reply; do not send back to an ancestor. Delegate only work within the user task. Use stable request_id values for retries. Maximum 16 delegated messages per user task and depth 4.' : '');
   const mirrorSpec: GroupMirrorSpec = {
     roomSessionId: roomSession.id,
     backingSessionId: backingSession.id,
@@ -775,8 +779,28 @@ const runGroupParticipantTurn = async (
   const onAbort = () => interceptorSettled?.();
   signal.addEventListener('abort', onAbort, { once: true });
   const onPrepared = (messageId: string) => { mirrorSpec.backingAssistantMessageId = messageId; };
+  let teamTools: TeamToolConfig | undefined;
 
   try {
+    if (collaboration && roomSession.group?.kind === 'room') {
+      teamTools = await agentMessagingFor(state).bind({
+        sessionId: backingSession.id, roomId: roomSession.id, memberId: participant.id, memberLabel: participant.label,
+        context: teamContext, signal, members: roomSession.group.participants,
+        send: async (recipient, message, context) => {
+          signal.throwIfAborted();
+          const result = await sendGroupMessage(ctx, state, { sessionId: roomSession.id, prompt: message, targetParticipantIds: [recipient] }, context, signal);
+          return { ...result.queued, recipient };
+        },
+        read: async (receipt) => {
+          const room = await findSession(receipt.sessionId);
+          const reply = room?.messages.find((message) => message.id === receipt.assistantMessageId);
+          if (!reply) return { status: 'unknown' };
+          if (reply.status === 'complete') return { status: 'replied', content: reply.content.slice(0, 24000), truncated: reply.content.length > 24000 };
+          if (reply.status === 'error') return { status: 'failed', content: reply.content.slice(0, 24000) };
+          return { status: reply.status === 'queued' ? 'queued' : 'running' };
+        },
+      });
+    }
     // Codex: pass mirroredCtx directly and keep forwarding the original backing
     // events as well so hidden participant runtime stays in sync with the room.
     // Claude: pass the original ctx — the interceptor registered above handles
@@ -794,6 +818,7 @@ const runGroupParticipantTurn = async (
               references: roomSession.contextReferences ?? [],
               model: participant.model || backingSession.model || payload.model,
               effort: participant.effort ?? payload.effort,
+              config: teamTools?.codexConfig,
               onPrepared,
               signal,
             },
@@ -809,6 +834,7 @@ const runGroupParticipantTurn = async (
               references: roomSession.contextReferences ?? [],
               model: participant.model || backingSession.model || payload.model,
               effort: participant.effort ?? payload.effort,
+              mcpConfigPath: teamTools?.claudeConfigPath,
               onPrepared,
               signal,
             },
@@ -839,6 +865,7 @@ const runGroupParticipantTurn = async (
     }
     await flushMirroredEvents();
   } finally {
+    teamTools?.release();
     signal.removeEventListener('abort', onAbort);
     // Safety net: always clean up the interceptor even if the turn throws.
     if (interceptor) {
@@ -853,12 +880,18 @@ export const sendGroupMessage = async (
   ctx: ClaudeInteractionContext,
   state: ClaudeInteractionState,
   payload: GroupSendPayload,
-) => coordinatorFor(state).dispatch(payload.sessionId, () => dispatchGroupMessage(ctx, state, payload));
+  teamContext?: TeamTaskContext,
+  teamSignal?: AbortSignal,
+) => coordinatorFor(state).dispatch(payload.sessionId, () => {
+  teamSignal?.throwIfAborted();
+  return dispatchGroupMessage(ctx, state, payload, teamContext);
+});
 
 const dispatchGroupMessage = async (
   ctx: ClaudeInteractionContext,
   state: ClaudeInteractionState,
   payload: GroupSendPayload,
+  teamContext?: TeamTaskContext,
 ) => {
   const roomSession =
     (await ensureGroupRoomBackingSessions(payload.sessionId).catch(() => null)) ??
@@ -869,13 +902,20 @@ const dispatchGroupMessage = async (
 
   const pendingAttachments = payload.attachments ?? [];
   const targets = resolveGroupTargets(
-    payload.prompt,
+    teamContext ? '' : payload.prompt,
     roomSession.group.participants,
     roomSession.messages ?? [],
     payload.targetParticipantIds,
   );
   if (!targets.length) throw new Error('No enabled group recipient matches this message. Choose an available participant with @.');
   const userMessage = buildRoomUserMessage(payload.prompt, targets, pendingAttachments);
+  if (teamContext?.senderId) {
+    userMessage.speakerId = teamContext.senderId;
+    userMessage.speakerLabel = `${teamContext.senderLabel || teamContext.senderId} → @${targets[0]}`;
+    userMessage.title = `委派给 @${targets[0]}`;
+    if (teamContext.deliveryId) userMessage.teamDelivery = { id: teamContext.deliveryId, rootTaskId: teamContext.rootTaskId, senderId: teamContext.senderId, recipientId: targets[0] };
+  }
+  const taskContext = teamContext ?? { rootTaskId: userMessage.id, ancestors: [] };
   const initialProjects = await appendMessagesToSession(
     roomSession.id,
     [userMessage],
@@ -904,6 +944,7 @@ const dispatchGroupMessage = async (
   const placeholders = targetParticipants.map((participant) =>
     buildRoomAssistantPlaceholder(participant, participant.backingSessionId),
   );
+  if (userMessage.teamDelivery) for (const placeholder of placeholders) placeholder.teamDelivery = { ...userMessage.teamDelivery };
   const queuedProjects =
     placeholders.length > 0
       ? await appendMessagesToSession(roomSession.id, placeholders, payload.prompt, 'Just now')
@@ -943,10 +984,9 @@ const dispatchGroupMessage = async (
       pendingAttachments,
       payload,
       turn.signal,
+      taskContext,
     );
-    const pending = participant.provider === 'codex'
-      ? coordinator.runMember(participant.backingSessionId, turn.signal, run)
-      : run();
+    const pending = coordinator.runMember(participant.backingSessionId, turn.signal, run);
     return pending.catch(async (error) => {
       if (turn.signal.aborted) return;
       await markGroupParticipantStartError(

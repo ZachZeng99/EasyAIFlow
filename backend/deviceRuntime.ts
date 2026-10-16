@@ -65,6 +65,7 @@ import type {
 } from '../src/data/types.js';
 import type { PlanModeResponsePayload } from '../src/data/planMode.js';
 import { onSessionMessagesCommitted } from './sessionMessageEvents.js';
+import { agentMessagingFor } from './agentMessaging.js';
 
 export const createDeviceRuntime = (broadcast: (event: ClaudeStreamEvent) => void, epoch = randomUUID()) => {
   let interactionSequence = 0;
@@ -233,7 +234,9 @@ export const createDeviceRuntime = (broadcast: (event: ClaudeStreamEvent) => voi
         projects: summarizeProjectsForWebBootstrap(bootstrap.projects),
       };
     },
-    updateGroupParticipants: async (payload: { sessionId: string; expectedRevision: number; participants: import('../src/data/types.js').GroupParticipantConfig[] }) => {
+    callAgentTeamTool: async (payload: { token: string; name: string; arguments?: unknown }) => agentMessagingFor(state).call(payload.token, payload.name, payload.arguments),
+    updateGroupParticipants: async (payload: { sessionId: string; expectedRevision: number; participants: import('../src/data/types.js').GroupParticipantConfig[]; collaborationEnabled?: boolean }) => {
+      if (payload.collaborationEnabled !== undefined && typeof payload.collaborationEnabled !== 'boolean') throw new Error('Invalid group collaboration setting.');
       const participants = validateGroupParticipantConfigs(payload.participants);
       const room = await getSessionRecordForBootstrap(payload.sessionId);
       if (!room || room.group?.kind !== 'room') throw new Error('Group session not found.');

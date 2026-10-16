@@ -2534,7 +2534,7 @@ const ensureResidentClaudeSession = async (
   const resolvedModel = await resolveClaudeRunModel(ctx, session.model, options?.model);
   const persistedModel = await resolveRequestedClaudeModel(ctx, session.model);
   const existing = getResidentSession(state, session.id);
-  const effortChanged = existing?.configuredEffort !== options?.effort;
+  const effortChanged = existing?.configuredEffort !== options?.effort || existing?.configuredMcpPath !== options?.mcpConfigPath;
   const modelChanged = existing?.configuredModel !== resolvedModel;
   if (existing) {
     if (isWritableStdin(existing.child)) {
@@ -2592,6 +2592,7 @@ const ensureResidentClaudeSession = async (
   const args = buildClaudePrintArgs({
     model: resolvedModel,
     effort: options?.effort,
+    mcpConfigPath: options?.mcpConfigPath,
     forwardSubagentText: await supportsClaudeSubagentForwarding(),
     sessionArgs: buildClaudeSessionArgs(session.claudeSessionId, session.title, forkSession, session.id),
   });
@@ -2619,6 +2620,7 @@ const ensureResidentClaudeSession = async (
   });
 
   const resident: ResidentClaudeSession = {
+    configuredMcpPath: options?.mcpConfigPath,
     ...activeRun,
     configuredModel: resolvedModel,
     configuredEffort: options?.effort,
@@ -2638,6 +2640,10 @@ const ensureResidentClaudeSession = async (
       parsed = normalizeClaudeProtocolMessage(parsed);
 
       if (parsed.type === 'system' && parsed.subtype === 'init') {
+        if (options?.mcpConfigPath && (!Array.isArray(parsed.mcp_servers) ||
+          !parsed.mcp_servers.some((server: { name?: string; status?: string }) => server.name === 'eaf_team' && server.status === 'connected'))) {
+          startupError = new Error('EAF 群内协作工具未能连接。请检查 CLI 的 MCP 支持和设备服务后重试。');
+        }
         resolveResidentReady();
       }
 
@@ -2945,6 +2951,7 @@ const ensureResidentClaudeSession = async (
     void finalizeResidentSessionClose(ctx, state, resident, null, error);
   });
   await residentReady;
+  if (startupError) { child.kill(); throw startupError; }
   if (!isWritableStdin(child) || getResidentSession(state, session.id)?.runId !== resident.runId) {
     throw new Error(
       getResidentProcessUnavailableMessage(

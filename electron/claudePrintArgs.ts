@@ -6,6 +6,7 @@ type ClaudePrintArgOptions = {
   permissionMode?: 'acceptEdits' | 'bypassPermissions' | 'default' | 'dontAsk' | 'plan' | 'auto';
   noSessionPersistence?: boolean;
   forwardSubagentText?: boolean;
+  mcpConfigPath?: string;
 };
 
 export const DEFAULT_CLAUDE_EFFORT: NonNullable<ClaudePrintArgOptions['effort']> = 'max';
@@ -18,6 +19,7 @@ export const buildClaudePrintArgs = ({
   permissionMode = 'bypassPermissions',
   noSessionPersistence = false,
   forwardSubagentText = false,
+  mcpConfigPath,
 }: ClaudePrintArgOptions) => {
   const args = [
     '--print',
@@ -57,6 +59,7 @@ export const buildClaudePrintArgs = ({
     args.push('--no-session-persistence');
   }
   if (forwardSubagentText) args.push('--forward-subagent-text');
+  if (mcpConfigPath) args.push('--mcp-config', mcpConfigPath);
 
   args.push(...sessionArgs);
   return args;

@@ -46,6 +46,8 @@ export const getLastGroupResponder = (
   const latestReply = [...messages].reverse().find(
     (message) =>
       message.role === 'assistant' &&
+      (message.kind ?? 'message') === 'message' &&
+      !message.teamDelivery &&
       typeof message.speakerId === 'string' &&
       enabledIds.has(message.speakerId) &&
       (message.status === undefined || message.status === 'complete' || message.status === 'success') &&

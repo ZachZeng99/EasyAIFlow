@@ -403,6 +403,7 @@ const normalizeGroupMetadata = (
   return {
     kind: 'room',
     configurationRevision: value.configurationRevision,
+    collaborationEnabled: value.collaborationEnabled === true,
     nextMessageSeq:
       typeof value.nextMessageSeq === 'number' && Number.isFinite(value.nextMessageSeq) && value.nextMessageSeq > 0
         ? Math.floor(value.nextMessageSeq)
@@ -6180,6 +6181,7 @@ export const configureGroupParticipants = async (
   sessionId: string,
   expectedRevision: number,
   configs: GroupParticipantConfig[],
+  collaborationEnabled?: boolean,
 ): Promise<{ projects: ProjectRecord[]; session: SessionRecord }> => {
   const participants = validateGroupParticipantConfigs(configs);
   const state = await loadState();
@@ -6205,7 +6207,8 @@ export const configureGroupParticipants = async (
     backing.group = { kind: 'member', roomSessionId: room.id, participantId: config.id, speakerLabel: config.label };
     return { ...config, model: backing.model, backingSessionId: backing.id, lastAppliedRoomSeq: existing?.lastAppliedRoomSeq ?? 0 };
   });
-  room.group = { ...room.group, configurationRevision: expectedRevision + 1, participants: nextMembers };
+  room.group = { ...room.group, configurationRevision: expectedRevision + 1, participants: nextMembers,
+    collaborationEnabled: collaborationEnabled ?? room.group.collaborationEnabled };
   room.updatedAt = Date.now();
   await saveState(state);
   await flushPendingSave();

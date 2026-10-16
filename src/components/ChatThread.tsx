@@ -450,7 +450,7 @@ function ChatThreadComponent({
         </div>
           <div className="chat-actions">
             <button type="button" className="group-members-button" onClick={() => setShowNativeAgents(true)}>子 agent {agents.length}</button>
-            {session.sessionKind === 'group' && onManageParticipants ? <button type="button" className="group-members-button" onClick={onManageParticipants}>群成员</button> : null}
+            {session.sessionKind === 'group' && onManageParticipants ? <button type="button" className="group-members-button" onClick={onManageParticipants}>群成员{session.group?.kind === 'room' && session.group.collaborationEnabled ? ' · 协作开启' : ''}</button> : null}
             {showDisconnectAction ? <button
               type="button"
               className="disconnect-button"

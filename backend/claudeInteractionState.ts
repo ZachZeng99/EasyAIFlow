@@ -69,6 +69,7 @@ export type ClaudeRunState = ClaudeRunStateCompletion & {
 };
 
 export type ClaudePrintOptions = {
+  mcpConfigPath?: string;
   model?: string;
   effort?: string;
   references?: ContextReference[];
@@ -119,6 +120,7 @@ export type ResidentPendingControlRequest = {
 };
 
 export type ResidentClaudeSession = ActiveClaudeRun & {
+  configuredMcpPath?: string;
   configuredModel?: string;
   configuredEffort?: ClaudePrintOptions['effort'];
   stdoutProcessor: ClaudeLineProcessor;

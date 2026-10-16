@@ -41,6 +41,7 @@ export type GroupSessionMetadata =
       kind: 'room';
       nextMessageSeq: number;
       configurationRevision?: number;
+      collaborationEnabled?: boolean;
       participants: GroupParticipant[];
     }
   | {
@@ -253,6 +254,7 @@ export type ConversationMessage = {
   targetParticipantIds?: string[];
   recordedDiff?: DiffPayload;
   nativeAgent?: NativeAgentRecord;
+  teamDelivery?: { id: string; rootTaskId: string; senderId: string; recipientId: string };
   status?: 'queued' | 'streaming' | 'running' | 'background' | 'success' | 'complete' | 'error';
   contextReferences?: ContextReference[];
   attachments?: MessageAttachment[];

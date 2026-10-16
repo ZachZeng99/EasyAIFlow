@@ -2,6 +2,10 @@
 
 ## Current continuation: Paired device management (LAN / existing VPN)
 
+Device checkpoint committed as `c104d46`; updated default service is running at 127.0.0.1:8887. Continuing with opt-in group agent send/wait tools via provider-supported MCP stdio, scoped active-member capabilities, durable idempotent receipts, bounded delegation and cycle/stop handling. The first slice is same-room cross-provider round trips; cross-device collaboration still needs explicit member placement/routing beyond device control.
+
+Same-room communication slice implemented and verified: deterministic scope/quota/cycle/stop and group routing tests, two real bidirectional CLI runs, and compiled-service round trips at `.tmp-tests/live-team-xHlVtP`. Group UI shows the persisted opt-in switch (`.tmp-run/eaf-team-communication.jpg`). Delegated replies do not change the default human recipient. Final checkpoint/idle service refresh follows. Asked for the second physical machine's HTTPS/VPN gateway address; no response yet, so physical acceptance remains pending.
+
 - [x] Add stable device identity, expiring pairing codes, revocable access grants and encrypted stored peer credentials.
 - [x] Route immutable device-scoped RPC/SSE through the owning device service; preserve operation IDs and offline state.
 - [x] Add device selection and management UI for desktop/web, plus authenticated browser access for phones.

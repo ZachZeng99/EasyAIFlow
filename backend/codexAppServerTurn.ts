@@ -48,6 +48,7 @@ const resolveCodexReasoningEffort = (effort?: SessionEffort | null): CodexReason
 };
 
 export type CodexAppServerTurnOptions = {
+  config?: Record<string, unknown>;
   model?: string;
   effort?: SessionEffort;
   references?: ContextReference[];
@@ -842,6 +843,7 @@ const executeCodexAppServerTurn = async (
     if (threadId) {
       try {
         const resumed = await client.threadResume({
+          config: options?.config,
           threadId,
           cwd: prepared.session.workspace,
           model: requestedModel ?? null,
@@ -850,6 +852,7 @@ const executeCodexAppServerTurn = async (
       } catch {
         // Thread expired or invalid — start fresh.
         const started = await client.threadStart({
+          config: options?.config,
           cwd: prepared.session.workspace,
           model: requestedModel ?? null,
           ephemeral: false,
@@ -858,6 +861,7 @@ const executeCodexAppServerTurn = async (
       }
     } else {
       const started = await client.threadStart({
+        config: options?.config,
         cwd: prepared.session.workspace,
         model: requestedModel ?? null,
         ephemeral: false,

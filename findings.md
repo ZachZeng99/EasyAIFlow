@@ -549,3 +549,10 @@ The frontend replaces the entire interaction map after awaited getProjects, whil
 - Node fetch rewrites Host, invalidating the initial host-rebinding assertion; changed that test to native http.request and verified denial with a real non-loopback Host. Grant revocation is rechecked inside the worker, and daemon reconnect closes existing browser streams to force reauthorization.
 - TLS integration verified a trusted generated certificate works and a wrong hostname still fails. No certificate validation bypass, firewall changes, provider credential export, or public exposure was performed.
 - The isolated native UI gateway at 8888 and its idle worker have now been stopped. The default 8887 worker was confirmed absent before starting the updated user-facing server.
+
+# 2026-10-16 team communication
+
+- Provider public MCP configuration supports one common stdio server: Claude --mcp-config and Codex thread config overrides. Current non-experimental generated ThreadStartParams do not expose dynamicTools, so do not rely on that gated path.
+- Shared mutable session credentials would let old background tools inherit the next turn's scope. Each turn now receives a fresh capability/config; release revokes it and deletes exact generated files. Claude restores the same native group session with a new resident process when this config changes.
+- Group Stop holds the room dispatch mutex while waiting for members. A team send already queued behind it must recheck the parent AbortSignal after acquiring that mutex, otherwise it could begin new work after Stop completed. Added a focused regression.
+- Real tool round trips confirmed both providers can delegate to the other and consume its actual result. An absent tool can produce explanatory text mentioning success markers; smoke assertions now require exact output plus persisted delivery/reply evidence.

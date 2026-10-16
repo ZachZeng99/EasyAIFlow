@@ -20,7 +20,7 @@ contextBridge.exposeInMainWorld('easyAIFlow', {
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
   getProjects: () => ipcRenderer.invoke('sessions:bootstrap'),
   getSessionNativeAgents: (payload: { sessionId: string; before?: string }) => ipcRenderer.invoke('sessions:native-agents', payload),
-  updateGroupParticipants: (payload: { sessionId: string; expectedRevision: number; participants: import('../src/data/types.js').GroupParticipantConfig[] }) => ipcRenderer.invoke('groups:update-participants', payload),
+  updateGroupParticipants: (payload: { sessionId: string; expectedRevision: number; participants: import('../src/data/types.js').GroupParticipantConfig[]; collaborationEnabled?: boolean }) => ipcRenderer.invoke('groups:update-participants', payload),
   getSessionRecord: (payload: { sessionId: string }) => ipcRenderer.invoke('sessions:get-record', payload),
   getSessionHistoryRevision: (payload: { sessionId: string }) =>
     ipcRenderer.invoke('sessions:get-native-history-revision', payload),

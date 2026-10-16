@@ -12,6 +12,7 @@ export function GroupParticipantsDialog({ session, busy, onClose, onSaved }: Pro
   const group = session.group?.kind === 'room' ? session.group : undefined;
   const [participants, setParticipants] = useState<GroupParticipantConfig[]>(() => group?.participants.map(({ id, label, provider, enabled, model, effort, instructions }) => ({ id, label, provider, enabled, model, effort, instructions })) ?? []);
   const [revision] = useState(group?.configurationRevision ?? 0);
+  const [collaborationEnabled, setCollaborationEnabled] = useState(group?.collaborationEnabled === true);
   const [originalCount] = useState(group?.participants.length ?? 0);
   const [catalogs, setCatalogs] = useState<Partial<Record<SessionProvider, ProviderModelCatalog>>>({});
   const [saving, setSaving] = useState(false);
@@ -51,7 +52,7 @@ export function GroupParticipantsDialog({ session, busy, onClose, onSaved }: Pro
     try {
       const configs = validateGroupParticipantConfigs(participants);
       setSaving(true);
-      const result = await bridge.updateGroupParticipants({ sessionId: session.id, expectedRevision: revision, participants: configs });
+      const result = await bridge.updateGroupParticipants({ sessionId: session.id, expectedRevision: revision, participants: configs, collaborationEnabled });
       onSaved(result);
     } catch (reason) { setError(reason instanceof Error ? reason.message.replace(/^EAF_OPERATION_REJECTED:\s*/, '') : '保存失败。'); }
     finally { setSaving(false); }
@@ -60,6 +61,7 @@ export function GroupParticipantsDialog({ session, busy, onClose, onSaved }: Pro
     <section className="dialog-card group-members-dialog" role="dialog" aria-modal="true" aria-label="群成员" onClick={(event) => event.stopPropagation()}>
       <div className="dialog-head"><h2>群成员</h2><button type="button" className="dialog-button secondary" disabled={saving} onClick={onClose}>关闭</button></div>
       <p className="dialog-description">为每位成员设置角色和模型。用 @标识 点名，或用 @all 同时派发；每位成员保留独立会话。</p>
+      <label className="group-members-notice"><input type="checkbox" checked={collaborationEnabled} disabled={saving || busy} onChange={(event) => setCollaborationEnabled(event.target.checked)} />允许群成员相互委派任务并等待回复（每条用户任务最多 16 次委派）</label>
       {busy ? <p className="group-members-notice">群聊正在执行任务，结束或停止后才能保存修改。</p> : null}
       <div className="group-members-list">
         {participants.map((participant, index) => {

@@ -82,7 +82,7 @@ export type EasyAIFlowBridge = {
     interactions?: Record<string, SessionInteractionState>;
   }>;
   getSessionNativeAgents: (payload: { sessionId: string; before?: string }) => Promise<import('./data/types.js').NativeAgentPage>;
-  updateGroupParticipants: (payload: { sessionId: string; expectedRevision: number; participants: import('./data/types.js').GroupParticipantConfig[] }) => Promise<{ projects: ProjectRecord[]; session: SessionRecord }>;
+  updateGroupParticipants: (payload: { sessionId: string; expectedRevision: number; participants: import('./data/types.js').GroupParticipantConfig[]; collaborationEnabled?: boolean }) => Promise<{ projects: ProjectRecord[]; session: SessionRecord }>;
   getSessionRecord: (payload: { sessionId: string }) => Promise<SessionRecord>;
   getProviderModels: (payload: { provider: SessionProvider; cwd: string; force?: boolean }) => Promise<ProviderModelCatalog>;
   getOperationStatus: (payload: { operationId: string }) => Promise<{

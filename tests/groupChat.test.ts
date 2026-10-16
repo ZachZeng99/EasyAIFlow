@@ -40,6 +40,14 @@ const makeParticipant = (overrides: Partial<GroupParticipant> = {}): GroupPartic
   lastAppliedRoomSeq: overrides.lastAppliedRoomSeq ?? 0,
 });
 
+run('delegated replies and native agent records do not steal the default user recipient', () => {
+  const members = [makeParticipant(), makeParticipant({ id: 'claude', provider: 'claude' })];
+  const reply: ConversationMessage = { id: 'root-reply', role: 'assistant', timestamp: '', title: '', content: 'Completed the user task', status: 'complete', speakerId: 'codex' };
+  const delegated: ConversationMessage = { ...reply, id: 'delegated-reply', speakerId: 'claude', teamDelivery: { id: 'delivery', rootTaskId: 'root', senderId: 'codex', recipientId: 'claude' } };
+  const native: ConversationMessage = { ...reply, id: 'native-child', speakerId: 'claude', kind: 'native_agent' };
+  assert.deepEqual(resolveGroupTargets('继续', members, [reply, delegated, native]), ['codex']);
+});
+
 const makeRoomSession = (messages: ConversationMessage[] = []): SessionRecord => ({
   id: 'room-1',
   title: 'Group room',

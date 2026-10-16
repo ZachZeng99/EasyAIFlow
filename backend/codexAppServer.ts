@@ -205,6 +205,7 @@ export class CodexAppServerClient {
   }
 
   async threadStart(params: {
+    config?: Record<string, unknown>;
     cwd: string;
     model: string | null;
     approvalPolicy?: string;
@@ -213,6 +214,7 @@ export class CodexAppServerClient {
     ephemeral?: boolean;
   }) {
     return this.request<{ thread: { id: string; name?: string } }>('thread/start', {
+      ...(params.config ? { config: params.config } : {}),
       cwd: params.cwd,
       model: params.model,
       approvalPolicy: params.approvalPolicy ?? 'never',
@@ -224,12 +226,14 @@ export class CodexAppServerClient {
   }
 
   async threadResume(params: {
+    config?: Record<string, unknown>;
     threadId: string;
     cwd: string;
     model: string | null;
     sandbox?: string;
   }) {
     return this.request<{ thread: { id: string } }>('thread/resume', {
+      ...(params.config ? { config: params.config } : {}),
       threadId: params.threadId,
       cwd: params.cwd,
       model: params.model,

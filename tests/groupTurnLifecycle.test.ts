@@ -76,6 +76,15 @@ try {
   const project = await store.createProject('Group lifecycle', workspace);
   const room = await store.createSessionInStreamwork(project.session.dreamId, 'Room', false, 'claude', 'group');
   const roomId = room.session.id;
+  const canceledTeam = new AbortController();
+  const beforeCanceledTeam = (await store.getSessionRecordForBootstrap(roomId))!.messages.length;
+  const stoppingBeforeTeam = stopGroupSessionRuns(ctx, state, roomId);
+  const canceledDispatch = sendGroupMessage(ctx, state, { sessionId: roomId, prompt: 'Late team message', targetParticipantIds: ['codex'] }, { rootTaskId: 'stopped-root', ancestors: ['claude'], senderId: 'claude' }, canceledTeam.signal);
+  canceledTeam.abort();
+  await assert.rejects(canceledDispatch, /abort/i);
+  await stoppingBeforeTeam;
+  assert.equal((await store.getSessionRecordForBootstrap(roomId))!.messages.length, beforeCanceledTeam);
+  console.log('PASS team dispatch queued behind stop cannot start a new task after cancellation');
   const send = (prompt: string) => sendGroupMessage(ctx, state, { sessionId: roomId, prompt: `@codex ${prompt}` });
   const first = await send('First request');
   await waitFor(() => Boolean(clients[0]?.prompt));
@@ -148,6 +157,14 @@ try {
   assert.equal(teamResult?.messages.find((message) => message.id === author.queued.assistantMessageId)?.content, 'AUTHOR_RESULT');
   assert.equal(teamResult?.messages.find((message) => message.id === reviewer.queued.assistantMessageId)?.content, 'REVIEWER_RESULT');
   console.log('PASS same-provider members run independently and keep exact reply ownership');
+  const internal = await sendGroupMessage(ctx, state, { sessionId: roomId, prompt: 'Explain the literal @claude mention without rerouting.', targetParticipantIds: ['codex'] }, { rootTaskId: 'internal-root', ancestors: ['reviewer'], senderId: 'reviewer', senderLabel: 'Review', deliveryId: 'team-explicit-recipient' });
+  await waitFor(() => Boolean(clients[6]?.prompt));
+  clients[6].finish('EXPLICIT_RECIPIENT_REPLY');
+  await waitFor(() => !hasActiveGroupTurns(state));
+  const internalRecord = await store.getSessionRecordForBootstrap(roomId);
+  assert.equal(internalRecord!.messages.find((message) => message.id === internal.queued.assistantMessageId)?.teamDelivery?.recipientId, 'codex');
+  assert.equal(internalRecord!.messages.find((message) => message.id === internal.queued.userMessageId)?.speakerId, 'reviewer');
+  console.log('PASS team recipients are authoritative even when message content mentions another member');
   success = true;
 } finally {
   CodexAppServerClient.create = originalCreate;
