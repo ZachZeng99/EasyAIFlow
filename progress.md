@@ -521,3 +521,10 @@ Completed scoped recovery through supported API; no code changes or global serve
 - Deterministic group lifecycle, group parsing/mirroring, session interaction, Codex app-server, group store/recovery, resident lifecycle, question control and run queue regressions passed.
 - Real Claude/Codex group smoke passed at `.tmp-tests/live-interactions-kBOlkv`: default target, @all fan-out, cross-provider shared context, both queues, and stop. First run's mixed-case assertion was corrected after checking intact persisted replies.
 - Final type check, frontend/Electron/server compilation and whitespace checks passed. Remote physical-device management and native/EAF agent communication remain scheduled work, not delivered by this checkpoint.
+# 2026-10-16 configurable group participants
+
+- Explicitly corrected release expectations: the 8887 instance was a development checkpoint, not final EAF 2.0.
+- Implemented stable arbitrary participant handles, independent same-provider backing sessions, per-member role/model/effort, revision conflict checks, enabled state, and a responsive configuration dialog.
+- Preserved legacy room recovery while protecting configured teams from provider/title-based reconstruction. Added definitive preflight rejection receipts so busy/conflicting edits can be retried safely with a fresh operation ID.
+- Unit/lifecycle/store restart tests and real browser + two Codex turns passed. Saved configuration and exact reply ownership survived reload; mobile-width dialog checked.
+- Service API idempotence/conflict regressions, build and idle-only server upgrade passed. The 8887 endpoint reports `2.0.0-alpha.1` / `development` with all five existing projects intact. Multi-device management, native-agent trees and autonomous messaging remain outstanding.

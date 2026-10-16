@@ -16,6 +16,7 @@ import {
 } from './codexAppServerTurn.js';
 import {
   appendMessagesToSession,
+  configureGroupParticipants,
   ensureGroupRoomBackingSessions,
   findSession,
   getProjects,
@@ -30,6 +31,7 @@ import type {
   ClaudeStreamEvent,
   ConversationMessage,
   GroupParticipant,
+  GroupParticipantConfig,
   GroupParticipantId,
   PendingAttachment,
   SessionRecord,
@@ -39,6 +41,7 @@ import type {
 import { resolveGroupTargets } from '../src/data/groupChat.js';
 import { GroupTurnCoordinator } from './groupTurnCoordinator.js';
 import type { SessionInteractionState } from '../src/data/sessionInteraction.js';
+import { RpcRejectedError } from '../src/data/rpcOperations.js';
 
 const coordinators = new WeakMap<ClaudeInteractionState, GroupTurnCoordinator>();
 const coordinatorFor = (state: ClaudeInteractionState) => {
@@ -46,7 +49,20 @@ const coordinatorFor = (state: ClaudeInteractionState) => {
   if (!coordinator) { coordinator = new GroupTurnCoordinator(); coordinators.set(state, coordinator); }
   return coordinator;
 };
-export const hasActiveGroupTurns = (state: ClaudeInteractionState) => coordinatorFor(state).hasWork();
+export const hasActiveGroupTurns = (state: ClaudeInteractionState, roomId?: string) => coordinatorFor(state).hasWork(roomId);
+export const updateGroupParticipants = (
+  ctx: ClaudeInteractionContext,
+  state: ClaudeInteractionState,
+  payload: { sessionId: string; expectedRevision: number; participants: GroupParticipantConfig[] },
+) => coordinatorFor(state).dispatch(payload.sessionId, async () => {
+  const session = await findSession(payload.sessionId);
+  if (hasActiveGroupTurns(state, payload.sessionId) || session?.messages.some((message) => ['queued', 'streaming', 'running', 'background'].includes(message.status ?? ''))) {
+    throw new RpcRejectedError('请等待群聊任务结束，或先停止任务，再修改成员。');
+  }
+  const result = await configureGroupParticipants(payload.sessionId, payload.expectedRevision, payload.participants);
+  ctx.broadcastEvent({ type: 'session-sync', sessionId: result.session.id, session: result.session });
+  return result;
+});
 export const getGroupInteractionSnapshots = (state: ClaudeInteractionState): Record<string, SessionInteractionState> =>
   Object.fromEntries(coordinatorFor(state).pendingCounts().map(([sessionId, pendingTurns]) => [sessionId, {
     runtime: { processActive: true, phase: 'running', pendingTurns, updatedAt: Date.now() },
@@ -168,6 +184,8 @@ export const buildRoomSyncPrompt = (
   return [
     '<task>',
     `You are ${participant.label} in a shared chat room about the current workspace.`,
+    `Your address is @${participant.id}.`,
+    ...(participant.instructions ? ['Your assigned role:', participant.instructions, ''] : []),
     'Decide whether TARGET_MESSAGE is asking for:',
     '1. A direct answer, explanation, or opinion.',
     '2. Real work in the workspace, such as investigation, edits, commands, tests, verification, or continuing previously promised work.',
@@ -201,7 +219,7 @@ export const buildRoomSyncPrompt = (
 const isGreetingOnly = (messages: ConversationMessage[]) => {
   const lastUser = [...messages].reverse().find((m) => m.role === 'user');
   if (!lastUser) return false;
-  const cleaned = lastUser.content.replace(/@(?:claude|codex|all)\s*/gi, '').trim();
+  const cleaned = lastUser.content.replace(/@[a-z][a-z0-9_-]*\s*/gi, '').trim();
   return /^(大家好|你好|hello|hi|hey|嗨|哈喽)[\s!！.。]*$/i.test(cleaned);
 };
 
@@ -246,6 +264,8 @@ export const buildCodexRoomChatPrompt = (
   return [
     '<task>',
     `You are ${participant.label} in a group chat about the current workspace.`,
+    `Your address is @${participant.id}.`,
+    ...(participant.instructions ? ['Your assigned role:', participant.instructions, ''] : []),
     'Decide whether TARGET_MESSAGE is asking for:',
     '1. A direct answer, explanation, or opinion.',
     '2. Real work in the workspace, such as investigation, edits, commands, tests, verification, or continuing previously promised work.',
@@ -771,7 +791,7 @@ const runGroupParticipantTurn = async (
             {
               references: roomSession.contextReferences ?? [],
               model: participant.model || backingSession.model || payload.model,
-              effort: payload.effort,
+              effort: participant.effort ?? payload.effort,
               onPrepared,
               signal,
             },
@@ -786,7 +806,7 @@ const runGroupParticipantTurn = async (
             {
               references: roomSession.contextReferences ?? [],
               model: participant.model || backingSession.model || payload.model,
-              effort: payload.effort,
+              effort: participant.effort ?? payload.effort,
               onPrepared,
               signal,
             },

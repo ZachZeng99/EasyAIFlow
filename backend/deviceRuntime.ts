@@ -34,7 +34,8 @@ import {
   handleDeleteSession,
 } from './claudeRpcOperations.js';
 import { getCodexAppServerInteractionSnapshots } from './codexAppServerTurn.js';
-import { getGroupInteractionSnapshots, hasActiveGroupTurns } from './groupChat.js';
+import { getGroupInteractionSnapshots, hasActiveGroupTurns, updateGroupParticipants } from './groupChat.js';
+import { validateGroupParticipantConfigs } from '../src/data/groupParticipants.js';
 import { writeTextToSystemClipboard } from './systemClipboard.js';
 import {
   createProject,
@@ -206,7 +207,8 @@ export const createDeviceRuntime = (broadcast: (event: ClaudeStreamEvent) => voi
     },
     getAppMeta: async () => ({
       name: 'EasyAIFlow',
-      version: '0.1.0',
+      version: '2.0.0-alpha.1',
+      releaseChannel: 'development',
       platform: process.platform,
       defaultModel: await getConfiguredClaudeModel(ctx),
     }),
@@ -220,6 +222,19 @@ export const createDeviceRuntime = (broadcast: (event: ClaudeStreamEvent) => voi
         interactionVersion: snapshot.version,
         projects: summarizeProjectsForWebBootstrap(bootstrap.projects),
       };
+    },
+    updateGroupParticipants: async (payload: { sessionId: string; expectedRevision: number; participants: import('../src/data/types.js').GroupParticipantConfig[] }) => {
+      const participants = validateGroupParticipantConfigs(payload.participants);
+      const room = await getSessionRecordForBootstrap(payload.sessionId);
+      if (!room || room.group?.kind !== 'room') throw new Error('Group session not found.');
+      const catalogs = new Map(await Promise.all([...new Set(participants.filter((p) => !p.model).map((p) => p.provider))]
+        .map(async (provider) => [provider, await models.get(provider, room.workspace)] as const)));
+      return summarizeProjectsInResult(await updateGroupParticipants(ctx, state, {
+        ...payload,
+        participants: participants.map((participant) => ({ ...participant,
+          model: participant.model || catalogs.get(participant.provider)?.models.find((model) => model.isDefault)?.id,
+        })),
+      }));
     },
     getSessionRecord: async (payload: { sessionId: string }) => {
       const session = await getSessionRecordForBootstrap(payload.sessionId, {

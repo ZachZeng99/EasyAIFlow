@@ -18,15 +18,20 @@ export type PlanModeAllowedPrompt = {
 
 export type SessionProvider = 'claude' | 'codex';
 
-export type GroupParticipantId = 'claude' | 'codex';
+export type GroupParticipantId = string;
 
-export type GroupParticipant = {
+export type GroupParticipantConfig = {
   id: GroupParticipantId;
   label: string;
   provider: SessionProvider;
-  backingSessionId: string;
   enabled: boolean;
   model?: string;
+  effort?: SessionEffort;
+  instructions?: string;
+};
+
+export type GroupParticipant = GroupParticipantConfig & {
+  backingSessionId: string;
   lastAppliedRoomSeq: number;
 };
 
@@ -34,6 +39,7 @@ export type GroupSessionMetadata =
   | {
       kind: 'room';
       nextMessageSeq: number;
+      configurationRevision?: number;
       participants: GroupParticipant[];
     }
   | {

@@ -158,6 +158,11 @@ export const mergeSessionSnapshot = (
     return incomingSession;
   }
 
+  if (existingSession.group?.kind === 'room' && incomingSession.group?.kind === 'room' &&
+      (existingSession.group.configurationRevision ?? 0) > (incomingSession.group.configurationRevision ?? 0)) {
+    incomingSession = { ...incomingSession, group: existingSession.group };
+  }
+
   if (incomingSession.messagesLoaded === false) {
     return {
       ...incomingSession,

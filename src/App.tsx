@@ -5,6 +5,7 @@ import { ChatComposer, type ComposerAttachment } from './components/ChatComposer
 import { ChatHistory } from './components/ChatHistory';
 import { bridge } from './bridge';
 import { ManageDialog } from './components/ManageDialog';
+import { GroupParticipantsDialog } from './components/GroupParticipantsDialog';
 import { ChatThread } from './components/ChatThread';
 import { ContextPanel } from './components/ContextPanel';
 import {
@@ -355,6 +356,7 @@ export default function App() {
   const [isDialogBusy, setIsDialogBusy] = useState(false);
   const [uiError, setUiError] = useState<string | null>(null);
   const [dialogState, setDialogState] = useState<DialogState | null>(null);
+  const [groupSettingsSessionId, setGroupSettingsSessionId] = useState<string | null>(null);
   const [sessionInteractions, setSessionInteractions] = useState<Map<string, SessionInteractionState>>(new Map());
   const interactionReconciler = useRef(new InteractionReconciler());
   const interactionRecovery = useRef<Promise<unknown> | null>(null);
@@ -2378,6 +2380,8 @@ export default function App() {
       : [];
 
   const hasActiveSession = Boolean(selectedSession && selectedProject && selectedStreamwork);
+  const groupSettingsSession = allSessions.find((session) => session.id === groupSettingsSessionId);
+  const groupSettingsRuntime = getEffectiveSessionInteraction(groupSettingsSession)?.runtime;
   const shellStyle = isMobileLayout
     ? undefined
     : { gridTemplateColumns: `${leftPaneWidth}px 8px minmax(0, 1fr) 340px` };
@@ -2488,6 +2492,7 @@ export default function App() {
                 onDisconnect={() => {
                   void handleDisconnect(selectedSession.id);
                 }}
+                onManageParticipants={() => setGroupSettingsSessionId(selectedSession.id)}
                 onRequestDiff={handleRequestDiff}
                 onRequestPermission={(request) =>
                   updateSessionInteraction(selectedSession.id, (state) => ({
@@ -2549,7 +2554,7 @@ export default function App() {
                 attachments={attachments}
                 isSending={isSelectedSessionSending}
                 isResponding={isSelectedSessionResponding}
-                allowSendWhileResponding={hasActiveSelectedBackgroundTasks}
+                allowSendWhileResponding={hasActiveSelectedBackgroundTasks || isSelectedGroupSession}
                 model={model}
                 effort={effort}
                 appliedEffort={selectedInteractionState?.runtime?.appliedEffort}
@@ -2635,6 +2640,13 @@ export default function App() {
         </>
       )}
 
+      {groupSettingsSession?.group?.kind === 'room' ? <GroupParticipantsDialog
+        key={groupSettingsSession.id}
+        session={groupSettingsSession}
+        busy={Boolean((groupSettingsRuntime?.pendingTurns ?? 0) > 0 || ['running', 'background', 'awaiting_reply'].includes(groupSettingsRuntime?.phase ?? ''))}
+        onClose={() => setGroupSettingsSessionId(null)}
+        onSaved={(result) => { replaceProjectsAndHydrateSession(result.projects, result.session); setGroupSettingsSessionId(null); }}
+      /> : null}
       <ManageDialog
         open={Boolean(dialogState)}
         title={dialogTitle}

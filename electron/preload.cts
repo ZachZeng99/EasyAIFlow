@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('easyAIFlow', {
   getFileDiff: (payload: { cwd: string; filePath: string }) => ipcRenderer.invoke('git:file-diff', payload),
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
   getProjects: () => ipcRenderer.invoke('sessions:bootstrap'),
+  updateGroupParticipants: (payload: { sessionId: string; expectedRevision: number; participants: import('../src/data/types.js').GroupParticipantConfig[] }) => ipcRenderer.invoke('groups:update-participants', payload),
   getSessionRecord: (payload: { sessionId: string }) => ipcRenderer.invoke('sessions:get-record', payload),
   getSessionHistoryRevision: (payload: { sessionId: string }) =>
     ipcRenderer.invoke('sessions:get-native-history-revision', payload),

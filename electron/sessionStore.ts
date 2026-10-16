@@ -77,6 +77,7 @@ import type {
   DeleteEntityResult,
   DreamRecord,
   GroupParticipant,
+  GroupParticipantConfig,
   GroupParticipantId,
   GroupSessionMetadata,
   ProjectCreateResult,
@@ -92,6 +93,8 @@ import type {
   TokenUsage,
   RenameEntityResult,
 } from '../src/data/types.js';
+import { validateGroupParticipantConfigs } from '../src/data/groupParticipants.js';
+import { RpcRejectedError } from '../src/data/rpcOperations.js';
 
 type AppState = {
   projects: ProjectRecord[];
@@ -399,6 +402,7 @@ const normalizeGroupMetadata = (
 
   return {
     kind: 'room',
+    configurationRevision: value.configurationRevision,
     nextMessageSeq:
       typeof value.nextMessageSeq === 'number' && Number.isFinite(value.nextMessageSeq) && value.nextMessageSeq > 0
         ? Math.floor(value.nextMessageSeq)
@@ -818,7 +822,7 @@ const reconstructRecoveredRoomMessages = (
   roomSession: SessionRecord,
   participantBackings: Map<GroupParticipantId, SessionRecord>,
 ) => {
-  if (roomSession.group?.kind !== 'room') {
+  if (roomSession.group?.kind !== 'room' || (roomSession.group.configurationRevision ?? 0) > 0) {
     return [] as ConversationMessage[];
   }
 
@@ -1237,6 +1241,9 @@ function recoverProjectGroupSessions(project: ProjectRecord): ProjectRecord {
     }
 
     let roomSession = roomByKey.get(key);
+    // Configured rooms have explicit identities. Legacy provider/title guessing
+    // cannot safely recover a team containing several members of one provider.
+    if (roomSession?.group?.kind === 'room' && (roomSession.group.configurationRevision ?? 0) > 0) continue;
     if (!roomSession) {
       roomSession = createBaseSession(project, targetDream, roomTitle, latest.workspace, undefined, 'group');
       roomSession.preview = latest.preview || roomSession.preview;
@@ -6134,6 +6141,42 @@ const createGroupSessionInStreamwork = (
   return roomSession;
 };
 
+export const configureGroupParticipants = async (
+  sessionId: string,
+  expectedRevision: number,
+  configs: GroupParticipantConfig[],
+): Promise<{ projects: ProjectRecord[]; session: SessionRecord }> => {
+  const participants = validateGroupParticipantConfigs(configs);
+  const state = await loadState();
+  const project = state.projects.find((entry) => entry.dreams.some((dream) => dream.sessions.some((session) => session.id === sessionId)));
+  const dream = project?.dreams.find((entry) => entry.sessions.some((session) => session.id === sessionId));
+  const room = dream?.sessions.find((session) => session.id === sessionId) as SessionRecord | undefined;
+  if (!project || !dream || room?.group?.kind !== 'room') throw new RpcRejectedError('Group session not found.');
+  if (expectedRevision !== (room.group.configurationRevision ?? 0)) throw new RpcRejectedError('群成员已在其他窗口修改，请关闭面板并刷新后重试。');
+  const previous = new Map(room.group.participants.map((entry) => [entry.id, entry]));
+  for (const entry of previous.values()) {
+    const next = participants.find((candidate) => candidate.id === entry.id);
+    if (!next) throw new RpcRejectedError('已有成员请使用停用，保留其会话和历史。');
+    if (next.provider !== entry.provider) throw new RpcRejectedError('已有成员的 provider 不能更换；请添加一位新成员。');
+  }
+  const nextMembers = participants.map((config) => {
+    const existing = previous.get(config.id);
+    let backing = existing ? dream.sessions.find((session) => session.id === existing.backingSessionId) as SessionRecord | undefined : undefined;
+    if (!backing) {
+      backing = createGroupMemberSession(project, dream, room, config.id, config.provider);
+      dream.sessions.push(backing);
+    }
+    backing.model = config.model || existing?.model || backing.model;
+    backing.group = { kind: 'member', roomSessionId: room.id, participantId: config.id, speakerLabel: config.label };
+    return { ...config, model: backing.model, backingSessionId: backing.id, lastAppliedRoomSeq: existing?.lastAppliedRoomSeq ?? 0 };
+  });
+  room.group = { ...room.group, configurationRevision: expectedRevision + 1, participants: nextMembers };
+  room.updatedAt = Date.now();
+  await saveState(state);
+  await flushPendingSave();
+  return { projects: await getProjectsForBootstrap(), session: (await getSessionRecordForBootstrap(room.id))! };
+};
+
 export const ensureGroupRoomBackingSessions = async (sessionId: string): Promise<SessionRecord> => {
   await materializeSessionHistoryForRuntime(sessionId);
   const state = await loadState();
@@ -6195,6 +6238,7 @@ export const ensureGroupRoomBackingSessions = async (sessionId: string): Promise
         existing.hidden !== true ||
         existing.title !== expectedTitle ||
         existing.model !== (participant.model || existing.model) ||
+        existing.group.speakerLabel !== participant.label ||
         existing.instructionPrompt !== undefined
       ) {
         changed = true;
@@ -6212,6 +6256,7 @@ export const ensureGroupRoomBackingSessions = async (sessionId: string): Promise
         }
       }
       existing.model = participant.model || existing.model;
+      existing.group.speakerLabel = participant.label;
       existing.instructionPrompt = undefined;
       return participant;
     }
@@ -6224,6 +6269,7 @@ export const ensureGroupRoomBackingSessions = async (sessionId: string): Promise
       participant.provider,
     );
     recreated.model = participant.model || recreated.model;
+    if (recreated.group?.kind === 'member') recreated.group.speakerLabel = participant.label;
     dream.sessions.splice(roomIndex + 1 + insertedCount, 0, recreated);
     insertedCount += 1;
     changed = true;

@@ -105,6 +105,7 @@ app.whenReady().then(async () => {
     'claude:switch-model': 'switchModel',
     'claude:switch-effort': 'switchEffort',
     'claude:send-message': 'sendMessage',
+    'groups:update-participants': 'updateGroupParticipants',
     'claude:stop-session': 'stopSessionRun',
     'claude:disconnect-session': 'disconnectSession',
     'device:operation-status': 'getOperationStatus',

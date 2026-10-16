@@ -100,6 +100,16 @@ run('summary-only session results remain eligible for lazy history loading', () 
   assert.equal((next[0].dreams[0].sessions[0] as SessionRecord).messagesLoaded, false);
 });
 
+run('older metadata snapshots cannot roll back a saved group configuration', () => {
+  const newer = makeSession('room', { sessionKind: 'group', group: { kind: 'room', nextMessageSeq: 1, configurationRevision: 2, participants: [{ id: 'reviewer', label: 'Reviewer', provider: 'codex', enabled: true, backingSessionId: 'member', lastAppliedRoomSeq: 0 }] } });
+  const older = makeSession('room', { sessionKind: 'group', messagesLoaded: false, group: { kind: 'room', nextMessageSeq: 1, configurationRevision: 1, participants: [] } });
+  const merged = mergeProjectSnapshots(makeProjects(newer), makeProjects(older));
+  const group = merged[0].dreams[0].sessions[0].group;
+  assert.ok(group?.kind === 'room');
+  assert.equal(group.configurationRevision, 2);
+  assert.equal(group.participants[0]?.id, 'reviewer');
+});
+
 run('mergeProjectSnapshots keeps newer live session data when an older full snapshot arrives', () => {
   const currentProjects = makeProjects(
     makeSession('single', {

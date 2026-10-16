@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { canonicalJson } from '../src/data/rpcOperations.js';
+import { canonicalJson, RpcRejectedError } from '../src/data/rpcOperations.js';
 
 export class OperationError extends Error {
   constructor(public readonly code: string, message: string, public readonly operationId?: string) {
@@ -16,7 +16,7 @@ export type OperationRecord = {
   fingerprint: string;
   payload?: unknown;
   /** Completion acknowledges the RPC result; its agent task may still be running. */
-  status: 'started' | 'completed' | 'uncertain';
+  status: 'started' | 'completed' | 'uncertain' | 'rejected';
   createdAt: string;
   updatedAt: string;
   result?: unknown;
@@ -49,7 +49,7 @@ export class OperationLedger {
   async get(id: string): Promise<OperationRecord | null> {
     try {
       const record = JSON.parse(await readFile(this.file(id), 'utf8')) as OperationRecord;
-      if (record.id !== id || !record.fingerprint || !['started', 'completed', 'uncertain'].includes(record.status)) {
+      if (record.id !== id || !record.fingerprint || !['started', 'completed', 'uncertain', 'rejected'].includes(record.status)) {
         throw new Error('Invalid operation record');
       }
       return record;
@@ -94,6 +94,7 @@ export class OperationLedger {
         throw new OperationError('EAF_OPERATION_CONFLICT', 'Operation ID was reused for different input.', id);
       }
       if (previous.status === 'completed') return previous.result;
+      if (previous.status === 'rejected') throw new OperationError('EAF_OPERATION_REJECTED', previous.error ?? '操作未受理。', id);
       throw new OperationError('EAF_OPERATION_UNCERTAIN', `操作 ${id} 的执行状态待确认，未重新执行。${previous.error ?? ''}`, id);
     }
     const now = new Date().toISOString();
@@ -105,6 +106,10 @@ export class OperationLedger {
       return result;
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
+      if (error instanceof RpcRejectedError) {
+        await this.save({ ...record, status: 'rejected', updatedAt: new Date().toISOString(), error: detail });
+        throw new OperationError('EAF_OPERATION_REJECTED', detail, id);
+      }
       await this.save({ ...record, status: 'uncertain', updatedAt: new Date().toISOString(), error: detail }).catch(() => undefined);
       throw new OperationError('EAF_OPERATION_UNCERTAIN', `操作 ${id} 的执行状态待确认，未自动重试。${detail}`, id);
     }

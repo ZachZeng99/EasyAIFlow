@@ -1,5 +1,18 @@
 # Current Task: EAF 2.0 P0 — Committed message synchronization
 
+## Current continuation: User-visible configurable group participants
+
+The running server is a development checkpoint, not the final 2.0 release. The user expects the agreed capabilities to be usable, not only backend groundwork.
+
+- [x] Replace provider-shaped participant identities with stable configurable member IDs.
+- [x] Add persisted per-member provider/model/effort/role settings, conflict checks and idle-only edits.
+- [x] Provide a member management dialog and explicit development-version labeling.
+- [x] Verify same-provider routing, restart persistence, legacy recovery safety and actual UI use; update the test server only when idle.
+
+Verification so far: deterministic same-provider parallel turns and storage restart passed; real UI saved a three-member room, ran two Codex members independently and preserved their replies after reload. Checked the dialog at 390 × 844. Test data remains isolated under `.tmp-tests/group-ui-20261016-154118`. Screenshot: `.tmp-run/eaf-v2-group-members.jpg`.
+
+Do not describe this as autonomous inter-agent communication or completed multi-device management. Those remain separate required deliverables.
+
 ## Current continuation: Versioned interaction snapshots
 
 - [x] Stamp service interaction events and complete snapshots with one epoch/sequence.

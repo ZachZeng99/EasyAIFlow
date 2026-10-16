@@ -77,6 +77,7 @@ type ChatThreadProps = {
     online: boolean;
   }>;
   onDisconnect?: () => void;
+  onManageParticipants?: () => void;
   onRequestPermission?: (request: PermissionRequest) => void;
   onRequestDiff?: (filePath: string) => Promise<DiffPayload>;
   interaction?: SessionInteractionState;
@@ -211,6 +212,7 @@ function ChatThreadComponent({
   isCliOnline = false,
   groupCliStatuses,
   onDisconnect,
+  onManageParticipants,
   onRequestPermission,
   onRequestDiff,
   interaction,
@@ -391,8 +393,8 @@ function ChatThreadComponent({
           <h1>{session.title}</h1>
           {session.sessionKind === 'group' && session.group?.kind === 'room' ? (
             <p className="section-kicker">
-              Group chat · no `@` follows the last responder · type `@` for quick targets (`@claude` / `@codex` / `@all`) · participants:{' '}
-              {session.group.participants.map((participant) => participant.label).join(' / ')}
+              使用 @标识 点名，@all 同时派发 · 成员：{' '}
+              {session.group.participants.filter((participant) => participant.enabled).map((participant) => participant.label).join(' / ')}
             </p>
           ) : null}
           <div className="session-tags">
@@ -442,9 +444,10 @@ function ChatThreadComponent({
             </span>
           </div>
         </div>
-        {showDisconnectAction ? (
+        {showDisconnectAction || (session.sessionKind === 'group' && onManageParticipants) ? (
           <div className="chat-actions">
-            <button
+            {session.sessionKind === 'group' && onManageParticipants ? <button type="button" className="group-members-button" onClick={onManageParticipants}>群成员</button> : null}
+            {showDisconnectAction ? <button
               type="button"
               className="disconnect-button"
               aria-label="Disconnect session"
@@ -452,7 +455,7 @@ function ChatThreadComponent({
               onClick={onDisconnect}
             >
               <span aria-hidden="true">🔌</span>
-            </button>
+            </button> : null}
           </div>
         ) : null}
       </header>
@@ -794,6 +797,7 @@ const areChatThreadPropsEqual = (current: ChatThreadProps, next: ChatThreadProps
   current.onLoadOlderHistory === next.onLoadOlderHistory &&
   current.isCliOnline === next.isCliOnline &&
   current.groupCliStatuses === next.groupCliStatuses &&
+  current.onManageParticipants === next.onManageParticipants &&
   current.interaction === next.interaction;
 
 export const ChatThread = memo(ChatThreadComponent, areChatThreadPropsEqual);

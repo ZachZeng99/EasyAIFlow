@@ -1,10 +1,13 @@
+/** Only throw before any persistent or provider-side mutation has started. */
+export class RpcRejectedError extends Error {}
+
 export const MUTATING_RPC_METHODS = new Set([
   'sendMessage', 'sendBtwMessage', 'discardBtwSession', 'switchModel', 'switchEffort',
   'stopSessionRun', 'disconnectSession', 'respondToPermissionRequest',
   'respondToPlanModeRequest', 'respondToAskUserQuestion', 'respondToPlanMode',
   'grantPathPermission', 'createProject', 'closeProject', 'createStreamwork',
   'deleteStreamwork', 'reorderStreamworks', 'createSession', 'createSessionInStreamwork',
-  'deleteSession', 'setSessionPinned', 'updateSessionContextReferences', 'renameEntity',
+  'deleteSession', 'setSessionPinned', 'updateSessionContextReferences', 'renameEntity', 'updateGroupParticipants',
 ]);
 
 const READ_RPC_METHODS = new Set([

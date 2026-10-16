@@ -3144,3 +3144,34 @@ p {
     width: 100%;
   }
 }
+
+.group-members-button {
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 10px;
+  padding: 9px 14px;
+  background: rgba(245, 158, 11, 0.08);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.group-members-dialog { width: min(820px, calc(100vw - 28px)); max-height: calc(100dvh - 32px); display: flex; flex-direction: column; gap: 14px; }
+.group-members-dialog .dialog-head { display: flex; justify-content: space-between; align-items: center; }
+.group-members-list { min-height: 0; overflow-y: auto; display: grid; gap: 12px; padding-right: 4px; }
+.group-member-card { min-width: 0; margin: 0; border: 1px solid rgba(255,255,255,.12); border-radius: 14px; padding: 16px; background: rgba(255,255,255,.025); }
+.group-member-card.disabled { opacity: .68; }
+.group-member-heading, .group-members-add { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.group-member-heading { justify-content: space-between; margin-bottom: 12px; }
+.group-member-heading label { display: flex; align-items: center; gap: 7px; }
+.group-member-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.group-member-fields label, .group-member-role { display: flex; flex-direction: column; gap: 6px; font-size: .8rem; color: rgba(245,239,230,.7); }
+.group-member-fields input, .group-member-fields select, .group-member-role textarea { width: 100%; min-width: 0; padding: 9px 10px; color: #f5efe6; background: #191715; border: 1px solid rgba(255,255,255,.12); border-radius: 8px; }
+.group-member-fields input:disabled, .group-member-fields select:disabled { opacity: .55; }
+.group-member-role { margin: 12px 0 8px; }
+.group-member-role textarea { resize: vertical; }
+.group-member-card small, .group-members-add small { color: rgba(245,239,230,.5); font-size: .75rem; }
+.group-members-notice { color: #e4bb7c; font-size: .82rem; line-height: 1.5; }
+@media (max-width: 600px) {
+  .group-members-dialog { padding: 16px; }
+  .group-member-fields { grid-template-columns: 1fr; }
+  .group-member-card { padding: 12px; }
+  .group-members-button { padding: 8px 10px; }
+}

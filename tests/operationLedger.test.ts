@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { RpcRejectedError } from '../src/data/rpcOperations.ts';
 import { mkdtemp, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { OperationLedger } from '../backend/operationLedger.ts';
@@ -57,6 +58,28 @@ await run('invalid operation paths are rejected before executing', async () => {
   let called = false;
   await assert.rejects(ledger.execute('../escape', 'sendMessage', {}, async () => { called = true; }), /EAF_INVALID_OPERATION/);
   assert.equal(called, false);
+});
+
+await run('definitive preflight rejection is recorded without treating it as an uncertain side effect', async () => {
+  let attempts = 0;
+  const operation = async () => { attempts++; throw new RpcRejectedError('Room is busy.'); };
+  await assert.rejects(ledger.execute('busy-room', 'updateGroupParticipants', {}, operation), /EAF_OPERATION_REJECTED/);
+  assert.equal((await ledger.get('busy-room'))?.status, 'rejected');
+  await assert.rejects(new OperationLedger(directory).execute('busy-room', 'updateGroupParticipants', {}, operation), /EAF_OPERATION_REJECTED/);
+  assert.equal(attempts, 1);
+  await ledger.execute('idle-room-new-attempt', 'updateGroupParticipants', {}, async () => 'saved');
+});
+
+await run('renderer starts a fresh operation after a definitive validation rejection', async () => {
+  const ids: string[] = [];
+  const client = withOperationIdentity({ updateGroupParticipants: async (payload: Record<string, unknown>) => {
+    ids.push(String(payload.operationId));
+    if (ids.length === 1) throw new Error('EAF_OPERATION_REJECTED: Room is busy');
+    return 'saved';
+  } });
+  await assert.rejects(client.updateGroupParticipants({ sessionId: 'room' }), /REJECTED/);
+  await client.updateGroupParticipants({ sessionId: 'room' });
+  assert.notEqual(ids[0], ids[1]);
 });
 
 await run('the original input is durable before dispatch and is isolated from caller mutation', async () => {

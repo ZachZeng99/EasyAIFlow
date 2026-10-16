@@ -72,10 +72,11 @@ export type EasyAIFlowBridge = {
     projects: ProjectRecord[];
     interactions?: Record<string, SessionInteractionState>;
   }>;
+  updateGroupParticipants: (payload: { sessionId: string; expectedRevision: number; participants: import('./data/types.js').GroupParticipantConfig[] }) => Promise<{ projects: ProjectRecord[]; session: SessionRecord }>;
   getSessionRecord: (payload: { sessionId: string }) => Promise<SessionRecord>;
   getProviderModels: (payload: { provider: SessionProvider; cwd: string; force?: boolean }) => Promise<ProviderModelCatalog>;
   getOperationStatus: (payload: { operationId: string }) => Promise<{
-    id: string; method: string; status: 'started' | 'completed' | 'uncertain'; result?: unknown; error?: string;
+    id: string; method: string; status: 'started' | 'completed' | 'uncertain' | 'rejected'; result?: unknown; error?: string;
   } | null>;
   getSessionHistoryRevision: (payload: { sessionId: string }) => Promise<{
     revision?: string;
@@ -242,6 +243,7 @@ const webBridge: EasyAIFlowBridge = {
   getFileDiff: (payload) => callWebRpc('getFileDiff', payload),
   getPathForFile: () => '',
   getProjects: () => callWebRpc('getProjects'),
+  updateGroupParticipants: (payload) => callWebRpc('updateGroupParticipants', payload),
   getSessionRecord: (payload) => callWebRpc('getSessionRecord', payload),
   getProviderModels: (payload) => callWebRpc('getProviderModels', payload),
   getOperationStatus: (payload) => callWebRpc('getOperationStatus', payload),

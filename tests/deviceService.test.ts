@@ -4,7 +4,7 @@ import { createConnection } from 'node:net';
 import path from 'node:path';
 import { DeviceServiceClient } from '../backend/deviceServiceClient.ts';
 import { serviceAddress } from '../backend/deviceServiceProtocol.ts';
-import type { ClaudeStreamEvent, InteractionSnapshot, InteractionVersion, ProjectCreateResult, ProjectRecord, StreamworkCreateResult } from '../src/data/types.ts';
+import type { ClaudeStreamEvent, InteractionSnapshot, InteractionVersion, ProjectCreateResult, ProjectRecord, StreamworkCreateResult, SessionCreateResult, SessionRecord } from '../src/data/types.ts';
 
 await mkdir('.tmp-tests', { recursive: true });
 const directory = await mkdtemp(path.resolve('.tmp-tests', 'device-service-'));
@@ -60,6 +60,25 @@ try {
   const oldReplay = await desktop.request<StreamworkCreateResult>('createStreamwork', streamworkPayload, 'streamwork-create');
   assert.equal(oldReplay.projects.find((project) => project.id === first.project.id)?.name, 'Updated project');
   console.log('PASS replayed operations return fresh catalog state instead of rolling back later changes');
+
+  const group = await desktop.request<SessionCreateResult>('createSessionInStreamwork', { streamworkId: a.streamwork.id, name: 'Configurable team', sessionKind: 'group' });
+  assert.ok(group.session.group?.kind === 'room');
+  const groupPayload = { sessionId: group.session.id, expectedRevision: 0, participants: [
+    ...group.session.group.participants,
+    { id: 'reviewer', label: 'Reviewer', provider: 'codex', model: 'future-model', effort: 'ultra', instructions: 'Review only.', enabled: true },
+  ] };
+  const [configured, sameConfig] = await Promise.all([
+    desktop.request<{ session: SessionRecord }>('updateGroupParticipants', groupPayload, 'configure-group'),
+    web.request<{ session: SessionRecord }>('updateGroupParticipants', groupPayload, 'configure-group'),
+  ]);
+  assert.ok(configured.session.group?.kind === 'room' && sameConfig.session.group?.kind === 'room');
+  assert.equal(configured.session.group.configurationRevision, 1);
+  assert.deepEqual(configured.session.group, sameConfig.session.group);
+  assert.equal(configured.session.group.participants.length, 3);
+  await assert.rejects(web.request('updateGroupParticipants', groupPayload, 'stale-config'), /EAF_OPERATION_REJECTED/);
+  const receipt = await web.request<{ status: string }>('getOperationStatus', { operationId: 'stale-config' });
+  assert.equal(receipt.status, 'rejected');
+  console.log('PASS group configuration is shared and idempotent with definitive stale-version rejection');
 
   await new Promise<void>((resolve, reject) => {
     const intruder = createConnection(serviceAddress(dataDirectory));

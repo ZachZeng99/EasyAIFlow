@@ -263,7 +263,7 @@ function ChatHistoryComponent({
       <div className="brand-row">
         <div>
           <p className="brand-title">EasyAIFlow</p>
-          <span className="brand-subtitle">Project / Streamwork / Session</span>
+          <span className="brand-subtitle">2.0 开发版 · Project / Streamwork / Session</span>
         </div>
       </div>
 

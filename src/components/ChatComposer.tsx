@@ -266,7 +266,7 @@ export function ChatComposer({
         ) : (
           <div className="composer-control">
             <span>Room</span>
-            <strong>@claude / @codex / @all</strong>
+            <strong>{mentionOptions.map((option) => `@${option.value}`).join(' / ')}</strong>
           </div>
         )}
         {!isGroupSession && onRefreshModels ? (
@@ -526,6 +526,7 @@ export function ChatComposer({
           ) : null}
         </div>
         <div className="composer-actions">
+          {isResponding && allowSendWhileResponding && !isSending ? <button type="button" className="group-members-button" onClick={onStop}>停止</button> : null}
           <button
             type="button"
             className="send-button"

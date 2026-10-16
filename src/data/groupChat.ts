@@ -1,12 +1,10 @@
 import type { ConversationMessage, GroupParticipant, GroupParticipantId } from './types.js';
 
-const groupMentionPattern = /(^|[^@\w])@(claude|codex|all)\b/gi;
+const groupMentionPattern = /(^|[^@\w])@([a-z][a-z0-9_-]{0,47})(?![a-z0-9_-])/gi;
 
-export const hasGroupMention = (prompt: string) =>
-  new RegExp(groupMentionPattern.source, 'i').test(prompt);
-
-const isGroupParticipantId = (value: string): value is GroupParticipantId =>
-  value === 'claude' || value === 'codex';
+export const hasGroupMention = (prompt: string, participants?: GroupParticipant[]) =>
+  [...prompt.matchAll(groupMentionPattern)].some((match) =>
+    participants !== undefined || ['claude', 'codex', 'all'].includes(match[2].toLowerCase()));
 
 export const parseGroupTargets = (
   prompt: string,
@@ -23,7 +21,7 @@ export const parseGroupTargets = (
       continue;
     }
 
-    if (raw && isGroupParticipantId(raw)) {
+    if (raw) {
       const participant = availableParticipants.find(
         (candidate) => candidate.id === raw && candidate.enabled,
       );
@@ -49,13 +47,12 @@ export const getLastGroupResponder = (
     (message) =>
       message.role === 'assistant' &&
       typeof message.speakerId === 'string' &&
-      isGroupParticipantId(message.speakerId) &&
       enabledIds.has(message.speakerId) &&
       (message.status === undefined || message.status === 'complete' || message.status === 'success') &&
       message.content.trim().length > 0,
   );
 
-  if (!latestReply?.speakerId || !isGroupParticipantId(latestReply.speakerId)) {
+  if (!latestReply?.speakerId) {
     return null;
   }
 
@@ -69,11 +66,11 @@ export const resolveGroupTargets = (
   selectedTargets?: string[],
 ): GroupParticipantId[] => {
   const explicitTargets = parseGroupTargets(prompt, availableParticipants);
-  const explicitlyAddressed = hasGroupMention(prompt);
+  const explicitlyAddressed = hasGroupMention(prompt, availableParticipants);
   if (selectedTargets) {
     const enabledIds = new Set(availableParticipants.filter((p) => p.enabled).map((p) => p.id));
     return selectedTargets.length > 0 && selectedTargets.every((id) =>
-      isGroupParticipantId(id) && enabledIds.has(id) && (!explicitlyAddressed || explicitTargets.includes(id)))
+      enabledIds.has(id) && (!explicitlyAddressed || explicitTargets.includes(id)))
       ? [...new Set(selectedTargets)] as GroupParticipantId[]
       : [];
   }

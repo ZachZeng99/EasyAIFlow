@@ -522,3 +522,9 @@ The frontend replaces the entire interaction map after awaited getProjects, whil
 - Mirror identity is assigned only after provider invocation returns (after completion for Codex), leaving overlapping Claude turns vulnerable to latest-placeholder guessing.
 - Group Codex calls have no queue; native active-turn guard also has an asynchronous preparation gap. Each dispatch independently emits room-inactive even when another dispatch is still running.
 - Incremental room sequence context can skip a formerly pending reply forever; freeze completed public context per dispatch instead.
+# 2026-10-16 usable group configuration
+
+- User correctly identified that the running build is an intermediate development checkpoint: multi-device management, native agent trees and autonomous agent communication are not yet implemented. Added explicit development labeling instead of presenting it as a release.
+- Added configurable stable participant IDs with per-member provider/model/effort/role and preserved backing sessions. Existing participants can be disabled without losing history; provider/ID stay fixed.
+- Native transcript recovery's legacy Claude/Codex title heuristic cannot identify arbitrary same-provider members. Configured rooms retain their durable EAF journal and are excluded from that lossy reconstruction; legacy room recovery remains unchanged.
+- Pure routing/validation and store-restart tests passed. Fixed initial UI model-options call against its actual array/value API. Source CSS is `src/styles/app.css`; a guessed `src/styles.css` lookup was corrected.

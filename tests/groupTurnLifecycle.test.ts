@@ -4,7 +4,7 @@ import path from 'node:path';
 import { configureRuntimePaths } from '../backend/runtimePaths.ts';
 import { CodexAppServerClient } from '../backend/codexAppServer.ts';
 import { createClaudeInteractionState } from '../backend/claudeInteractionState.ts';
-import { sendGroupMessage, stopGroupSessionRuns, hasActiveGroupTurns } from '../backend/groupChat.ts';
+import { sendGroupMessage, stopGroupSessionRuns, hasActiveGroupTurns, updateGroupParticipants } from '../backend/groupChat.ts';
 import { runCodexAppServerTurn, interruptCodexAppServerTurn } from '../backend/codexAppServerTurn.ts';
 import * as store from '../electron/sessionStore.ts';
 import type { ClaudeInteractionContext } from '../backend/claudeInteractionContext.ts';
@@ -126,6 +126,28 @@ try {
   assert.equal(clients.length, 4, 'Cancelled preparation must not launch a runtime');
   assert.equal(preparedId, cancelled.queued.assistantMessageId);
   console.log('PASS Codex reserves before async preparation and honors stop before launch');
+
+  const currentRoom = await store.getSessionRecordForBootstrap(roomId);
+  assert.ok(currentRoom?.group?.kind === 'room');
+  const configured = await updateGroupParticipants(ctx, state, { sessionId: roomId, expectedRevision: 0, participants: [
+    ...currentRoom.group.participants,
+    { id: 'reviewer', label: 'Reviewer', provider: 'codex', model: 'review-model', effort: 'ultra', instructions: 'Review only.', enabled: true },
+  ] });
+  const author = await send('Author task');
+  await waitFor(() => Boolean(clients[4]?.prompt));
+  const reviewer = await sendGroupMessage(ctx, state, { sessionId: roomId, prompt: '@reviewer Review task' });
+  await waitFor(() => Boolean(clients[5]?.prompt));
+  assert.match(clients[5].prompt, /Review only\./);
+  assert.match(clients[5].prompt, /@reviewer/);
+  assert.ok(configured.session.group?.kind === 'room');
+  await assert.rejects(updateGroupParticipants(ctx, state, { sessionId: roomId, expectedRevision: 1, participants: configured.session.group.participants }), /结束/);
+  clients[5].finish('REVIEWER_RESULT');
+  clients[4].finish('AUTHOR_RESULT');
+  await waitFor(() => !hasActiveGroupTurns(state));
+  const teamResult = await store.getSessionRecordForBootstrap(roomId);
+  assert.equal(teamResult?.messages.find((message) => message.id === author.queued.assistantMessageId)?.content, 'AUTHOR_RESULT');
+  assert.equal(teamResult?.messages.find((message) => message.id === reviewer.queued.assistantMessageId)?.content, 'REVIEWER_RESULT');
+  console.log('PASS same-provider members run independently and keep exact reply ownership');
   success = true;
 } finally {
   CodexAppServerClient.create = originalCreate;
