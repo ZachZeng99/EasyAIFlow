@@ -5,6 +5,54 @@
   color: #f5efe6;
 }
 
+.device-workspace { height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
+.device-toolbar { display: flex; align-items: center; gap: 10px; padding: 8px 16px; border-bottom: 1px solid #3a332c; background: #171411; min-height: 48px; flex-shrink: 0; font-size: 13px; }
+.device-toolbar select { min-width: 0; max-width: 420px; flex: 1; color: #f5efe6; background: #28221d; border: 1px solid #514638; border-radius: 7px; padding: 7px 10px; }
+.device-toolbar > button { margin-left: auto; white-space: nowrap; }
+.device-indicator { font-size: 12px; white-space: nowrap; color: #d5b785; }
+.device-indicator.online { color: #7fdbad; }
+.device-indicator.offline { color: #e9b078; }
+.device-workspace-content { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.device-workspace .device-workspace-content > .desktop-shell { height: auto; min-height: 0; flex: 1; }
+.device-workspace-content .conversation-layout { height: 100%; min-height: 0; }
+.device-offline-banner { background: #46301b; padding: 8px 16px; font-size: 13px; color: #ffdbb1; }
+.device-entry { height: 100dvh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; padding: 24px; }
+.device-login { display: flex; flex-direction: column; gap: 22px; width: min(100%, 420px); padding: 28px; border: 1px solid #43382e; border-radius: 18px; background: #1d1915; }
+.device-login h1 { font-size: 22px; }
+.device-login p, .device-help { font-size: 13px; line-height: 1.7; color: #c1b7aa; }
+.dialog-card.device-manager { width: min(700px, 100%); max-height: calc(100dvh - 32px); display: flex; flex-direction: column; overflow: hidden; }
+.device-toolbar > .device-logout { margin-left: 0; border: 0; padding: 7px 0; background: transparent; color: #c6bbaa; cursor: pointer; }
+.device-manager .dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.device-manager .dialog-head p { font-size: 12px; color: #b8aa99; margin-top: 5px; }
+.device-manager-body { padding: 18px; overflow-y: auto; min-height: 0; }
+.device-tabs { display: flex; gap: 8px; padding: 12px 18px 0; }
+.device-tabs button { flex: 1; padding: 10px; border: 1px solid #463c31; border-radius: 8px; background: #26201a; cursor: pointer; }
+.device-tabs button.selected { color: #f7c16b; border-color: #ac7834; background: #3c2b18; }
+.device-list, .device-form { display: flex; flex-direction: column; gap: 16px; }
+.device-card { border: 1px solid #433a30; border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 10px; overflow-wrap: anywhere; }
+.device-card > div:first-child { display: flex; justify-content: space-between; gap: 16px; }
+.device-card p, .device-card small, .device-grant small { color: #baad9c; font-size: 12px; }
+.device-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.device-form label, .device-login label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+.device-form input, .device-form textarea, .device-login input { width: 100%; min-width: 0; padding: 10px; color: #f5efe6; border: 1px solid #514536; border-radius: 7px; background: #14110e; }
+.device-form label.device-checkbox { flex-direction: row; align-items: center; line-height: 1.6; }
+.device-checkbox input { width: auto; }
+.device-form details summary { cursor: pointer; color: #d9b986; padding: 4px 0 12px; font-size: 13px; }
+.device-pairing { display: flex; flex-direction: column; gap: 10px; padding: 16px; border: 1px solid #77603a; background: #2b2418; border-radius: 12px; overflow-wrap: anywhere; }
+.device-pairing code { font-size: 23px; letter-spacing: 1px; user-select: all; }
+.device-pairing p, .device-pairing small { font-size: 12px; color: #d2c0a2; }
+.device-grant { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid #40352b; }
+.device-grant > div { min-width: 0; overflow-wrap: anywhere; display: flex; flex-direction: column; gap: 5px; }
+.device-grant > button { flex-shrink: 0; }
+.device-error { overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .device-toolbar { gap: 7px; padding: 7px 10px; }
+  .device-toolbar > label, .device-toolbar > .device-indicator { display: none; }
+  .device-toolbar .dialog-button { padding: 8px 10px; }
+  .device-manager .dialog-head, .device-manager-body { padding: 14px; }
+  .device-manager .device-tabs { padding: 10px 14px 0; }
+}
+
 * {
   box-sizing: border-box;
 }

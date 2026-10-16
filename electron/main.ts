@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DeviceServiceClient } from '../backend/deviceServiceClient.js';
 import { shouldOpenExternally } from './externalNavigation.js';
+import { isUiRpcMethod } from '../src/data/rpcOperations.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const devServerUrl = 'http://127.0.0.1:4173';
@@ -115,6 +116,10 @@ app.whenReady().then(async () => {
   for (const [channel, method] of Object.entries(channels)) {
     ipcMain.handle(channel, (_event, payload?: { operationId?: string }) => device!.request(method, payload, payload?.operationId));
   }
+  ipcMain.handle('device:rpc', (_event, input: { method: string; payload?: { operationId?: string }; deviceId?: string }) => {
+    if (!input || !isUiRpcMethod(input.method)) throw new Error('Unsupported device operation.');
+    return device!.request(input.method, input.payload, input.payload?.operationId, input.deviceId);
+  });
   ipcMain.handle('clipboard:write-text', (_event, value: string) => clipboard.writeText(value));
   ipcMain.handle('git:snapshot', (_event, cwd: string) => device!.request('getGitSnapshot', { cwd }));
   ipcMain.handle('app:meta', async () => ({

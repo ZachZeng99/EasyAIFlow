@@ -125,7 +125,7 @@ const createFallbackAssistantMessage = (
 };
 
 export const applyClaudeEventToProjects = (projects: ProjectRecord[], event: ClaudeStreamEvent) =>
-  event.type === 'interaction-snapshot'
+  event.type === 'interaction-snapshot' || event.type === 'device-status' || event.type === 'device-access-revoked'
     ? projects
     : event.type === 'interaction-sync'
     ? invalidateCommittedSessionMessages(projects)

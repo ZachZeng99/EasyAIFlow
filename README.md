@@ -6,6 +6,8 @@
 
 ![EasyAIFlow Screenshot](./screenshot.png)
 
+EAF 2.0 开发版已加入动态模型、可配置群成员、原生子 agent 视图和多设备切换。手机/远程电脑接入见 [多设备使用说明](docs/v2/device-access.md)，完整状态见 [2.0 实现进度](docs/v2/p0-progress.md)。
+
 ---
 
 ## 目录 / Table of Contents

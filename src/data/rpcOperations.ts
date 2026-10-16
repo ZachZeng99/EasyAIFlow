@@ -2,6 +2,7 @@
 export class RpcRejectedError extends Error {}
 
 export const MUTATING_RPC_METHODS = new Set([
+  'createDevicePairing', 'addRemoteDevice', 'removeRemoteDevice', 'revokeDeviceAccess',
   'sendMessage', 'sendBtwMessage', 'discardBtwSession', 'switchModel', 'switchEffort',
   'stopSessionRun', 'disconnectSession', 'respondToPermissionRequest',
   'respondToPlanModeRequest', 'respondToAskUserQuestion', 'respondToPlanMode',
@@ -11,6 +12,8 @@ export const MUTATING_RPC_METHODS = new Set([
 ]);
 
 const READ_RPC_METHODS = new Set([
+  'getInteractionSnapshot',
+  'getDevices', 'getDeviceAccessGrants',
   'getSessionNativeAgents',
   'getAppMeta', 'getProjects', 'getSessionRecord', 'getSessionHistoryRevision',
   'getSessionMessagePage', 'getGitSnapshot', 'getSlashCommands', 'getFileDiff',

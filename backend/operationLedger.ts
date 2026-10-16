@@ -34,6 +34,7 @@ export class OperationLedger {
   constructor(
     private readonly directory: string,
     private readonly encodeResult: (result: unknown) => unknown = (result) => result,
+    private readonly encodePayload: (method: string, payload: unknown) => unknown = (_method, payload) => payload,
   ) {}
 
   isRunning(id: string) { return this.running.has(id); }
@@ -98,7 +99,7 @@ export class OperationLedger {
       throw new OperationError('EAF_OPERATION_UNCERTAIN', `操作 ${id} 的执行状态待确认，未重新执行。${previous.error ?? ''}`, id);
     }
     const now = new Date().toISOString();
-    const record: OperationRecord = { id, method, fingerprint, payload, status: 'started', createdAt: now, updatedAt: now };
+    const record: OperationRecord = { id, method, fingerprint, payload: this.encodePayload(method, payload), status: 'started', createdAt: now, updatedAt: now };
     await this.save(record, true);
     try {
       const result = (await operation(cloneContainers(payload))) ?? null;

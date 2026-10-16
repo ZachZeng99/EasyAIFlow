@@ -24,13 +24,22 @@ import type { PlanModeResponsePayload } from './data/planMode.js';
 import type { SessionInteractionState } from './data/sessionInteraction.js';
 import { withOperationIdentity } from './data/operationIdentity.js';
 import type { ProviderModelCatalog } from './data/providerModels.js';
+import type { DeviceAccessGrant, DeviceAccessPurpose, DeviceDescriptor, DevicePairingCode, RemoteDeviceInput } from './data/devices.js';
 
 type RpcErrorShape = {
   error?: string;
+  code?: string;
 };
 
 export type EasyAIFlowBridge = {
   runtime: 'desktop' | 'web';
+  rpc?: <T>(method: string, payload?: unknown, deviceId?: string) => Promise<T>;
+  getDevices: () => Promise<{ devices: DeviceDescriptor[] }>;
+  createDevicePairing: (payload: { purpose: DeviceAccessPurpose }) => Promise<DevicePairingCode>;
+  addRemoteDevice: (payload: RemoteDeviceInput) => Promise<DeviceDescriptor>;
+  removeRemoteDevice: (payload: { deviceId: string }) => Promise<unknown>;
+  getDeviceAccessGrants: () => Promise<{ grants: DeviceAccessGrant[] }>;
+  revokeDeviceAccess: (payload: { grantId: string }) => Promise<unknown>;
   writeClipboardText: (value: string) => Promise<void>;
   getAppMeta: () => Promise<{
     name: string;
@@ -187,7 +196,7 @@ export type EasyAIFlowBridge = {
   onClaudeEvent: (listener: (event: ClaudeStreamEvent) => void) => () => void;
 };
 
-const callWebRpc = async <T>(method: string, payload?: unknown): Promise<T> => {
+const callWebRpc = async <T>(method: string, payload?: unknown, deviceId?: string): Promise<T> => {
   const response = await fetch('/api/rpc', {
     method: 'POST',
     headers: {
@@ -196,6 +205,7 @@ const callWebRpc = async <T>(method: string, payload?: unknown): Promise<T> => {
     body: JSON.stringify({
       method,
       payload,
+      deviceId,
       operationId: payload && typeof payload === 'object' ? (payload as { operationId?: string }).operationId : undefined,
     }),
   }).catch(() => { throw new Error('EAF_TRANSPORT_RETRYABLE: 与执行服务的连接中断，请求将使用原操作 ID 重试。'); });
@@ -205,7 +215,7 @@ const callWebRpc = async <T>(method: string, payload?: unknown): Promise<T> => {
     try {
       const parsed = (await response.json()) as RpcErrorShape;
       if (parsed.error) {
-        message = parsed.error;
+        message = `${parsed.code ? `${parsed.code}: ` : ''}${parsed.error}`;
       }
     } catch {
       // Keep the default status-based message.
@@ -226,16 +236,30 @@ const writeClipboardText = async (value: string) => {
       await navigator.clipboard.writeText(value);
       return;
     } catch {
-      // Fall back to the local web runtime when the browser blocks clipboard access.
+      // LAN browsers may not expose the Clipboard API.
     }
   }
 
-  await callWebRpc('clipboard:write-text', { value });
+  const input = document.createElement('textarea');
+  input.value = value;
+  input.style.position = 'fixed';
+  input.style.opacity = '0';
+  document.body.appendChild(input);
+  input.select();
+  try { if (!document.execCommand('copy')) throw new Error('浏览器不允许复制，请手动复制内容。'); }
+  finally { input.remove(); }
 };
 
-const webBridge: EasyAIFlowBridge = {
+type Rpc = <T>(method: string, payload?: unknown) => Promise<T>;
+const createRpcBridge = (callWebRpc: Rpc, subscribe: EasyAIFlowBridge['onClaudeEvent']): EasyAIFlowBridge => ({
   runtime: 'web',
   writeClipboardText,
+  getDevices: () => callWebRpc('getDevices'),
+  createDevicePairing: (payload) => callWebRpc('createDevicePairing', payload),
+  addRemoteDevice: (payload) => callWebRpc('addRemoteDevice', payload),
+  removeRemoteDevice: (payload) => callWebRpc('removeRemoteDevice', payload),
+  getDeviceAccessGrants: () => callWebRpc('getDeviceAccessGrants'),
+  revokeDeviceAccess: (payload) => callWebRpc('revokeDeviceAccess', payload),
   getAppMeta: () => callWebRpc('getAppMeta'),
   getGitSnapshot: (cwd) => callWebRpc('getGitSnapshot', { cwd }),
   getSlashCommands: (payload) => callWebRpc('getSlashCommands', payload),
@@ -275,15 +299,18 @@ const webBridge: EasyAIFlowBridge = {
   switchEffort: (payload) => callWebRpc('switchEffort', payload),
   stopSessionRun: (payload) => callWebRpc('stopSessionRun', payload),
   disconnectSession: (payload) => callWebRpc('disconnectSession', payload),
-  onClaudeEvent: (listener) => {
-    const source = new EventSource('/api/events');
+  onClaudeEvent: subscribe,
+});
+
+const subscribeWeb = (deviceId?: string): EasyAIFlowBridge['onClaudeEvent'] => (listener) => {
+    const source = new EventSource(`/api/events${deviceId ? `?deviceId=${encodeURIComponent(deviceId)}` : ''}`);
     source.onopen = () => {
       listener({ type: 'interaction-sync' });
     };
     source.onmessage = (event) => {
       try {
         const payload = JSON.parse(event.data) as ClaudeStreamEvent;
-        listener(payload);
+        if ((payload.deviceId || undefined) === deviceId) listener(payload);
       } catch {
         // Ignore malformed SSE payloads.
       }
@@ -291,8 +318,26 @@ const webBridge: EasyAIFlowBridge = {
     return () => {
       source.close();
     };
-  },
 };
 
-export const bridge: EasyAIFlowBridge =
-  withOperationIdentity(typeof window !== 'undefined' && window.easyAIFlow ? window.easyAIFlow : webBridge);
+const desktop = typeof window !== 'undefined' ? window.easyAIFlow : undefined;
+const localRpc: Rpc = (method, payload) => desktop?.rpc ? desktop.rpc(method, payload) : callWebRpc(method, payload);
+const management = createRpcBridge(localRpc, subscribeWeb());
+export const bridge: EasyAIFlowBridge = withOperationIdentity(desktop ? {
+  ...management, ...desktop,
+  onClaudeEvent: (listener) => desktop.onClaudeEvent((event) => { if (!event.deviceId) listener(event); }),
+} : management);
+
+// A bridge captures its device for its entire lifetime, including pending retries
+// and approval follow-ups after the user switches the visible workspace.
+export const bridgeForDevice = (deviceId: string): EasyAIFlowBridge => {
+  if (deviceId === 'local') return bridge;
+  const rpc: Rpc = (method, payload) => desktop?.rpc ? desktop.rpc(method, payload, deviceId) : callWebRpc(method, payload, deviceId);
+  const subscribe: EasyAIFlowBridge['onClaudeEvent'] = desktop
+    ? (listener) => desktop.onClaudeEvent((event) => {
+      if (event.deviceId === deviceId) listener(event);
+      else if (!event.deviceId && event.type === 'interaction-sync') listener(event);
+    })
+    : subscribeWeb(deviceId);
+  return withOperationIdentity({ ...createRpcBridge(rpc, subscribe), writeClipboardText: desktop?.writeClipboardText ?? writeClipboardText }, undefined, deviceId);
+};

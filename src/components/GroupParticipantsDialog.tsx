@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react';
-import { bridge } from '../bridge';
+import type { EasyAIFlowBridge } from '../bridge';
+import { useBridge } from '../BridgeContext';
 import { MAX_GROUP_PARTICIPANTS, nextGroupParticipantId, validateGroupParticipantConfigs } from '../data/groupParticipants';
 import { describeModelCatalog, modelEffortOptions, modelOptionsWithCurrent, type ProviderModelCatalog } from '../data/providerModels';
 import type { GroupParticipantConfig, SessionProvider, SessionRecord } from '../data/types';
 
-type Props = { session: SessionRecord; busy: boolean; onClose: () => void; onSaved: (result: Awaited<ReturnType<typeof bridge.updateGroupParticipants>>) => void };
+type Props = { session: SessionRecord; busy: boolean; onClose: () => void; onSaved: (result: Awaited<ReturnType<EasyAIFlowBridge['updateGroupParticipants']>>) => void };
 
 export function GroupParticipantsDialog({ session, busy, onClose, onSaved }: Props) {
+  const bridge = useBridge();
   const group = session.group?.kind === 'room' ? session.group : undefined;
   const [participants, setParticipants] = useState<GroupParticipantConfig[]>(() => group?.participants.map(({ id, label, provider, enabled, model, effort, instructions }) => ({ id, label, provider, enabled, model, effort, instructions })) ?? []);
   const [revision] = useState(group?.configurationRevision ?? 0);

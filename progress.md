@@ -543,3 +543,11 @@ Completed scoped recovery through supported API; no code changes or global serve
 - Real Claude/Codex foreground child tests passed; real Codex background child and immediate service restart passed. Regression tests cover persistence, nesting, duplicate frames, output isolation, stop, group ownership and old-record pagination.
 - Actual desktop/mobile UI checked and screenshot saved. Final compilation, long-history paging and bounded native item reads passed; no sub-agent implementation delegation was used.
 - Asked the user whether remote devices will use LAN/VPN or a public control server; no answer yet. Continue independent work, defaulting to LAN/VPN if no preference arrives.
+
+# 2026-10-16 paired device management
+
+- Added stable identities, purpose-bound expiring pairing codes, hashed/revocable grants, encrypted peer credentials, HTTPS gateways and authenticated browser sessions. Browser logout invalidates its grant; existing SSE streams are closed on revocation/reconnection.
+- Desktop and web share device-owned routing. Device-scoped immutable bridges and operation keys isolate delayed callbacks, retries, model discovery and live events. Workspace drafts/selection remain separate in memory while switching.
+- Added desktop/mobile device selector, paired-device management, pairing/login screens and deployment guide `docs/v2/device-access.md`. Default listeners remain local; remote HTTP requires an explicit existing VPN configuration.
+- Store, scope, immutable bridge, TLS/hostname, duplicate submission, independent service, gateway reconnection and logout tests passed. Real Claude/Codex each finished while their gateway was down and recovered the original reply after reconnect. UI checked at desktop and 390×844, including browser login then executor selection.
+- Two physical machines and a real phone remain to be tested on the user's network; same-host isolated processes are not claimed as that acceptance. EAF autonomous communication remains next-stage work.

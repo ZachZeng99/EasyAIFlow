@@ -31,6 +31,7 @@ const newOperationId = () => {
 export const withOperationIdentity = <T extends object>(
   bridge: T,
   storage: StorageLike | undefined = defaultStorage(),
+  deviceId?: string,
 ): T => {
   const pending = new Map<string, string>();
   return new Proxy(bridge, {
@@ -39,7 +40,7 @@ export const withOperationIdentity = <T extends object>(
       if (typeof property !== 'string' || !MUTATING_RPC_METHODS.has(property) || typeof original !== 'function') return original;
       return async (payload?: unknown) => {
         const normalized = stripRpcMetadata(property, payload);
-        const key = `eaf.operation.${await requestDigest(canonicalJson({ method: property, payload: normalized }))}`;
+        const key = `eaf.operation.${await requestDigest(canonicalJson({ ...(deviceId ? { deviceId } : {}), method: property, payload: normalized }))}`;
         let operationId = pending.get(key);
         try { operationId ??= storage?.getItem(key) ?? undefined; } catch { /* Storage may be disabled. */ }
         operationId ??= newOperationId();
@@ -62,7 +63,7 @@ export const withOperationIdentity = <T extends object>(
               await new Promise((resolve) => setTimeout(resolve, 200));
               continue;
             }
-            if (!retryable && !message.includes('EAF_OPERATION_UNCERTAIN') && !message.includes('EAF_OPERATION_CONFLICT')) clear();
+            if (!retryable && !['EAF_OPERATION_UNCERTAIN', 'EAF_OPERATION_CONFLICT', 'EAF_AUTH_REQUIRED', 'EAF_DEVICE_UNAVAILABLE'].some((code) => message.includes(code))) clear();
             throw error;
           }
         }

@@ -1,5 +1,17 @@
 # Current Task: EAF 2.0 P0 — Committed message synchronization
 
+## Current continuation: Paired device management (LAN / existing VPN)
+
+- [x] Add stable device identity, expiring pairing codes, revocable access grants and encrypted stored peer credentials.
+- [x] Route immutable device-scoped RPC/SSE through the owning device service; preserve operation IDs and offline state.
+- [x] Add device selection and management UI for desktop/web, plus authenticated browser access for phones.
+- [x] Verify two isolated worker/gateway instances, wrong-device routing, revoked access, offline/reconnect and duplicate operations.
+- [x] Document secure deployment and finish reviewable setup before requesting any unavailable physical-machine details.
+
+Verified real Claude/Codex remote replies with gateway shutdown during execution, reconnection and same-operation replay at `.tmp-tests/remote-devices-stdhTm`. Browser login and device switching passed at desktop and 390×844; screenshots `.tmp-run/eaf-devices.jpg` and `.tmp-run/eaf-devices-mobile.jpg`. TLS trust/hostname tests passed. Two physical machines and a real phone remain an external acceptance step, not claimed complete.
+
+Default assumption, announced after the unanswered optional network question: LAN or an existing VPN, self-hosted. HTTPS is the default remote transport; unencrypted non-loopback HTTP must not be accepted silently. Provider credentials and workspaces stay on their execution device. Pairing secrets must not appear in durable operation payloads or diagnostics. Changing the selected device remounts the workspace with an immutable bridge so delayed results and follow-up calls cannot land on another device.
+
 ## Current continuation: Native agent identity, output and lifecycle
 
 - [x] Verify current Claude forwarding and Codex collaboration schemas with real protocol capture.

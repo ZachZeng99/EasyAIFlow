@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { collectNativeAgents, mergeNativeAgentMessages, nativeAgentStatusLabel } from '../data/nativeAgents';
-import { bridge } from '../bridge';
+import { useBridge } from '../BridgeContext';
 import type { ConversationMessage } from '../data/types';
 
 export function NativeAgentsDialog({ sessionId, messages, onClose }: { sessionId: string; messages: ConversationMessage[]; onClose: () => void }) {
+  const bridge = useBridge();
   const [history, setHistory] = useState<ConversationMessage[]>([]);
   const [nextBefore, setNextBefore] = useState<string>();
   const [loading, setLoading] = useState(false);

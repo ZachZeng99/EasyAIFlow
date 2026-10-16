@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron') as typeof i
 
 contextBridge.exposeInMainWorld('easyAIFlow', {
   runtime: 'desktop',
+  rpc: (method: string, payload?: unknown, deviceId?: string) => ipcRenderer.invoke('device:rpc', { method, payload, deviceId }),
   writeClipboardText: (value: string) => ipcRenderer.invoke('clipboard:write-text', value),
   getAppMeta: () => ipcRenderer.invoke('app:meta'),
   getGitSnapshot: (cwd: string) => ipcRenderer.invoke('git:snapshot', cwd),

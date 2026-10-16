@@ -156,7 +156,7 @@ export class DeviceServiceClient {
     });
   }
 
-  async request<T = unknown>(method: string, payload?: unknown, operationId?: string): Promise<T> {
+  async request<T = unknown>(method: string, payload?: unknown, operationId?: string, deviceId?: string, remoteAccessToken?: string): Promise<T> {
     const operation = operationId ?? (MUTATING_RPC_METHODS.has(method) ? randomUUID() : undefined);
     for (let attempt = 0; ; attempt += 1) {
       try {
@@ -168,7 +168,7 @@ export class DeviceServiceClient {
             reject(transportError('Operation response timed out; retry with the same operation ID.'));
           }, 120000);
           this.pending.set(id, { resolve: (value) => resolve(value as T), reject, timer });
-          const wire = `${JSON.stringify({ type: 'request', id, method, payload, operationId: operation })}\n`;
+          const wire = `${JSON.stringify({ type: 'request', id, method, payload, operationId: operation, deviceId, remoteAccessToken })}\n`;
           if (Buffer.byteLength(wire) > MAX_SERVICE_MESSAGE_BYTES) {
             this.pending.delete(id); clearTimeout(timer); reject(new Error('Request exceeds the 32 MiB service limit.')); return;
           }

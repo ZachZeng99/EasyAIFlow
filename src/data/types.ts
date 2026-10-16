@@ -1,6 +1,7 @@
 import type { AskUserQuestion } from './askUserQuestion.js';
 import type { PlanModeRequest } from './planMode.js';
 import type { SessionInteractionState } from './sessionInteraction.js';
+import type { DeviceDescriptor } from './devices.js';
 
 export type LinkedGroup = {
   id: string;
@@ -347,9 +348,11 @@ export type InteractionSnapshot = {
   interactions: Record<string, SessionInteractionState>;
 };
 
-export type ClaudeStreamEvent = ClaudeStreamEventPayload & { interactionVersion?: InteractionVersion };
+export type ClaudeStreamEvent = ClaudeStreamEventPayload & { interactionVersion?: InteractionVersion; deviceId?: string };
 
 type ClaudeStreamEventPayload =
+  | { type: 'device-status'; device: DeviceDescriptor }
+  | { type: 'device-access-revoked'; grantId: string }
   | SessionMessagesCommittedEvent
   | {
       type: 'interaction-snapshot';

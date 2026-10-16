@@ -5,15 +5,19 @@ import path from 'node:path';
 import { configureRuntimePaths } from './runtimePaths.js';
 import { createDeviceRuntime } from './deviceRuntime.js';
 import { OperationLedger, OperationError } from './operationLedger.js';
-import { MUTATING_RPC_METHODS, stripRpcMetadata } from '../src/data/rpcOperations.js';
+import { MUTATING_RPC_METHODS, stripRpcMetadata, isUiRpcMethod } from '../src/data/rpcOperations.js';
 import type { ClaudeStreamEvent } from '../src/data/types.js';
 import { DEVICE_SERVICE_PROTOCOL, MAX_SERVICE_MESSAGE_BYTES, ensureServiceKey, serviceAddress } from './deviceServiceProtocol.js';
+import { DeviceAccessStore } from './deviceAccessStore.js';
+import { RemoteDeviceRouter } from './remoteDevice.js';
+import { DEVICE_WORK_EXCLUDED_METHODS, type DeviceAccessPurpose, type RemoteDeviceInput } from '../src/data/devices.js';
 
 export const startDeviceService = async (options: { dataDirectory: string; homeDirectory: string }) => {
   configureRuntimePaths({ mode: 'web', userDataPath: options.dataDirectory, homePath: options.homeDirectory });
   const key = await ensureServiceKey(options.dataDirectory);
   const address = serviceAddress(options.dataDirectory);
   const instanceId = randomUUID();
+  const access = await DeviceAccessStore.open(options.dataDirectory, key);
   const clients = new Set<Socket>();
   const ledger = new OperationLedger(path.join(options.dataDirectory, 'operations'), (result) => {
     if (!result || typeof result !== 'object') return result;
@@ -25,15 +29,18 @@ export const startDeviceService = async (options: { dataDirectory: string; homeD
       if (entity?.id) compact[key] = { id: entity.id };
     }
     return compact;
-  });
+  }, (method, payload) => method === 'addRemoteDevice' && payload && typeof payload === 'object'
+    ? { ...payload, code: '[redacted]' } : payload);
   const send = (socket: Socket, value: unknown) => {
     if (socket.destroyed) return;
     if (socket.writableLength > 8 * 1024 * 1024) { socket.destroy(); return; }
     socket.write(`${JSON.stringify(value)}\n`);
   };
-  const runtime = createDeviceRuntime((event: ClaudeStreamEvent) => {
+  const broadcast = (event: ClaudeStreamEvent) => {
     for (const client of clients) send(client, { type: 'event', event });
-  }, instanceId);
+  };
+  const runtime = createDeviceRuntime(broadcast, instanceId);
+  const peers = new RemoteDeviceRouter(access, broadcast);
   let stopping = false;
   let activeRequests = 0;
   let stopPromise: Promise<void> | null = null;
@@ -66,9 +73,45 @@ export const startDeviceService = async (options: { dataDirectory: string; homeD
       try {
         if (stopping) throw new Error('Device service is stopping.');
         const method = frame.method;
+        const targetDevice = typeof frame.deviceId === 'string' ? frame.deviceId : 'local';
+        if (frame.remoteAccessToken !== undefined) {
+          const grant = typeof frame.remoteAccessToken === 'string' ? access.authorize(frame.remoteAccessToken) : undefined;
+          if (!grant) throw new OperationError('EAF_AUTH_REQUIRED', '设备授权已失效，请重新配对。');
+          if (!isUiRpcMethod(method) || grant.purpose === 'device' &&
+            (DEVICE_WORK_EXCLUDED_METHODS.has(method) || targetDevice !== 'local' && targetDevice !== access.identity.id)) {
+            throw new OperationError('EAF_ACCESS_DENIED', '此设备授权不允许转发到其他机器或修改接入配置。');
+          }
+        }
         let result: unknown;
-        if (method === 'getDeviceStatus') {
-          result = { instanceId, pid: process.pid, active: runtime.hasActiveWork(), protocol: DEVICE_SERVICE_PROTOCOL };
+        if (targetDevice !== 'local' && targetDevice !== access.identity.id) {
+          result = await peers.request(targetDevice, method, frame.payload, typeof frame.operationId === 'string' ? frame.operationId : undefined);
+        } else if (method === 'getDeviceStatus') {
+          result = { instanceId, deviceId: access.identity.id, name: access.identity.name, platform: access.identity.platform, pid: process.pid, active: runtime.hasActiveWork(), protocol: DEVICE_SERVICE_PROTOCOL };
+        } else if (method === 'getLocalDeviceIdentity') {
+          result = access.identity;
+        } else if (method === 'getDevices') {
+          result = { devices: [{ ...access.identity, kind: 'local', connection: 'online', active: runtime.hasActiveWork() }, ...peers.list()] };
+        } else if (method === 'createDevicePairing') {
+          result = access.createPairing((frame.payload as { purpose: DeviceAccessPurpose })?.purpose, typeof frame.operationId === 'string' ? frame.operationId : undefined);
+        } else if (method === 'exchangeDevicePairing') {
+          const payload = frame.payload as { code: string; purpose: DeviceAccessPurpose; name: string };
+          result = await access.exchange(payload.code, payload.purpose, payload.name);
+        } else if (method === 'authorizeDeviceAccess') {
+          result = access.authorize((frame.payload as { token: string }).token) ?? null;
+        } else if (method === 'getDeviceAccessGrants') {
+          result = { grants: access.grants };
+        } else if (['addRemoteDevice', 'removeRemoteDevice', 'revokeDeviceAccess'].includes(method)) {
+          if (typeof frame.operationId !== 'string') throw new OperationError('EAF_INVALID_OPERATION', 'Operation ID is required.');
+          const saved = await ledger.execute(frame.operationId, method, stripRpcMetadata(method, frame.payload), async (input) => {
+            if (method === 'addRemoteDevice') return peers.add(input as RemoteDeviceInput);
+            if (method === 'removeRemoteDevice') { await peers.remove((input as { deviceId: string }).deviceId); return null; }
+            const grantId = (input as { grantId: string }).grantId;
+            await access.revoke(grantId);
+            broadcast({ type: 'device-access-revoked', grantId });
+            return null;
+          });
+          result = method === 'addRemoteDevice' ? peers.list().find((peer) => peer.id === (saved as { id: string })?.id) ?? null
+            : method === 'revokeDeviceAccess' ? { grants: access.grants } : { devices: peers.list() };
         } else if (method === 'getInteractionEvents') {
           result = runtime.interactionEvents();
         } else if (method === 'getInteractionSnapshot') {
@@ -143,6 +186,7 @@ export const startDeviceService = async (options: { dataDirectory: string; homeD
     if (stopPromise) return stopPromise;
     stopping = true;
     stopPromise = (async () => {
+      peers.close();
       try { await runtime.close(); }
       finally {
         for (const socket of clients) socket.destroy();

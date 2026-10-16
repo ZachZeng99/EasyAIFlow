@@ -25,6 +25,7 @@
     "smoke:providers": "tsx scripts/smoke-device-providers.ts",
     "smoke:interactions": "tsx scripts/smoke-device-interactions.ts",
     "smoke:native-agents": "tsx scripts/smoke-native-agents.ts",
+    "smoke:devices": "tsx tests/remoteDevices.test.ts --live",
     "preview": "vite preview",
     "start:web": "node dist-server/server/server.js",
     "package:win": "npm run build && electron-builder --win nsis"

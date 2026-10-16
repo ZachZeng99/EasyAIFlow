@@ -3,7 +3,7 @@ import 'katex/dist/katex.min.css';
 import { BtwPanel, type BtwMessage } from './components/BtwPanel';
 import { ChatComposer, type ComposerAttachment } from './components/ChatComposer';
 import { ChatHistory } from './components/ChatHistory';
-import { bridge } from './bridge';
+import { useBridge } from './BridgeContext';
 import { ManageDialog } from './components/ManageDialog';
 import { GroupParticipantsDialog } from './components/GroupParticipantsDialog';
 import { ChatThread } from './components/ChatThread';
@@ -336,10 +336,17 @@ type SessionHistoryLoadState =
   | { status: 'loading' | 'loaded' }
   | { status: 'error'; message: string };
 
-export default function App() {
+export type WorkspaceViewState = { selectedSessionId?: string; draftsBySessionId?: Record<string, string> };
+
+export default function App({ viewState }: { viewState?: WorkspaceViewState }) {
+  const bridge = useBridge();
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
-  const [selectedSessionId, setSelectedSessionId] = useState('');
-  const [draftsBySessionId, setDraftsBySessionId] = useState<Record<string, string>>({});
+  const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
+  const [selectedSessionId, setSelectedSessionId] = useState(viewState?.selectedSessionId ?? '');
+  const [draftsBySessionId, setDraftsBySessionId] = useState<Record<string, string>>(viewState?.draftsBySessionId ?? {});
+  useEffect(() => {
+    if (viewState) { viewState.selectedSessionId = selectedSessionId; viewState.draftsBySessionId = draftsBySessionId; }
+  }, [viewState, selectedSessionId, draftsBySessionId]);
   const [appVersion, setAppVersion] = useState('desktop');
   const [sendingSessionIds, setSendingSessionIds] = useState<string[]>([]);
   const [model, setModel] = useState('opus[1m]');
@@ -400,6 +407,7 @@ export default function App() {
       const bootstrap = await bridge.getProjects();
       const nextProjects = bootstrap?.projects ?? [];
       replaceProjects(nextProjects);
+      setWorkspaceLoaded(true);
       if (bootstrap.interactionVersion) {
         const reconciled = interactionReconciler.current.snapshot({ version: bootstrap.interactionVersion, interactions: bootstrap.interactions ?? {} });
         if (reconciled.apply) setSessionInteractions(reconciled.apply);
@@ -1118,6 +1126,7 @@ export default function App() {
   }, [isMobileLayout, visibleSessions.length]);
 
   useEffect(() => {
+    if (!workspaceLoaded) return;
     if (visibleSessions.length === 0) {
       if (selectedSessionId) {
         setSelectedSessionId('');
@@ -1128,7 +1137,7 @@ export default function App() {
     if (!selectedSessionId || !visibleSessions.some((session) => session.id === selectedSessionId)) {
       setSelectedSessionId(visibleSessions[0].id);
     }
-  }, [selectedSessionId, visibleSessions]);
+  }, [selectedSessionId, visibleSessions, workspaceLoaded]);
 
   useEffect(() => {
     const loadMeta = async () => {
@@ -1356,6 +1365,7 @@ export default function App() {
   }, [allSessions]);
 
   useEffect(() => {
+    if (!workspaceLoaded) return;
     const validSessionIds = new Set(allSessions.map((session) => session.id));
     setDraftsBySessionId((current) => {
       let changed = false;
@@ -1371,7 +1381,7 @@ export default function App() {
 
       return changed ? next : current;
     });
-  }, [allSessions]);
+  }, [allSessions, workspaceLoaded]);
 
   useEffect(() => {
     const validSessionIds = new Set(allSessions.map((session) => session.id));

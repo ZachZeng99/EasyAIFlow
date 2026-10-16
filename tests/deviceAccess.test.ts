@@ -1,0 +1,42 @@
+import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { DeviceAccessStore } from '../backend/deviceAccessStore.ts';
+import { normalizeDeviceOrigin } from '../src/data/devices.ts';
+
+await mkdir('.tmp-tests', { recursive: true });
+const directory = await mkdtemp(path.resolve('.tmp-tests', 'device-access-'));
+const key = 'ab'.repeat(32);
+let store = await DeviceAccessStore.open(directory, key);
+const identity = store.identity;
+const code = store.createPairing('device');
+const retryCode = store.createPairing('browser', 'retry-pairing');
+assert.deepEqual(store.createPairing('browser', 'retry-pairing'), retryCode);
+assert.throws(() => store.createPairing('device', 'retry-pairing'), /用途/);
+await assert.rejects(store.exchange(code.code, 'browser', 'wrong purpose'), /用途/);
+const paired = await store.exchange(code.code, 'device', 'Controller');
+assert.equal(store.authorize(paired.token)?.purpose, 'device');
+assert.equal(store.authorize('invalid'), undefined);
+await assert.rejects(store.exchange(code.code, 'device', 'replay'), /已过期/);
+console.log('PASS pairing codes are single-use, purpose-bound and do not expose provider credentials');
+
+await store.savePeer({ id: '8a358cd4-0a1b-4fb9-8823-9b6ccbf709ae', name: 'Peer', platform: 'win32', origin: 'https://peer.example', pairedAt: Date.now() }, paired.token);
+const persisted = await readFile(path.join(directory, 'device-registry.json'), 'utf8');
+assert.ok(!persisted.includes(paired.token));
+assert.ok(!persisted.includes(code.code));
+store = await DeviceAccessStore.open(directory, key);
+assert.deepEqual(store.identity, identity);
+assert.equal(store.tokenFor(store.peers[0]), paired.token);
+assert.throws(() => store.tokenFor({ ...store.peers[0], origin: 'https://different.example' }));
+assert.ok(store.authorize(paired.token));
+await store.revoke(paired.grantId);
+assert.equal((await DeviceAccessStore.open(directory, key)).authorize(paired.token), undefined);
+console.log('PASS identity, encrypted peer credentials and revoked grants survive restart');
+
+assert.equal(normalizeDeviceOrigin('https://peer.example:8887'), 'https://peer.example:8887');
+assert.equal(normalizeDeviceOrigin('http://127.0.0.1:8887'), 'http://127.0.0.1:8887');
+assert.throws(() => normalizeDeviceOrigin('http://192.168.1.2:8887'), /HTTPS/);
+assert.equal(normalizeDeviceOrigin('http://100.70.1.2:8887', true), 'http://100.70.1.2:8887');
+assert.throws(() => normalizeDeviceOrigin('https://user:secret@peer.example'), /协议/);
+assert.throws(() => normalizeDeviceOrigin('file:///workspace'), /协议|HTTPS/);
+console.log('PASS remote transport rejects accidental plaintext and credential-bearing URLs');
