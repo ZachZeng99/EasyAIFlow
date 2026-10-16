@@ -3,6 +3,9 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { DeviceServiceClient } from '../backend/deviceServiceClient.ts';
+import { InteractionReconciler } from '../src/data/interactionSync.ts';
+import type { SessionInteractionState } from '../src/data/sessionInteraction.ts';
+import type { InteractionSnapshot } from '../src/data/types.ts';
 import type { ProviderModelCatalog } from '../src/data/providerModels.ts';
 import type { ClaudeStreamEvent, ProjectCreateResult, SessionCreateResult, SessionRecord } from '../src/data/types.ts';
 
@@ -16,6 +19,15 @@ process.env.EASYAIFLOW_PROTOCOL_CAPTURE_DIR = path.join(root, 'protocol');
 console.log(`Interaction artifacts: ${root}`);
 const clientOptions = { dataDirectory, homeDirectory: os.homedir() };
 let client = new DeviceServiceClient(clientOptions);
+const reconciliation = new InteractionReconciler();
+let projection = new Map<string, SessionInteractionState>();
+const observe = (event: ClaudeStreamEvent) => {
+  const update = event.type === 'interaction-snapshot'
+    ? reconciliation.snapshot(event.snapshot, event.connection)
+    : reconciliation.event(event);
+  if (update.apply) projection = update.apply(projection);
+};
+client.onEvent(observe);
 const sessions: string[] = [];
 const failures: string[] = [];
 let askSession = '';
@@ -54,6 +66,7 @@ try {
   askSession = created.session.id;
   sessions.push(askSession);
   await run('real Claude AskUserQuestion round trip', async () => {
+    let delayedSnapshot: InteractionSnapshot | undefined;
     const started = await client.request<{ queued: { assistantMessageId: string } }>('sendMessage', {
       sessionId: askSession, model, effort: 'default',
       prompt: 'Integration test: use AskUserQuestion to ask exactly one question with choices A and B. Do not use any other tools. After receiving my answer, reply with exactly EAF_ASK_OK.',
@@ -64,8 +77,10 @@ try {
       assert.ok(capturedQuestion, 'No question arrived before reconnect');
       client.close();
       client = new DeviceServiceClient(clientOptions);
+      client.onEvent(observe);
       const interactions = await client.request<ClaudeStreamEvent[]>('getInteractionEvents');
       assert.ok(interactions.some((event) => event.type === 'ask-user-question' && event.toolUseId === capturedQuestion!.toolUseId));
+      delayedSnapshot = await client.request<InteractionSnapshot>('getInteractionSnapshot');
       await client.request('respondToAskUserQuestion', {
         toolUseId: capturedQuestion.toolUseId,
         answers: Object.fromEntries(capturedQuestion.questions.map((question) => [question.question, question.options[0]?.label ?? 'A'])),
@@ -75,6 +90,11 @@ try {
     assert.ok(answered.size > 0, 'No interactive question was delivered');
     assert.match(record.messages.find((message) => message.id === started.queued.assistantMessageId)?.content ?? '', /EAF_ASK_OK/);
     if (capturedQuestion) {
+      assert.ok(delayedSnapshot?.interactions[askSession]?.askUserQuestion);
+      const stale = reconciliation.snapshot(delayedSnapshot!);
+      if (stale.apply) projection = stale.apply(projection);
+      assert.equal(projection.get(askSession)?.askUserQuestion, undefined);
+      console.log('PASS delayed native interaction snapshot cannot reopen an answered question');
       const duplicate = await client.request<{ mode: string }>('respondToAskUserQuestion', {
         toolUseId: capturedQuestion.toolUseId,
         answers: Object.fromEntries(capturedQuestion.questions.map((question) => [question.question, 'B'])),

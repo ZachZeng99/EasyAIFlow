@@ -1,4 +1,7 @@
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { isInteractionEvent } from '../src/data/interactionSync.js';
+import type { InteractionSnapshot } from '../src/data/types.js';
 import { stopAllCodexRuns } from './codexInteraction.js';
 import { appServerManager } from './codexAppServer.js';
 import { ProviderModelCatalogStore, queryRuntimeCatalog, readProviderVersion, runtimeModelScope } from './providerModelCatalog.js';
@@ -61,7 +64,11 @@ import type {
 import type { PlanModeResponsePayload } from '../src/data/planMode.js';
 import { onSessionMessagesCommitted } from './sessionMessageEvents.js';
 
-export const createDeviceRuntime = (broadcast: (event: ClaudeStreamEvent) => void) => {
+export const createDeviceRuntime = (broadcast: (event: ClaudeStreamEvent) => void, epoch = randomUUID()) => {
+  let interactionSequence = 0;
+  const nextInteractionVersion = () => ({ epoch, sequence: ++interactionSequence });
+  const publish = (event: ClaudeStreamEvent) => broadcast(isInteractionEvent(event)
+    ? { ...event, interactionVersion: nextInteractionVersion() } : event);
   const models = new ProviderModelCatalogStore(path.join(getRuntimePaths().userDataPath, 'model-catalogs'), {
     load: queryRuntimeCatalog,
     scope: (provider, cwd) => runtimeModelScope(provider, cwd, getRuntimePaths().homePath),
@@ -77,20 +84,25 @@ export const createDeviceRuntime = (broadcast: (event: ClaudeStreamEvent) => voi
     return { ...result, session: { ...session, model: recommended.id } };
   };
   const ctx: ClaudeInteractionContext = {
-    broadcastEvent: broadcast,
+    broadcastEvent: publish,
     attachmentRoot: () => path.join(getRuntimePaths().userDataPath, 'attachments'),
     claudeSettingsPath: () => path.join(getRuntimePaths().homePath, '.claude', 'settings.json'),
     homePath: () => getRuntimePaths().homePath,
   };
   const state = createClaudeInteractionState();
   const unsubscribe = onSessionMessagesCommitted(broadcast);
+  const readInteractions = () => ({
+    ...getSessionInteractionSnapshots(state),
+    ...getCodexAppServerInteractionSnapshots(),
+    ...getGroupInteractionSnapshots(state),
+  });
+  const interactionSnapshot = (): InteractionSnapshot => ({
+    version: nextInteractionVersion(),
+    interactions: structuredClone(readInteractions()),
+  });
   const interactionEvents = () => {
     const events: ClaudeStreamEvent[] = [];
-    const interactions = {
-      ...getSessionInteractionSnapshots(state),
-      ...getCodexAppServerInteractionSnapshots(),
-      ...getGroupInteractionSnapshots(state),
-    };
+    const interactions = readInteractions();
 
     Object.entries(interactions).forEach(([sessionId, interaction]) => {
       interaction.runtime &&
@@ -200,8 +212,12 @@ export const createDeviceRuntime = (broadcast: (event: ClaudeStreamEvent) => voi
     }),
     getProjects: async () => {
       const bootstrap = await handleBootstrapSessions(state, { bootstrapProjects: true });
+      // Capture after all awaited catalog work, using the same clock as live events.
+      const snapshot = interactionSnapshot();
       return {
         ...bootstrap,
+        interactions: snapshot.interactions,
+        interactionVersion: snapshot.version,
         projects: summarizeProjectsForWebBootstrap(bootstrap.projects),
       };
     },
@@ -363,6 +379,7 @@ export const createDeviceRuntime = (broadcast: (event: ClaudeStreamEvent) => voi
   return {
     handlers: rpcHandlers,
     interactionEvents,
+    interactionSnapshot,
     hasActiveWork: () => hasActiveGroupTurns(state) || state.sessionRunQueue.size > 0 || interactionEvents().some((event) => event.type === 'runtime-state' && ['running', 'background', 'awaiting_reply'].includes(event.runtime.phase)),
     close: async () => {
       unsubscribe();

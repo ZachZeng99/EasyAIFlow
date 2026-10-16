@@ -1,5 +1,15 @@
 # Current Task: EAF 2.0 P0 — Committed message synchronization
 
+## Current continuation: Versioned interaction snapshots
+
+- [x] Stamp service interaction events and complete snapshots with one epoch/sequence.
+- [x] Reconcile snapshots with newer events in a bounded client buffer; ignore old service epochs.
+- [x] Replace asynchronous individual SSE bootstrap events with one versioned snapshot.
+- [x] Verify answered-question, permission queue, runtime, restart and buffer-overflow races through unit and transport tests.
+- [x] Finish build and commit interaction synchronization checkpoint.
+
+Notes: adding a snapshot event required explicitly excluding it from message-history reducers; fixed the initial type errors. The plan-approval reference path guessed under ExitPlanModeTool was absent; no approval-protocol changes were made in this slice. Also corrected summary-only session hydration so an imported history is not falsely marked loaded.
+
 ## Continuing P0: Independent service and durable operations
 
 Branch: `codex/eaf-v2`. Checkpoints: `c02d008` (design), `19392d5` (message synchronization).

@@ -507,6 +507,10 @@ Add a `detached` distinction for background records. A running detached process 
 - Backup and verification: C:/Users/L/AppData/Roaming/easyaiflow/recovery-backups/cpu-stuck-20260924-104939.
 # 2026-10-16 group continuation
 
+## Interaction snapshot race
+
+The frontend replaces the entire interaction map after awaited getProjects, while SSE separately fetches and replays individual interaction events. A newer answer/runtime event can therefore be undone by an older response. Add one service epoch/sequence for live interaction events and atomic full snapshots, plus bounded newer-event replay. Merely ignoring an old snapshot is insufficient during initial load because a newer partial runtime event does not contain an existing pending question.
+
 - Added per-room dispatch ordering, per-Codex-member execution queues, cancellation tokens, pre-stream message identity hooks and durable group context snapshots. Native Claude retains its own foreground/background queue semantics.
 - Fixed a separate Codex preparation race by reserving a session before asynchronous work; stops use the actual owning app-server client and handle late turn/start acknowledgement.
 - Room runtime snapshots now include pending dispatch counts; member-idle events cannot replace aggregate room activity, including during reconnect between queued turns.

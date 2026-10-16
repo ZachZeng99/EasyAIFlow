@@ -507,6 +507,14 @@ Started scoped runtime investigation. Read existing plans and preserved all earl
 Completed scoped recovery through supported API; no code changes or global server restart. Repeated live read has zero queued/streaming/running/background messages; original message IDs/text and native history preserved. Source/history merge chronology is an existing separate concern, not claimed fixed.
 # 2026-10-16 group lifecycle checkpoint
 
+## Following checkpoint: interaction snapshot ordering
+
+- Added service epoch/sequence to interaction events and full snapshots; catalog refresh, pipe reconnect and SSE bootstrap now share the same clock.
+- Frontend replays newer partial events after delayed snapshots, ignores retired epochs and stale snapshots, bounds the replay buffer, and retries recovery with backoff. Versioned clients no longer manufacture pending approvals from historical tool text.
+- Fixed summary-only session hydration so lazy native history loads remain enabled.
+- Ten synchronization cases, project/message snapshot tests, actual device-service and HTTP/SSE tests passed. Real Claude question reconnect plus delayed pre-answer snapshot passed at `.tmp-tests/live-interactions-AIUZcJ`.
+- Final type checks, frontend/Electron/server compilation and whitespace validation passed. Permission/plan one-shot responses, background task edge cases, remote enrollment and multi-agent communication remain outstanding.
+
 - Continuing on `codex/eaf-v2` after six existing commits; no changes to main or unrelated `.tmp-run/`.
 - Added explicit/default recipient behavior, fixed target selection at submit, removed guessing of reply placeholders, serialized Codex participant turns, and cancelled queued work on group stop.
 - Shared context is a bounded snapshot of completed public messages. Group pending counts survive snapshot reads and keep the UI active between member turns.

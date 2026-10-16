@@ -42,6 +42,23 @@ const control = new DeviceServiceClient({ dataDirectory, homeDirectory, autoStar
 try {
   let gateway = await start();
   const status = await control.request<{ instanceId: string }>('getDeviceStatus');
+  const eventsResponse = await fetch(`${gateway.origin}/api/events`, { signal: AbortSignal.timeout(10000) });
+  const reader = eventsResponse.body!.getReader();
+  let stream = '';
+  let snapshot: { type: string; snapshot: { version: { epoch: string; sequence: number } } } | undefined;
+  try {
+    while (!snapshot) {
+      const chunk = await reader.read();
+      assert.equal(chunk.done, false);
+      stream += new TextDecoder().decode(chunk.value);
+      snapshot = stream.split('\n').filter((line) => line.startsWith('data: ')).map((line) => {
+        try { return JSON.parse(line.slice(6)); } catch { return null; }
+      }).find((event) => event?.type === 'interaction-snapshot');
+    }
+    assert.equal(snapshot.snapshot.version.epoch, status.instanceId);
+    assert.ok(snapshot.snapshot.version.sequence > 0);
+  } finally { await reader.cancel(); }
+  console.log('PASS SSE reconnect delivers one versioned interaction snapshot');
   const body = { method: 'createProject', payload: { name: 'HTTP test', rootPath: workspace }, operationId: 'http-create' };
   const invoke = () => fetch(`${gateway.origin}/api/rpc`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const first = await (await invoke()).json();

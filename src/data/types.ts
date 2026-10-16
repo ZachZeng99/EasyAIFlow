@@ -1,5 +1,6 @@
 import type { AskUserQuestion } from './askUserQuestion.js';
 import type { PlanModeRequest } from './planMode.js';
+import type { SessionInteractionState } from './sessionInteraction.js';
 
 export type LinkedGroup = {
   id: string;
@@ -312,8 +313,22 @@ export type DeleteEntityResult = {
   warning?: string;
 };
 
-export type ClaudeStreamEvent =
+export type InteractionVersion = { epoch: string; sequence: number };
+export type InteractionSnapshot = {
+  version: InteractionVersion;
+  interactions: Record<string, SessionInteractionState>;
+};
+
+export type ClaudeStreamEvent = ClaudeStreamEventPayload & { interactionVersion?: InteractionVersion };
+
+type ClaudeStreamEventPayload =
   | SessionMessagesCommittedEvent
+  | {
+      type: 'interaction-snapshot';
+      snapshot: InteractionSnapshot;
+      /** Only ordered service connection snapshots can establish a new epoch. */
+      connection?: boolean;
+    }
   | {
       type: 'interaction-resolved';
       sessionId: string;

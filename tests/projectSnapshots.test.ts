@@ -94,6 +94,12 @@ const makeProjects = (...sessions: SessionRecord[]): ProjectRecord[] => [
   },
 ];
 
+run('summary-only session results remain eligible for lazy history loading', () => {
+  const summary = makeSession('imported', { messagesLoaded: false, messages: [] });
+  const next = hydrateSessionRecordInProjects(makeProjects(), summary);
+  assert.equal((next[0].dreams[0].sessions[0] as SessionRecord).messagesLoaded, false);
+});
+
 run('mergeProjectSnapshots keeps newer live session data when an older full snapshot arrives', () => {
   const currentProjects = makeProjects(
     makeSession('single', {

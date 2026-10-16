@@ -176,8 +176,8 @@ const server = createServer(async (request, response) => {
     response.on('close', () => { clearInterval(heartbeat); eventClients.remove(response); });
     response.on('error', () => { clearInterval(heartbeat); eventClients.remove(response); });
     try {
-      const events = await device.request<ClaudeStreamEvent[]>('getInteractionEvents');
-      for (const event of events) eventClients.writeEvent(response, event);
+      const snapshot = await device.request<import('../src/data/types.js').InteractionSnapshot>('getInteractionSnapshot');
+      eventClients.writeEvent(response, { type: 'interaction-snapshot', snapshot });
     } catch { response.end(); }
     return;
   }

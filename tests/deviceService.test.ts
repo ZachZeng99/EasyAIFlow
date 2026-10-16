@@ -4,7 +4,7 @@ import { createConnection } from 'node:net';
 import path from 'node:path';
 import { DeviceServiceClient } from '../backend/deviceServiceClient.ts';
 import { serviceAddress } from '../backend/deviceServiceProtocol.ts';
-import type { ProjectCreateResult, ProjectRecord, StreamworkCreateResult } from '../src/data/types.ts';
+import type { ClaudeStreamEvent, InteractionSnapshot, InteractionVersion, ProjectCreateResult, ProjectRecord, StreamworkCreateResult } from '../src/data/types.ts';
 
 await mkdir('.tmp-tests', { recursive: true });
 const directory = await mkdtemp(path.resolve('.tmp-tests', 'device-service-'));
@@ -18,6 +18,8 @@ const clients: DeviceServiceClient[] = [];
 const makeClient = () => { const client = new DeviceServiceClient(options); clients.push(client); return client; };
 const desktop = makeClient();
 const web = makeClient();
+const events: ClaudeStreamEvent[] = [];
+desktop.onEvent((event) => events.push(event));
 let shutdownClient: DeviceServiceClient | undefined;
 
 try {
@@ -27,6 +29,17 @@ try {
   assert.equal(desktopStatus.instanceId, webStatus.instanceId);
   assert.notEqual(desktopStatus.pid, process.pid);
   console.log('PASS concurrent desktop and web connections use one independent device service');
+
+  const stateSnapshot = await desktop.request<InteractionSnapshot>('getInteractionSnapshot');
+  assert.equal(stateSnapshot.version.epoch, desktopStatus.instanceId);
+  const startup = events.find((event) => event.type === 'interaction-snapshot');
+  assert.ok(startup?.type === 'interaction-snapshot' && startup.connection);
+  assert.equal(startup.snapshot.version.epoch, desktopStatus.instanceId);
+  assert.ok(stateSnapshot.version.sequence > startup.snapshot.version.sequence);
+  const catalogSnapshot = await desktop.request<{ interactionVersion: InteractionVersion }>('getProjects');
+  assert.equal(catalogSnapshot.interactionVersion.epoch, desktopStatus.instanceId);
+  assert.ok(catalogSnapshot.interactionVersion.sequence > stateSnapshot.version.sequence);
+  console.log('PASS connection, explicit and catalog snapshots share one service interaction clock');
 
   const payload = { name: 'Daemon test', rootPath: workspace };
   const [first, duplicate] = await Promise.all([

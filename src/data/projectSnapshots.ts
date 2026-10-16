@@ -249,7 +249,7 @@ export const hydrateSessionRecordInProjects = (
   const hydratedSession = {
     ...sessionRecord,
     messages: sanitizeConversationMessagesForDisplay(sessionRecord.messages ?? []),
-    messagesLoaded: true,
+    messagesLoaded: sessionRecord.messagesLoaded ?? true,
   };
   let found = false;
 

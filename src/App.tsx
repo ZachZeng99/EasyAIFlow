@@ -13,6 +13,7 @@ import {
 } from './data/optimisticSend';
 import { applyClaudeEventToProjects, coalesceClaudeDeltaEvents } from './data/liveSessionEvents';
 import { usesCommittedMessages } from './data/committedSessionMessages';
+import { InteractionReconciler } from './data/interactionSync';
 import { modelEffortOptions, type ProviderModelCatalog } from './data/providerModels';
 import {
   hydrateSessionRecordInProjects,
@@ -35,9 +36,6 @@ import {
   isActiveBackgroundTask,
   mergeGroupRoomAskUserQuestionState,
   mergeGroupRoomRuntimeState,
-  setSessionRuntimeState,
-  resolveAskUserQuestionState,
-  upsertSessionBackgroundTask,
   type SessionInteractionState,
 } from './data/sessionInteraction';
 import {
@@ -358,6 +356,8 @@ export default function App() {
   const [uiError, setUiError] = useState<string | null>(null);
   const [dialogState, setDialogState] = useState<DialogState | null>(null);
   const [sessionInteractions, setSessionInteractions] = useState<Map<string, SessionInteractionState>>(new Map());
+  const interactionReconciler = useRef(new InteractionReconciler());
+  const interactionRecovery = useRef<Promise<unknown> | null>(null);
   const [loadingOlderHistoryIds, setLoadingOlderHistoryIds] = useState<string[]>([]);
   const [sessionHistoryLoads, setSessionHistoryLoads] = useState<Record<string, SessionHistoryLoadState>>({});
 
@@ -394,12 +394,21 @@ export default function App() {
     [],
   );
   const refreshProjectsFromBridge = useCallback(async () => {
-    const bootstrap = await bridge.getProjects();
-    const nextProjects = bootstrap?.projects ?? [];
-    replaceProjects(nextProjects);
-    setSessionInteractions(new Map(Object.entries(bootstrap?.interactions ?? {})));
-    lastProjectRefreshAtRef.current = Date.now();
-    return nextProjects;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const bootstrap = await bridge.getProjects();
+      const nextProjects = bootstrap?.projects ?? [];
+      replaceProjects(nextProjects);
+      if (bootstrap.interactionVersion) {
+        const reconciled = interactionReconciler.current.snapshot({ version: bootstrap.interactionVersion, interactions: bootstrap.interactions ?? {} });
+        if (reconciled.apply) setSessionInteractions(reconciled.apply);
+        if (reconciled.needsSnapshot) continue;
+      } else if (!interactionReconciler.current.usesVersions) {
+        setSessionInteractions(new Map(Object.entries(bootstrap?.interactions ?? {})));
+      }
+      lastProjectRefreshAtRef.current = Date.now();
+      return nextProjects;
+    }
+    throw new Error('Interaction snapshot fell behind live events; recovery will retry.');
   }, [replaceProjects]);
   const hydrateSessionRecord = useCallback((sessionRecord: SessionRecord) => {
     loadedSessionRecencyRef.current = touchSessionHistory(
@@ -1183,6 +1192,9 @@ export default function App() {
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
+    let disposed = false;
+    let interactionRetryTimer: ReturnType<typeof setTimeout> | undefined;
+    let interactionRetryDelay = 500;
 
     const EVENT_THROTTLE_MS = 33; // ~30 fps
     let pendingDeltas: Array<Extract<ClaudeStreamEvent, { type: 'delta' }>> = [];
@@ -1197,69 +1209,36 @@ export default function App() {
       setProjects((current) => batch.reduce(applyClaudeEventToProjects, current));
     };
 
-    const updateEventInteraction = (event: { sessionId: string; sourceSessionId?: string }, updater: (state: SessionInteractionState) => SessionInteractionState) => {
-      updateSessionInteraction(event.sessionId, updater);
-      if (event.sourceSessionId && event.sourceSessionId !== event.sessionId) updateSessionInteraction(event.sourceSessionId, updater);
+    const recoverInteractions = () => {
+      if (disposed || interactionRecovery.current) return;
+      clearTimeout(interactionRetryTimer);
+      interactionRecovery.current = refreshProjectsFromBridge()
+        .then(() => { interactionRetryDelay = 500; })
+        .catch((error) => {
+          if (disposed) return;
+          setUiError(error instanceof Error ? error.message : 'Failed to recover interaction state.');
+          interactionRetryTimer = setTimeout(recoverInteractions, interactionRetryDelay);
+          interactionRetryDelay = Math.min(10000, interactionRetryDelay * 2);
+        })
+        .finally(() => { interactionRecovery.current = null; });
     };
     const processEvent = (event: ClaudeStreamEvent) => {
       if (event.type === 'interaction-sync') {
-        setSessionInteractions(new Map());
         void resyncActiveSessionFromBridge().catch((error) => {
           setUiError(error instanceof Error ? error.message : 'Failed to resync session events.');
+          recoverInteractions();
         });
         return;
       }
       if (event.type === 'session-sync') {
         return;
       }
-      if (event.type === 'interaction-resolved') {
-        setSessionInteractions((current) => new Map([...current].map(([id, interaction]) =>
-          [id, resolveAskUserQuestionState(interaction, event.requestId)],
-        )));
-        return;
-      }
-      if (event.type === 'permission-request') {
-        updateEventInteraction(event, (state) => ({
-          ...state,
-          permission: {
-            path: event.targetPath ?? event.command ?? event.description ?? event.toolName,
-            sensitive: event.sensitive,
-            requestId: event.requestId,
-            sessionId: event.sourceSessionId ?? event.sessionId,
-          },
-        }));
-      }
-      if (event.type === 'ask-user-question') {
-        updateEventInteraction(event, (state) => ({
-          ...state,
-          askUserQuestion: {
-            sessionId: event.sourceSessionId ?? event.sessionId,
-            toolUseId: event.toolUseId,
-            questions: event.questions,
-          },
-          isSubmittingAskUserQuestion: false,
-        }));
-      }
-      if (event.type === 'plan-mode-request') {
-        updateEventInteraction(event, (state) => ({
-          ...state,
-          planModeRequest: {
-            sessionId: event.sourceSessionId ?? event.sessionId,
-            request: event.request,
-          },
-        }));
-      }
-      if (event.type === 'background-task') {
-        updateEventInteraction(event, (state) =>
-          upsertSessionBackgroundTask(state, event.task),
-        );
-      }
-      if (event.type === 'runtime-state') {
-        updateEventInteraction(event, (state) =>
-          setSessionRuntimeState(state, event.runtime),
-        );
-      }
-      if (event.type === 'trace' && event.message.status === 'error') {
+      const reconciled = event.type === 'interaction-snapshot'
+        ? interactionReconciler.current.snapshot(event.snapshot, event.connection)
+        : interactionReconciler.current.event(event);
+      if (reconciled.apply) setSessionInteractions(reconciled.apply);
+      if (reconciled.needsSnapshot) recoverInteractions();
+      if (!interactionReconciler.current.usesVersions && event.type === 'trace' && event.message.status === 'error') {
         const request = parsePermissionRequest(event.message.content);
         if (request) {
           updateSessionInteraction(event.sessionId, (state) => ({
@@ -1318,13 +1297,15 @@ export default function App() {
     }
 
     return () => {
+      disposed = true;
+      clearTimeout(interactionRetryTimer);
       if (deltaTimer) {
         clearTimeout(deltaTimer);
       }
       flushDeltas();
       unsubscribe?.();
     };
-  }, [playReplyCompleteTone, resyncActiveSessionFromBridge]);
+  }, [playReplyCompleteTone, refreshProjectsFromBridge, resyncActiveSessionFromBridge]);
 
   // Depend on the session ID, not the changing high-water mark: continuous
   // output must not repeatedly cancel a snapshot that is already in flight.
@@ -1491,6 +1472,8 @@ export default function App() {
     }
 
     const existing = sessionInteractions.get(selectedSession.id);
+    // A historical plan trace is not proof of a currently pending CLI request.
+    if (interactionReconciler.current.usesVersions) return;
     if (existing?.planModeRequest) {
       return;
     }

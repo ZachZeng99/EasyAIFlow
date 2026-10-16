@@ -140,7 +140,7 @@ export class DeviceServiceClient {
               clearTimeout(timeout);
               this.socket = socket;
               resolve();
-            } else if (frame.type === 'event' && ready) {
+            } else if (frame.type === 'event' && ready && this.socket === socket) {
               this.emit(frame.event);
             } else if (frame.type === 'response' && ready) {
               const pending = this.pending.get(frame.id);

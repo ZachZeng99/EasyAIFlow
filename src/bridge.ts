@@ -68,6 +68,7 @@ export type EasyAIFlowBridge = {
   getFileDiff: (payload: { cwd: string; filePath: string }) => Promise<DiffPayload>;
   getPathForFile: (file: File) => string;
   getProjects: () => Promise<{
+    interactionVersion?: import('./data/types.js').InteractionVersion;
     projects: ProjectRecord[];
     interactions?: Record<string, SessionInteractionState>;
   }>;

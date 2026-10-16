@@ -33,7 +33,7 @@ export const startDeviceService = async (options: { dataDirectory: string; homeD
   };
   const runtime = createDeviceRuntime((event: ClaudeStreamEvent) => {
     for (const client of clients) send(client, { type: 'event', event });
-  });
+  }, instanceId);
   let stopping = false;
   let activeRequests = 0;
   let stopPromise: Promise<void> | null = null;
@@ -57,7 +57,7 @@ export const startDeviceService = async (options: { dataDirectory: string; homeD
         clients.add(socket);
         send(socket, { type: 'ready', version: DEVICE_SERVICE_PROTOCOL, instanceId });
         send(socket, { type: 'event', event: { type: 'interaction-sync' } });
-        for (const event of runtime.interactionEvents()) send(socket, { type: 'event', event });
+        send(socket, { type: 'event', event: { type: 'interaction-snapshot', snapshot: runtime.interactionSnapshot(), connection: true } });
         return;
       }
       if (frame.type !== 'request' || typeof frame.id !== 'string' || typeof frame.method !== 'string') return;
@@ -70,6 +70,8 @@ export const startDeviceService = async (options: { dataDirectory: string; homeD
           result = { instanceId, pid: process.pid, active: runtime.hasActiveWork(), protocol: DEVICE_SERVICE_PROTOCOL };
         } else if (method === 'getInteractionEvents') {
           result = runtime.interactionEvents();
+        } else if (method === 'getInteractionSnapshot') {
+          result = runtime.interactionSnapshot();
         } else if (method === 'getOperationStatus') {
           const id = (frame.payload as { operationId?: string } | undefined)?.operationId;
           if (!id) throw new Error('Operation ID is required.');
