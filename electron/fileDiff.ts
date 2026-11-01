@@ -4,7 +4,10 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import type { DiffPayload } from '../src/data/types.js';
 
-const execFileAsync = promisify(execFile);
+const execFilePromise = promisify(execFile);
+// The device service has no console; without windowsHide every git call flashes a window on Windows.
+const execFileAsync = (file: string, args: readonly string[], options: { cwd?: string } = {}) =>
+  execFilePromise(file, args, { ...options, windowsHide: true });
 const TRANSIENT_FILE_READ_ERROR_CODES = new Set(['EBUSY', 'EMFILE', 'ENOENT', 'EPERM']);
 
 type RepoRootResolver = (candidatePath: string) => Promise<string | null>;

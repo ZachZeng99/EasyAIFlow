@@ -482,8 +482,8 @@ export const hydratePlanModeRequest = async (request: PlanModeRequest): Promise<
 export const getGitSnapshot = async (cwd: string) => {
   try {
     const [{ stdout: statusStdout }, { stdout: rootStdout }] = await Promise.all([
-      execFileAsync('git', ['status', '--short', '--branch', '--untracked-files=all'], { cwd }),
-      execFileAsync('git', ['rev-parse', '--show-toplevel'], { cwd }),
+      execFileAsync('git', ['status', '--short', '--branch', '--untracked-files=all'], { cwd, windowsHide: true }),
+      execFileAsync('git', ['rev-parse', '--show-toplevel'], { cwd, windowsHide: true }),
     ]);
 
     const lines = statusStdout.split(/\r?\n/).filter(Boolean);
