@@ -718,6 +718,8 @@ await run('runCodexAppServerTurn names the native thread after the current sessi
       addNotificationHandler: (_handler: (n: { method: string; params: Record<string, unknown> }) => void) => undefined,
       removeNotificationHandler: (_handler: (n: { method: string; params: Record<string, unknown> }) => void) => undefined,
       addExitHandler: (_handler: (error: Error) => void) => undefined,
+      addServerRequestHandler: () => undefined,
+      removeServerRequestHandler: () => undefined,
       removeExitHandler: (_handler: (error: Error) => void) => undefined,
       close: async () => {
         closeCount += 1;
@@ -864,6 +866,8 @@ await run('runCodexAppServerTurn finalizes started command traces when the turn 
         notificationHandler = null;
       },
       addExitHandler: (_handler: (error: Error) => void) => undefined,
+      addServerRequestHandler: () => undefined,
+      removeServerRequestHandler: () => undefined,
       removeExitHandler: (_handler: (error: Error) => void) => undefined,
       close: async () => undefined,
     };
@@ -936,6 +940,8 @@ await run('runResidentCodexAppServerTurn keeps the Codex app-server session onli
       addNotificationHandler: (_handler: (n: { method: string; params: Record<string, unknown> }) => void) => undefined,
       removeNotificationHandler: (_handler: (n: { method: string; params: Record<string, unknown> }) => void) => undefined,
       addExitHandler: (_handler: (error: Error) => void) => undefined,
+      addServerRequestHandler: () => undefined,
+      removeServerRequestHandler: () => undefined,
       removeExitHandler: (_handler: (error: Error) => undefined) => undefined,
     };
     const originalAcquire = codexAppServer.appServerManager.acquire;
@@ -1023,6 +1029,8 @@ await run('disconnectCodexAppServerTurn releases the resident Codex app-server s
       addNotificationHandler: (_handler: (n: { method: string; params: Record<string, unknown> }) => void) => undefined,
       removeNotificationHandler: (_handler: (n: { method: string; params: Record<string, unknown> }) => void) => undefined,
       addExitHandler: (_handler: (error: Error) => void) => undefined,
+      addServerRequestHandler: () => undefined,
+      removeServerRequestHandler: () => undefined,
       removeExitHandler: (_handler: (error: Error) => void) => {
         removeExitHandlerCount += 1;
       },
@@ -1132,6 +1140,8 @@ await run('runCodexAppServerTurn uses a dedicated client for nonresident turns o
         notificationHandler = null;
       },
       addExitHandler: (_handler: (error: Error) => void) => undefined,
+      addServerRequestHandler: () => undefined,
+      removeServerRequestHandler: () => undefined,
       removeExitHandler: (_handler: (error: Error) => void) => undefined,
       close: async () => {
         closeCount += 1;

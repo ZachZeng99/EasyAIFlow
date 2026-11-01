@@ -144,6 +144,8 @@ for (const cancel of [false, true]) {
       removeNotificationHandler: (handler: (event: { method: string; params: Record<string, unknown> }) => void) => handlers.delete(handler),
       addExitHandler: () => undefined,
       removeExitHandler: () => undefined,
+      addServerRequestHandler: () => undefined,
+      removeServerRequestHandler: () => undefined,
       close: async () => { closed = true; },
       request: async (method: string) => ({ data: method === 'thread/items/list'
         ? childDone ? [{ turnId: 'child-turn', item: { type: 'agentMessage', id: 'child-reply', text: 'CHILD_NATIVE_OK' } }] : []

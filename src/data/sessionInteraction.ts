@@ -45,6 +45,21 @@ export const resolveAskUserQuestionState = (state: SessionInteractionState, tool
   };
 };
 
+/** Drops a permission request answered elsewhere (another client, or the runtime itself). */
+export const resolvePermissionRequestState = (state: SessionInteractionState, requestId: string): SessionInteractionState => {
+  const pendingPermissions = (state.pendingPermissions ?? []).filter((item) => item.requestId !== requestId);
+  const activeResolved = state.permission?.requestId === requestId;
+  if (!activeResolved && pendingPermissions.length === (state.pendingPermissions?.length ?? 0)) return state;
+  const nextPermission = activeResolved ? pendingPermissions[0] : state.permission;
+  const remaining = activeResolved ? pendingPermissions.slice(1) : pendingPermissions;
+  return {
+    ...state,
+    permission: nextPermission,
+    pendingPermissions: remaining.length > 0 ? remaining : undefined,
+    isGrantingPermission: activeResolved ? false : state.isGrantingPermission,
+  };
+};
+
 export const isActiveBackgroundTask = (task: BackgroundTaskRecord) =>
   !task.detached && task.isBackground !== false && (task.status === 'pending' || task.status === 'running');
 

@@ -53,7 +53,7 @@ v2 应把“跟进 CLI 变化”做成可重复流程，而不是一次性调研
 
 | # | 需求 | 依据 | EAF 现状 |
 |---|---|---|---|
-| P0-1 | 权限模式支持 `manual`（`default` 已改名），完整模式集：`acceptEdits / auto / bypassPermissions / manual / dontAsk / plan` | [CL] 2.1.200，[HELP] | [EAF] 写死 `bypassPermissions`（`electron/claudePrintArgs.ts:17`） |
+| P0-1 | 权限模式支持 `manual`（`default` 已改名），完整模式集：`acceptEdits / auto / bypassPermissions / manual / dontAsk / plan` | [CL] 2.1.200，[HELP] | [EAF] 已实现（2026-11-01）：会话级权限模式，默认仍为 `bypassPermissions`；`manual` 按 `default` 处理 |
 | P0-2 | 任务面板不能依赖 TodoWrite / TaskCreate：新模型（Opus 4.8、Sonnet 5、Fable 5 及以后）默认不提供，除非 `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`。需决定：设该环境变量，或改用 `task_*` / `background_tasks_changed` 事件驱动 | [CL] 2.1.233、2.1.268 | [EAF] `electron/claudeTaskListState.ts` 依赖 `toolUseResult.task` |
 | P0-3 | 已移除工具：TaskOutput（2.1.277，改为 Read 读输出文件）、TeamCreate/TeamDelete（2.1.178，改为 Agent 工具的 `name` 参数）；Task 工具的 `mode` 参数废弃（2.1.212） | [CL] | 需排查渲染逻辑 |
 | P0-4 | AskUserQuestion 默认不再自动继续，EAF 的等待/超时逻辑需对齐 | [CL] 2.1.200 | 需验证 |
@@ -67,7 +67,7 @@ v2 应把“跟进 CLI 变化”做成可重复流程，而不是一次性调研
 |---|---|---|---|
 | P1-1 | **实时 thinking 展示** | stream `thinking_delta`；[BIN] `thinking`、`thinking_tokens` | [EAF] 流式 thinking 被丢弃，仅导入时可见 |
 | P1-2 | **子 agent 嵌套视图**：启用 `--forward-subagent-text`，按 `parent_tool_use_id` 建树 | [CL] 2.1.211，2.1.219 起支持多层 | 依赖第 1 节的 agent 树模型 |
-| P1-3 | **权限模式切换 UI**：通过 `set_permission_mode` 控制请求实时切换；展示 `permission_denied`（含子 agent id）和 auto 模式拒绝原因 | 旧协议已有；[BIN] `permission_denied`；[CL] 2.1.193、2.1.284 “allow once” | |
+| P1-3 | **权限模式切换 UI**：通过 `set_permission_mode` 控制请求实时切换；展示 `permission_denied`（含子 agent id）和 auto 模式拒绝原因 | 旧协议已有；[BIN] `permission_denied`；[CL] 2.1.193、2.1.284 “allow once” | [EAF] 部分：模式切换与 `status` 回传已实现；`permission_denied` 展示未做 |
 | P1-4 | **模型选择改为运行时获取**：`list_models` 控制请求；处理 `model_fallback` / `model_refusal_fallback`；支持 `--fallback-model` 多模型 | [BIN]；[CL] 2.1.166 | [EAF] `electron/claudeModel.ts` 硬编码别名 |
 | P1-5 | **费用与用量**：读 `result.total_cost_usd`；`get_session_cost` / `get_usage` / `get_context_usage` | 旧协议有 `get_context_usage`；其余 [BIN] | [EAF] 有上下文条，无费用 |
 | P1-6 | **斜杠命令运行时同步**：用 `system/init.slash_commands` + `commands_changed`，取消“Reply with only OK”探测进程 | [BIN] | [EAF] `backend/claudeInteraction.ts:3800` 起的探测 |

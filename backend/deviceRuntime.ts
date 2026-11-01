@@ -25,6 +25,7 @@ import {
   handleDisconnectSession,
   handleSendMessage,
   handleSwitchEffort,
+  handleSetSessionPermissionMode,
   handleSwitchModel,
   handleBtwMessage,
   handleBtwDiscard,
@@ -397,6 +398,8 @@ export const createDeviceRuntime = (broadcast: (event: ClaudeStreamEvent) => voi
       session?: SessionSummary;
       effort: string;
     }) => handleSwitchEffort(ctx, state, payload),
+    setSessionPermissionMode: async (payload: { sessionId: string; mode: string }) =>
+      handleSetSessionPermissionMode(ctx, state, payload),
     stopSessionRun: async (payload: { sessionId: string }) =>
       handleStopSession(ctx, state, payload),
     disconnectSession: async (payload: { sessionId: string }) =>

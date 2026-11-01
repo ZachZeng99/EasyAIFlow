@@ -286,3 +286,38 @@ run('ChatComposer shows mention quick options in group chats when the user types
   assert.match(html, /Claude/);
   assert.doesNotMatch(html, /<button[^>]*><strong>@codex/);
 });
+
+run('ChatComposer shows the stored permission mode with provider-specific choices', () => {
+  const html = renderToStaticMarkup(
+    createElement(ChatComposer, {
+      provider: 'codex',
+      draft: '',
+      tokenUsage,
+      sessionModel: 'gpt-6.1-sol',
+      contextReferences: [],
+      slashCommands: [],
+      attachments: [],
+      isSending: false,
+      isResponding: false,
+      model: 'gpt-6.1-sol',
+      effort: 'default',
+      permissionMode: 'read-only',
+      onPermissionModeChange: () => undefined,
+      onDraftChange: () => undefined,
+      onInsertDroppedPaths: () => undefined,
+      onAttachFiles: () => undefined,
+      onRemoveAttachment: () => undefined,
+      onModelChange: () => undefined,
+      onEffortChange: () => undefined,
+      onUpdateContextReferenceMode: () => undefined,
+      onRemoveContextReference: () => undefined,
+      onSend: () => undefined,
+      onStop: () => undefined,
+    }),
+  );
+
+  assert.match(html, /aria-label="权限模式"/);
+  assert.match(html, /<option value="read-only" selected="">只读<\/option>/);
+  assert.match(html, /完全访问/);
+  assert.doesNotMatch(html, /自动接受编辑/);
+});

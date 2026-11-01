@@ -4,6 +4,8 @@ type ClaudePrintArgOptions = {
   sessionArgs?: string[];
   tools?: string;
   permissionMode?: 'acceptEdits' | 'bypassPermissions' | 'default' | 'dontAsk' | 'plan' | 'auto';
+  /** Lets a resident session switch to bypassPermissions later via set_permission_mode. */
+  allowBypassSwitch?: boolean;
   noSessionPersistence?: boolean;
   forwardSubagentText?: boolean;
   mcpConfigPath?: string;
@@ -17,6 +19,7 @@ export const buildClaudePrintArgs = ({
   sessionArgs = [],
   tools,
   permissionMode = 'bypassPermissions',
+  allowBypassSwitch = false,
   noSessionPersistence = false,
   forwardSubagentText = false,
   mcpConfigPath,
@@ -53,6 +56,10 @@ export const buildClaudePrintArgs = ({
 
   if (tools !== undefined) {
     args.push('--tools', tools);
+  }
+
+  if (allowBypassSwitch && permissionMode !== 'bypassPermissions') {
+    args.push('--allow-dangerously-skip-permissions');
   }
 
   if (noSessionPersistence) {

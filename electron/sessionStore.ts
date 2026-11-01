@@ -3814,6 +3814,7 @@ const applyNativeCatalogEntries = (
       sessionKind: existing?.sessionKind ?? 'standard',
       hidden: existing?.hidden ?? false,
       instructionPrompt: existing?.instructionPrompt,
+      permissionMode: existing?.permissionMode,
       group: existing?.group,
       groups: existing?.groups ?? [],
       contextReferences: normalizeContextReferences(existing?.contextReferences),
@@ -5903,6 +5904,27 @@ export const updateSessionContextReferences = async (
   return {
     projects: cloneVisibleProjects(state.projects),
     session: updatedSession,
+  };
+};
+
+export const setSessionPermissionMode = async (
+  sessionId: string,
+  permissionMode: string,
+): Promise<{ projects: ProjectRecord[]; session: SessionRecord } | null> => {
+  const state = await loadState();
+  const session = findSessionInProjects(state.projects, sessionId);
+  if (!session) {
+    throw new Error('Session not found.');
+  }
+  if (session.permissionMode === permissionMode) {
+    return null;
+  }
+
+  session.permissionMode = permissionMode;
+  await saveState(state, { immediateIndex: true });
+  return {
+    projects: cloneVisibleProjects(state.projects),
+    session: JSON.parse(JSON.stringify(session)) as SessionRecord,
   };
 };
 

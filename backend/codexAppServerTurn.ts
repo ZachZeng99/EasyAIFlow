@@ -25,6 +25,8 @@ import { codexRuntimeResolver } from './codexRuntime.js';
 import { NativeAgentProjection } from './nativeAgentProjection.js';
 import { persistNativeAgents, readCodexAgentOutput, interruptCodexNativeAgents } from './nativeAgents.js';
 import type { SessionInteractionState } from '../src/data/sessionInteraction.js';
+import { attachCodexApprovalHandler, getCodexApprovalSnapshots, hasPendingCodexApproval } from './codexApprovals.js';
+import { codexPermissionPolicy, resolveCodexPermissionMode } from '../src/data/permissionModes.js';
 import type {
   ConversationMessage,
   ContextReference,
@@ -262,6 +264,7 @@ const countActiveAppServerTurnsForCwd = (cwd: string) => {
 
 const getResidentRuntimePhase = (sessionId: string): SessionRuntimePhase => {
   const turn = activeAppServerTurns.get(sessionId);
+  if (turn && hasPendingCodexApproval(sessionId)) return 'awaiting_reply';
   return turn ? turn.foregroundCompleted && turn.nativeAgents?.activeNativeIds(turn.assistantMessageId).length ? 'background' : 'running' : 'idle';
 };
 
@@ -795,6 +798,7 @@ const executeCodexAppServerTurn = async (
   });
   const requestedModel = options?.model?.trim() || prepared.session.model;
   const requestedEffort = resolveCodexReasoningEffort(options?.effort);
+  const policy = codexPermissionPolicy(resolveCodexPermissionMode(prepared.session.permissionMode));
 
   const activeTurn: ActiveAppServerTurn = {
     sessionId,
@@ -827,6 +831,7 @@ const executeCodexAppServerTurn = async (
   let notificationHandler: ((n: { method: string; params: Record<string, unknown> }) => void) | null =
     null;
   let clientExitHandler: ((error: Error) => void) | null = null;
+  let detachApprovals: (() => void) | null = null;
 
   try {
     options?.signal?.throwIfAborted();
@@ -847,6 +852,8 @@ const executeCodexAppServerTurn = async (
           threadId,
           cwd: prepared.session.workspace,
           model: requestedModel ?? null,
+          approvalPolicy: policy.approvalPolicy,
+          sandbox: policy.sandbox,
         });
         threadId = resumed.thread.id;
       } catch {
@@ -855,6 +862,8 @@ const executeCodexAppServerTurn = async (
           config: options?.config,
           cwd: prepared.session.workspace,
           model: requestedModel ?? null,
+          approvalPolicy: policy.approvalPolicy,
+          sandbox: policy.sandbox,
           ephemeral: false,
         });
         threadId = started.thread.id;
@@ -864,6 +873,8 @@ const executeCodexAppServerTurn = async (
         config: options?.config,
         cwd: prepared.session.workspace,
         model: requestedModel ?? null,
+        approvalPolicy: policy.approvalPolicy,
+        sandbox: policy.sandbox,
         ephemeral: false,
       });
       threadId = started.thread.id;
@@ -927,6 +938,8 @@ const executeCodexAppServerTurn = async (
       clearCompletionTimer(state);
       completionResolve(state);
     };
+    detachApprovals = attachCodexApprovalHandler(ctx, client!, sessionId, () => activeTurn.threadId,
+      (itemId) => state.traceItemSnapshots.get(itemId));
     client!.addNotificationHandler(notificationHandler);
     clientExitHandler = (error: Error) => {
       if (activeTurn.stopped || state.completed && !state.nativeAgents?.activeNativeIds(prepared.assistantMessageId).length) {
@@ -949,6 +962,8 @@ const executeCodexAppServerTurn = async (
         model: requestedModel ?? null,
         effort: requestedEffort,
         outputSchema: options?.outputSchema ?? null,
+        approvalPolicy: policy.approvalPolicy,
+        sandboxPolicy: policy.sandboxPolicy,
       });
 
       if (!state.turnId && turnResponse.turn?.id) {
@@ -999,6 +1014,8 @@ const executeCodexAppServerTurn = async (
     clearCompletionTimer(state);
     client.removeNotificationHandler(notificationHandler);
     notificationHandler = null;
+    detachApprovals?.();
+    detachApprovals = null;
     if (clientExitHandler) {
       client.removeExitHandler(clientExitHandler);
       clientExitHandler = null;
@@ -1157,6 +1174,7 @@ const executeCodexAppServerTurn = async (
     };
   } finally {
     options?.signal?.removeEventListener('abort', onAbort);
+    detachApprovals?.();
     if (client && notificationHandler) client.removeNotificationHandler(notificationHandler);
     if (client && clientExitHandler) client.removeExitHandler(clientExitHandler);
     if (activeTurn.stopped) await cleanupClient();
@@ -1260,8 +1278,12 @@ export const runResidentCodexAppServerTurn = async (
 
 export const getCodexAppServerInteractionSnapshots = (): Record<string, SessionInteractionState> => {
   const snapshots: Record<string, SessionInteractionState> = {};
+  getCodexApprovalSnapshots().forEach(([permission, ...pendingPermissions], sessionId) => {
+    snapshots[sessionId] = { permission, ...(pendingPermissions.length ? { pendingPermissions } : {}) };
+  });
   residentAppServerSessions.forEach((resident, sessionId) => {
     snapshots[sessionId] = {
+      ...snapshots[sessionId],
       runtime: {
         processActive: true,
         phase: getResidentRuntimePhase(sessionId),

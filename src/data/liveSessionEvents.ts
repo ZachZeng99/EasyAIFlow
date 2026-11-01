@@ -131,6 +131,11 @@ export const applyClaudeEventToProjects = (projects: ProjectRecord[], event: Cla
     ? invalidateCommittedSessionMessages(projects)
     : event.type === 'session-sync'
       ? hydrateSessionRecordInProjects(projects, event.session)
+      : event.type === 'session-settings'
+      ? updateSessionInProjects(projects, event.sessionId, (session) =>
+          event.permissionMode === undefined || session.permissionMode === event.permissionMode
+            ? session
+            : { ...session, permissionMode: event.permissionMode })
       : updateSessionInProjects(projects, event.sessionId, (session) => {
           if (event.type === 'messages-committed') {
             return applyCommittedSessionMessages(session, event);

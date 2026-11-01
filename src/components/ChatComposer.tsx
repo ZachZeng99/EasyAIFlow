@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { normalizeSessionProvider } from '../data/sessionProvider';
 import type { ContextReference, ContextReferenceMode, SessionProvider, TokenUsage } from '../data/types';
 import { getKnownModelContextWindow } from '../data/modelSelection';
+import { getPermissionModeOptions, resolveSessionPermissionMode } from '../data/permissionModes';
 import { describeModelCatalog, findProviderModel, modelEffortOptions, modelOptionsWithCurrent, type ProviderModelCatalog } from '../data/providerModels';
 
 export type ComposerAttachment = {
@@ -37,6 +38,10 @@ type ChatComposerProps = {
   model: string;
   effort: string;
   appliedEffort?: string;
+  /** Stored session mode; omitted hides the control. */
+  permissionMode?: string;
+  permissionModeChanging?: boolean;
+  onPermissionModeChange?: (value: string) => void;
   notice?: string | null;
   isGroupSession?: boolean;
   supportsPathDrop?: boolean;
@@ -103,12 +108,17 @@ export function ChatComposer({
   onRemoveAttachment,
   onModelChange,
   onEffortChange,
+  permissionMode,
+  permissionModeChanging = false,
+  onPermissionModeChange,
   onUpdateContextReferenceMode,
   onRemoveContextReference,
   onSend,
   onStop,
 }: ChatComposerProps) {
   const normalizedProvider = normalizeSessionProvider(provider);
+  const permissionOptions = getPermissionModeOptions(normalizedProvider);
+  const activePermissionMode = resolveSessionPermissionMode(normalizedProvider, permissionMode);
   const modelCapabilities = modelCatalog?.provider === normalizedProvider
     ? findProviderModel(modelCatalog.models, model)
     : undefined;
@@ -287,6 +297,19 @@ export function ChatComposer({
               }
             >
               {effortOptions.map((value) => <option key={value} value={value}>{value === 'default' ? '模型默认' : value}</option>)}
+            </select>
+          </label>
+        ) : null}
+        {!isGroupSession && onPermissionModeChange ? (
+          <label className="composer-control" title={permissionOptions.find((option) => option.value === activePermissionMode)?.description}>
+            <span>权限</span>
+            <select
+              aria-label="权限模式"
+              value={activePermissionMode}
+              disabled={permissionModeChanging}
+              onChange={(event) => onPermissionModeChange(event.target.value)}
+            >
+              {permissionOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
             </select>
           </label>
         ) : null}

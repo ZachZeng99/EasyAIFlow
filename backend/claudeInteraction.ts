@@ -53,11 +53,13 @@ import {
   getProjects,
   getSessionRecordForBootstrap,
   recoverSessionFromNativeHistory,
+  setSessionPermissionMode,
   setSessionRuntime,
   updateAssistantMessage,
   updateSessionContextReferences,
   upsertSessionMessage,
 } from '../electron/sessionStore.js';
+import { resolveClaudePermissionMode, type ClaudePermissionMode } from '../src/data/permissionModes.js';
 import { getClaudeResultError, getClaudeSyntheticApiError } from '../electron/claudeErrors.js';
 import { applyParsedSessionMetadata } from '../electron/claudeSessionId.js';
 import {
@@ -931,6 +933,92 @@ const requestResidentModelSwitch = async (
     `${buildClaudeControlRequestLine('set_model', { model: nextModel }, { requestId })}\n`,
   );
   await completion;
+};
+
+const requestResidentPermissionMode = async (
+  sessionId: string,
+  resident: ResidentClaudeSession,
+  mode: ClaudePermissionMode,
+) => {
+  if (!isWritableStdin(resident.child) || !resident.child.stdin) {
+    throw new Error('Claude stdin is not writable.');
+  }
+
+  const requestId = randomUUID();
+  const completion = new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      resident.pendingControlRequests.delete(requestId);
+      reject(new Error(`Timed out waiting for Claude to switch permission mode for session ${sessionId}.`));
+    }, 8_000);
+
+    resident.pendingControlRequests.set(requestId, {
+      subtype: 'set_permission_mode',
+      resolve: () => {
+        clearTimeout(timeout);
+        resolve();
+      },
+      reject: (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      },
+    });
+  });
+
+  resident.child.stdin.write(
+    `${buildClaudeControlRequestLine('set_permission_mode', { mode }, { requestId })}\n`,
+  );
+  await completion;
+  resident.configuredPermissionMode = mode;
+};
+
+/** Applies a mode reported by the CLI (init/status), e.g. after ExitPlanMode approval. */
+const observeResidentPermissionMode = async (
+  ctx: ClaudeInteractionContext,
+  session: Pick<SessionSummary, 'id' | 'sessionKind' | 'hidden'>,
+  resident: ResidentClaudeSession,
+  reported: unknown,
+) => {
+  if (typeof reported !== 'string' || !reported.trim()) {
+    return;
+  }
+  const mode = resolveClaudePermissionMode(reported.trim());
+  resident.configuredPermissionMode = mode;
+  if (session.sessionKind === 'group' || session.hidden) {
+    return;
+  }
+  const updated = await setSessionPermissionMode(session.id, mode);
+  if (updated) {
+    ctx.broadcastEvent({ type: 'session-settings', sessionId: session.id, permissionMode: mode });
+  }
+};
+
+export const switchClaudeSessionPermissionMode = async (
+  ctx: ClaudeInteractionContext,
+  state: ClaudeInteractionState,
+  payload: { sessionId: string; mode: ClaudePermissionMode },
+) => {
+  const updated = await setSessionPermissionMode(payload.sessionId, payload.mode);
+  const resident = getResidentSession(state, payload.sessionId);
+  if (resident && resident.configuredPermissionMode !== payload.mode) {
+    try {
+      await requestResidentPermissionMode(payload.sessionId, resident, payload.mode);
+    } catch (error) {
+      // An idle process restarts with the stored mode on the next turn.
+      if (!canRestartResidentSession(resident)) {
+        throw error;
+      }
+      if (isLiveChildProcess(resident.child)) {
+        resident.child.kill();
+      }
+      removeResidentSession(state, payload.sessionId);
+      removeActiveClaudeRun(state.activeRuns, resident.runId);
+      emitRuntimeState(ctx, payload.sessionId, 'inactive', false);
+    }
+  }
+  if (updated) {
+    ctx.broadcastEvent({ type: 'session-settings', sessionId: payload.sessionId, permissionMode: payload.mode });
+  }
+  return { projects: updated?.projects ?? await getProjects() };
 };
 
 const registerBackgroundTaskOwner = (
@@ -2534,21 +2622,28 @@ const ensureResidentClaudeSession = async (
   const resolvedModel = await resolveClaudeRunModel(ctx, session.model, options?.model);
   const persistedModel = await resolveRequestedClaudeModel(ctx, session.model);
   const existing = getResidentSession(state, session.id);
+  const permissionMode = resolveClaudePermissionMode(session.permissionMode);
   const effortChanged = existing?.configuredEffort !== options?.effort || existing?.configuredMcpPath !== options?.mcpConfigPath;
   const modelChanged = existing?.configuredModel !== resolvedModel;
+  const permissionModeChanged = Boolean(existing) && existing?.configuredPermissionMode !== permissionMode;
   if (existing) {
     if (isWritableStdin(existing.child)) {
-      if (!modelChanged && !effortChanged) {
+      if (!modelChanged && !effortChanged && !permissionModeChanged) {
         return existing;
       }
 
-      if (modelChanged && !effortChanged) {
+      if (!effortChanged) {
         try {
-          await requestResidentModelSwitch(session.id, existing, resolvedModel);
-          existing.configuredModel = resolvedModel;
-          await setSessionRuntime(session.id, {
-            model: resolvedModel,
-          });
+          if (modelChanged) {
+            await requestResidentModelSwitch(session.id, existing, resolvedModel);
+            existing.configuredModel = resolvedModel;
+            await setSessionRuntime(session.id, {
+              model: resolvedModel,
+            });
+          }
+          if (permissionModeChanged) {
+            await requestResidentPermissionMode(session.id, existing, permissionMode);
+          }
           return existing;
         } catch (error) {
           if (!canRestartResidentSession(existing)) {
@@ -2592,6 +2687,8 @@ const ensureResidentClaudeSession = async (
   const args = buildClaudePrintArgs({
     model: resolvedModel,
     effort: options?.effort,
+    permissionMode,
+    allowBypassSwitch: true,
     mcpConfigPath: options?.mcpConfigPath,
     forwardSubagentText: await supportsClaudeSubagentForwarding(),
     sessionArgs: buildClaudeSessionArgs(session.claudeSessionId, session.title, forkSession, session.id),
@@ -2624,6 +2721,7 @@ const ensureResidentClaudeSession = async (
     ...activeRun,
     configuredModel: resolvedModel,
     configuredEffort: options?.effort,
+    configuredPermissionMode: permissionMode,
     stderrBuffer: '',
     queuedTurns: new Map(),
     backgroundTaskOwners: new Map(),
@@ -2657,6 +2755,9 @@ const ensureResidentClaudeSession = async (
           currentResident.configuredModel = parsed.model.trim();
         }
         resolveResidentReady();
+      }
+      if (parsed.type === 'system' && (parsed.subtype === 'init' || parsed.subtype === 'status') && 'permissionMode' in parsed) {
+        await observeResidentPermissionMode(ctx, session, currentResident, parsed.permissionMode);
       }
 
       if (parsed.type === 'control_response') {

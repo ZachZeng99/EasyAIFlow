@@ -167,6 +167,8 @@ export type SessionSummary = {
   updatedAt?: number;
   pinned?: boolean;
   provider?: SessionProvider;
+  /** Provider-specific mode from permissionModes.ts; unset keeps the unattended default. */
+  permissionMode?: string;
   messagesLoaded?: boolean;
   model: string;
   workspace: string;
@@ -366,7 +368,7 @@ type ClaudeStreamEventPayload =
       type: 'interaction-resolved';
       sessionId: string;
       sourceSessionId?: string;
-      interaction: 'ask';
+      interaction: 'ask' | 'permission';
       requestId: string;
     }
   | {
@@ -376,6 +378,13 @@ type ClaudeStreamEventPayload =
       type: 'session-sync';
       sessionId: string;
       session: SessionRecord;
+    }
+  | {
+      /** Lightweight session field changes that do not touch message history. */
+      type: 'session-settings';
+      sessionId: string;
+      sourceSessionId?: string;
+      permissionMode?: string;
     }
   | {
       type: 'status';

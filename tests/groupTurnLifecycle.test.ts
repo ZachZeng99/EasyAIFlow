@@ -46,6 +46,8 @@ class FakeClient {
   removeNotificationHandler = (fn: (event: Notification) => void) => { this.handlers.delete(fn); };
   addExitHandler = () => undefined;
   removeExitHandler = () => undefined;
+  addServerRequestHandler = () => undefined;
+  removeServerRequestHandler = () => undefined;
   close = async () => { this.closed++; };
   turnStart = async ({ prompt }: { prompt: string }) => {
     this.prompt = prompt;

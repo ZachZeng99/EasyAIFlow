@@ -46,6 +46,7 @@ export type ClaudeSdkControlRequestSubtype =
   | 'interrupt'
   | 'end_session'
   | 'set_model'
+  | 'set_permission_mode'
   | 'set_max_thinking_tokens';
 
 const asObject = (value: unknown): Record<string, unknown> | null =>

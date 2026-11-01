@@ -352,6 +352,7 @@ export default function App({ viewState }: { viewState?: WorkspaceViewState }) {
   const [model, setModel] = useState('opus[1m]');
   const [modelSelectionSource, setModelSelectionSource] = useState<ModelSelectionSource>('implicit');
   const [modelCatalog, setModelCatalog] = useState<ProviderModelCatalog | null>(null);
+  const [permissionModeChangingSessionId, setPermissionModeChangingSessionId] = useState<string | null>(null);
   const [modelsRefreshing, setModelsRefreshing] = useState(false);
   const refreshModelsRef = useRef<() => void>(() => undefined);
   const modelSelectionSessionRef = useRef('');
@@ -2234,6 +2235,19 @@ export default function App({ viewState }: { viewState?: WorkspaceViewState }) {
     }
   };
 
+  const handleSetPermissionMode = async (sessionId: string, mode: string) => {
+    setPermissionModeChangingSessionId(sessionId);
+    try {
+      const result = await bridge.setSessionPermissionMode({ sessionId, mode });
+      replaceProjects(result.projects);
+      setUiError(null);
+    } catch (error) {
+      setUiError(error instanceof Error ? error.message : 'Failed to change permission mode.');
+    } finally {
+      setPermissionModeChangingSessionId((current) => (current === sessionId ? null : current));
+    }
+  };
+
   const handleCopySessionReference = async (sessionId: string) => {
     try {
       await bridge.writeClipboardText(`[[session:${sessionId}]]`);
@@ -2588,6 +2602,9 @@ export default function App({ viewState }: { viewState?: WorkspaceViewState }) {
                     `Thinking changed to ${value}. It takes effect on the next turn.`,
                   );
                 }}
+                permissionMode={selectedSession.permissionMode}
+                permissionModeChanging={permissionModeChangingSessionId === selectedSession.id}
+                onPermissionModeChange={(value) => void handleSetPermissionMode(selectedSession.id, value)}
                 onUpdateContextReferenceMode={(referenceId, mode) => {
                   handleUpdateContextReferences(
                     displayContextReferences.map((reference) =>

@@ -191,6 +191,9 @@ export type EasyAIFlowBridge = {
   }) => Promise<{
     projects: ProjectRecord[];
   }>;
+  setSessionPermissionMode: (payload: { sessionId: string; mode: string }) => Promise<{
+    projects: ProjectRecord[];
+  }>;
   stopSessionRun: (payload: { sessionId: string }) => Promise<SessionStopResult>;
   disconnectSession: (payload: { sessionId: string }) => Promise<SessionStopResult>;
   onClaudeEvent: (listener: (event: ClaudeStreamEvent) => void) => () => void;
@@ -297,6 +300,7 @@ const createRpcBridge = (callWebRpc: Rpc, subscribe: EasyAIFlowBridge['onClaudeE
   sendMessage: (payload) => callWebRpc('sendMessage', payload),
   switchModel: (payload) => callWebRpc('switchModel', payload),
   switchEffort: (payload) => callWebRpc('switchEffort', payload),
+  setSessionPermissionMode: (payload) => callWebRpc('setSessionPermissionMode', payload),
   stopSessionRun: (payload) => callWebRpc('stopSessionRun', payload),
   disconnectSession: (payload) => callWebRpc('disconnectSession', payload),
   onClaudeEvent: subscribe,

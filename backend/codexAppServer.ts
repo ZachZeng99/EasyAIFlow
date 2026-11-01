@@ -16,6 +16,9 @@ type JsonRpcNotification = {
 };
 
 type NotificationHandler = (notification: JsonRpcNotification) => void;
+export type CodexServerRequest = { id: number | string; method: string; params: Record<string, unknown> };
+/** Returns true when the handler owns the request and will answer it via respond(). */
+type ServerRequestHandler = (request: CodexServerRequest) => boolean;
 type ExitHandler = (error: Error) => void;
 
 const CLIENT_INFO = { title: 'EasyAIFlow', name: 'EasyAIFlow', version: '2.0.0-alpha.1' };
@@ -34,6 +37,7 @@ export class CodexAppServerClient {
   private nextId = 1;
   private pending = new Map<number, PendingRequest>();
   private notificationHandlers = new Set<NotificationHandler>();
+  private serverRequestHandlers = new Set<ServerRequestHandler>();
   private exitHandlers = new Set<ExitHandler>();
   private exitError: Error | null = null;
   stderr = '';
@@ -123,8 +127,16 @@ export class CodexAppServerClient {
       return;
     }
 
-    // Server-initiated request (we reject unsupported server requests).
-    if (typeof parsed.id === 'number' && typeof parsed.method === 'string') {
+    // Server-initiated request: offer it to handlers, otherwise reject it.
+    if ((typeof parsed.id === 'number' || typeof parsed.id === 'string') && typeof parsed.method === 'string') {
+      const request: CodexServerRequest = {
+        id: parsed.id,
+        method: parsed.method,
+        params: (parsed.params as Record<string, unknown>) ?? {},
+      };
+      for (const handler of this.serverRequestHandlers) {
+        if (handler(request)) return;
+      }
       this.send({
         id: parsed.id,
         error: { code: -32601, message: `Unsupported server request: ${parsed.method}` },
@@ -167,6 +179,18 @@ export class CodexAppServerClient {
 
   notify(method: string, params: Record<string, unknown> = {}) {
     this.send({ method, params });
+  }
+
+  respond(id: number | string, result: Record<string, unknown>) {
+    return this.send({ id, result });
+  }
+
+  addServerRequestHandler(handler: ServerRequestHandler) {
+    this.serverRequestHandlers.add(handler);
+  }
+
+  removeServerRequestHandler(handler: ServerRequestHandler) {
+    this.serverRequestHandlers.delete(handler);
   }
 
   addNotificationHandler(handler: NotificationHandler) {
@@ -230,6 +254,7 @@ export class CodexAppServerClient {
     threadId: string;
     cwd: string;
     model: string | null;
+    approvalPolicy?: string;
     sandbox?: string;
   }) {
     return this.request<{ thread: { id: string } }>('thread/resume', {
@@ -237,7 +262,7 @@ export class CodexAppServerClient {
       threadId: params.threadId,
       cwd: params.cwd,
       model: params.model,
-      approvalPolicy: 'never',
+      approvalPolicy: params.approvalPolicy ?? 'never',
       sandbox: params.sandbox ?? 'danger-full-access',
     });
   }
@@ -248,6 +273,8 @@ export class CodexAppServerClient {
     model?: string | null;
     effort?: string | null;
     outputSchema?: object | null;
+    approvalPolicy?: string;
+    sandboxPolicy?: Record<string, unknown>;
   }) {
     return this.request<{ turn: { id: string; status: string } }>('turn/start', {
       threadId: params.threadId,
@@ -255,6 +282,8 @@ export class CodexAppServerClient {
       model: params.model ?? null,
       effort: params.effort ?? null,
       outputSchema: params.outputSchema ?? null,
+      ...(params.approvalPolicy ? { approvalPolicy: params.approvalPolicy } : {}),
+      ...(params.sandboxPolicy ? { sandboxPolicy: params.sandboxPolicy } : {}),
     });
   }
 

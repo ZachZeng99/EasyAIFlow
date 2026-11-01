@@ -2,6 +2,7 @@ import type { ClaudeStreamEvent, InteractionSnapshot, InteractionVersion } from 
 import {
   enqueueSessionPermissionRequest,
   resolveAskUserQuestionState,
+  resolvePermissionRequestState,
   setSessionRuntimeState,
   upsertSessionBackgroundTask,
   type SessionInteractionState,
@@ -18,7 +19,9 @@ export const isInteractionEvent = (event: ClaudeStreamEvent): event is Interacti
 
 export const applyInteractionEvent = (current: InteractionMap, event: InteractionEvent): InteractionMap => {
   if (event.type === 'interaction-resolved') {
-    return new Map([...current].map(([id, state]) => [id, resolveAskUserQuestionState(state, event.requestId)]));
+    return new Map([...current].map(([id, state]) => [id, event.interaction === 'permission'
+      ? resolvePermissionRequestState(state, event.requestId)
+      : resolveAskUserQuestionState(state, event.requestId)]));
   }
   const next = new Map(current);
   const ids = new Set([event.sessionId, event.sourceSessionId ?? event.sessionId]);

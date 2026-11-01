@@ -113,7 +113,7 @@ export type BackgroundTaskOwner = {
 };
 
 export type ResidentPendingControlRequest = {
-  subtype: 'set_model';
+  subtype: 'set_model' | 'set_permission_mode';
   nextModel?: string;
   resolve: () => void;
   reject: (error: unknown) => void;
@@ -123,6 +123,7 @@ export type ResidentClaudeSession = ActiveClaudeRun & {
   configuredMcpPath?: string;
   configuredModel?: string;
   configuredEffort?: ClaudePrintOptions['effort'];
+  configuredPermissionMode?: string;
   stdoutProcessor: ClaudeLineProcessor;
   stderrBuffer: string;
   currentTurn?: ActiveClaudeTurn;

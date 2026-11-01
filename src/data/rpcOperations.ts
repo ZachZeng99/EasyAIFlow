@@ -4,7 +4,7 @@ export class RpcRejectedError extends Error {}
 export const MUTATING_RPC_METHODS = new Set([
   'createDevicePairing', 'addRemoteDevice', 'removeRemoteDevice', 'revokeDeviceAccess',
   'sendMessage', 'sendBtwMessage', 'discardBtwSession', 'switchModel', 'switchEffort',
-  'stopSessionRun', 'disconnectSession', 'respondToPermissionRequest',
+  'setSessionPermissionMode', 'stopSessionRun', 'disconnectSession', 'respondToPermissionRequest',
   'respondToPlanModeRequest', 'respondToAskUserQuestion', 'respondToPlanMode',
   'grantPathPermission', 'createProject', 'closeProject', 'createStreamwork',
   'deleteStreamwork', 'reorderStreamworks', 'createSession', 'createSessionInStreamwork',

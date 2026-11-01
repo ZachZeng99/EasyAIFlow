@@ -14,7 +14,11 @@ import {
   deleteNativeClaudeSession,
   getConfiguredClaudeModel,
   getSlashCommands,
+  switchClaudeSessionPermissionMode,
 } from './claudeInteraction.js';
+import { respondToCodexApproval } from './codexApprovals.js';
+import { isPermissionModeForProvider, type ClaudePermissionMode } from '../src/data/permissionModes.js';
+import { normalizeSessionProvider } from '../src/data/sessionProvider.js';
 import { getCodexAppServerInteractionSnapshots } from './codexAppServerTurn.js';
 import { isWritableStdin } from './claudeHelpers.js';
 import {
@@ -33,6 +37,7 @@ import {
   getProjects,
   getProjectsForBootstrap,
   renameEntity,
+  setSessionPermissionMode,
   reorderStreamworks,
   updateSessionContextReferences,
 } from '../electron/sessionStore.js';
@@ -55,12 +60,17 @@ export const handleRespondToPermission = async (
   state: ClaudeInteractionState,
   payload: { requestId: string; behavior: 'allow' | 'deny' },
 ) => {
+  const codex = respondToCodexApproval(ctx, payload.requestId, payload.behavior);
+  if (codex) {
+    return codex;
+  }
   const pending = state.pendingPermissionRequests.get(payload.requestId);
   if (!pending) {
     return { mode: 'missing' as const };
   }
 
   state.pendingPermissionRequests.delete(payload.requestId);
+  ctx.broadcastEvent({ type: 'interaction-resolved', sessionId: pending.sessionId, interaction: 'permission', requestId: payload.requestId });
 
   if (payload.behavior === 'allow' && pending.request.targetPath) {
     await grantPathPermission(ctx, pending.activeRun.projectRoot, pending.request.targetPath);
@@ -230,6 +240,33 @@ export const handleSwitchEffort = async (
 ) => {
   const runtime = await resolveProviderSessionRuntime(payload.sessionId, payload.session);
   return runtime.switchEffort(ctx, state, payload);
+};
+
+export const handleSetSessionPermissionMode = async (
+  ctx: ClaudeInteractionContext,
+  state: ClaudeInteractionState,
+  payload: { sessionId: string; mode: string },
+) => {
+  const session = await findSession(payload.sessionId);
+  if (!session) {
+    throw new Error('Session not found.');
+  }
+  if (session.sessionKind === 'group') {
+    throw new Error('群聊成员的权限模式暂不支持单独设置。');
+  }
+  const provider = normalizeSessionProvider(session.provider);
+  if (!isPermissionModeForProvider(provider, payload.mode)) {
+    throw new Error(`Unsupported ${provider} permission mode: ${payload.mode}`);
+  }
+  if (provider === 'claude') {
+    return switchClaudeSessionPermissionMode(ctx, state, { sessionId: payload.sessionId, mode: payload.mode as ClaudePermissionMode });
+  }
+  // Codex applies approval and sandbox policies on the next turn/start.
+  const updated = await setSessionPermissionMode(payload.sessionId, payload.mode);
+  if (updated) {
+    ctx.broadcastEvent({ type: 'session-settings', sessionId: payload.sessionId, permissionMode: payload.mode });
+  }
+  return { projects: updated?.projects ?? await getProjects() };
 };
 
 export const handleBtwMessage = async (
