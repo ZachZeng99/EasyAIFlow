@@ -86,6 +86,38 @@ run('ChatComposer keeps the send action available while only background tasks ar
   assert.doesNotMatch(html, />停止</);
 });
 
+run('ChatComposer offers both send and stop while a group room is generating', () => {
+  const html = renderToStaticMarkup(
+    createElement(ChatComposer, {
+      draft: '继续这个需求',
+      tokenUsage,
+      sessionModel: '',
+      contextReferences: [],
+      slashCommands: [],
+      attachments: [],
+      isSending: false,
+      isResponding: true,
+      allowSendWhileResponding: true,
+      isGroupSession: true,
+      model: '',
+      effort: 'default',
+      onDraftChange: () => undefined,
+      onInsertDroppedPaths: () => undefined,
+      onAttachFiles: () => undefined,
+      onRemoveAttachment: () => undefined,
+      onModelChange: () => undefined,
+      onEffortChange: () => undefined,
+      onUpdateContextReferenceMode: () => undefined,
+      onRemoveContextReference: () => undefined,
+      onSend: () => undefined,
+      onStop: () => undefined,
+    }),
+  );
+
+  assert.match(html, />发送</);
+  assert.match(html, />停止</);
+});
+
 run('ChatComposer renders an inline notice when the host provides one', () => {
   const html = renderToStaticMarkup(
     createElement(ChatComposer, {

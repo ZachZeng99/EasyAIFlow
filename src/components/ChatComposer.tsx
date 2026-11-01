@@ -527,7 +527,7 @@ export function ChatComposer({
           ) : null}
         </div>
         <div className="composer-actions">
-          {isResponding && allowSendWhileResponding && !isSending ? <button type="button" className="group-members-button" onClick={onStop}>停止</button> : null}
+          {isGroupSession && isResponding && allowSendWhileResponding && !isSending ? <button type="button" className="group-members-button" onClick={onStop}>停止</button> : null}
           <button
             type="button"
             className="send-button"
