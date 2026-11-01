@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { EasyAIFlowBridge } from '../bridge';
 import { useBridge } from '../BridgeContext';
 import { MAX_GROUP_PARTICIPANTS, nextGroupParticipantId, validateGroupParticipantConfigs } from '../data/groupParticipants';
-import { describeModelCatalog, modelEffortOptions, modelOptionsWithCurrent, type ProviderModelCatalog } from '../data/providerModels';
+import { describeModelCatalog, findProviderModel, modelEffortOptions, modelOptionsWithCurrent, type ProviderModelCatalog } from '../data/providerModels';
 import type { GroupParticipantConfig, SessionProvider, SessionRecord } from '../data/types';
 
 type Props = { session: SessionRecord; busy: boolean; onClose: () => void; onSaved: (result: Awaited<ReturnType<EasyAIFlowBridge['updateGroupParticipants']>>) => void };
@@ -68,7 +68,7 @@ export function GroupParticipantsDialog({ session, busy, onClose, onSaved }: Pro
           const catalog = catalogs[participant.provider];
           const options = modelOptionsWithCurrent(catalog?.models ?? [], [participant.model ?? '']);
           const isExisting = index < originalCount;
-          const capabilities = catalog?.models.find((entry) => entry.id === participant.model || entry.aliases?.includes(participant.model ?? ''));
+          const capabilities = findProviderModel(catalog?.models ?? [], participant.model);
           const efforts = capabilities ? modelEffortOptions(capabilities) : ['default'];
           const effortOptions = [...new Set([...efforts, participant.effort ?? 'default'])];
           return <fieldset className={`group-member-card${participant.enabled ? '' : ' disabled'}`} key={index} disabled={saving}>

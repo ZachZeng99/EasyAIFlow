@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { normalizeSessionProvider } from '../data/sessionProvider';
 import type { ContextReference, ContextReferenceMode, SessionProvider, TokenUsage } from '../data/types';
 import { getKnownModelContextWindow } from '../data/modelSelection';
-import { describeModelCatalog, modelEffortOptions, modelOptionsWithCurrent, type ProviderModelCatalog } from '../data/providerModels';
+import { describeModelCatalog, findProviderModel, modelEffortOptions, modelOptionsWithCurrent, type ProviderModelCatalog } from '../data/providerModels';
 
 export type ComposerAttachment = {
   id: string;
@@ -110,7 +110,7 @@ export function ChatComposer({
 }: ChatComposerProps) {
   const normalizedProvider = normalizeSessionProvider(provider);
   const modelCapabilities = modelCatalog?.provider === normalizedProvider
-    ? modelCatalog.models.find((entry) => entry.id === model || entry.aliases?.includes(model))
+    ? findProviderModel(modelCatalog.models, model)
     : undefined;
   const effortOptions = modelCapabilities
     ? modelEffortOptions(modelCapabilities)
@@ -118,7 +118,7 @@ export function ChatComposer({
   const canSend = draft.trim().length > 0 || attachments.length > 0;
   const showStopAction = isSending || (isResponding && !allowSendWhileResponding);
   const knownModelContextWindow = Math.max(
-    modelCatalog?.models.find((entry) => entry.id === model)?.contextWindow ?? 0,
+    modelCapabilities?.contextWindow ?? 0,
     getKnownModelContextWindow(model) ?? 0,
     getKnownModelContextWindow(sessionModel) ?? 0,
   );

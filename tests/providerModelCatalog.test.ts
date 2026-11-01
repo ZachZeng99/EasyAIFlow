@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir } from 'node:fs/promises';
 import path from 'node:path';
-import { normalizeProviderModels, modelOptionsWithCurrent, modelEffortOptions } from '../src/data/providerModels.ts';
+import { findProviderModel, normalizeProviderModels, modelOptionsWithCurrent, modelEffortOptions } from '../src/data/providerModels.ts';
 import { buildClaudePrintArgs } from '../electron/claudePrintArgs.ts';
 import { ProviderModelCatalogStore, queryRuntimeModels } from '../backend/providerModelCatalog.ts';
 import { CodexAppServerClient } from '../backend/codexAppServer.ts';
@@ -39,6 +39,21 @@ await run('Codex catalog accepts unknown IDs and only uses declared capabilities
   assert.equal(models[0].contextWindow, undefined);
   assert.equal(syncModelSelectionForSession('gpt-future', 'explicit', 'gpt-old', 'codex', ['gpt-future']).model, 'gpt-future');
   assert.deepEqual(modelOptionsWithCurrent(models, ['gpt-old']).map((option) => option.value), ['gpt-old', 'gpt-future']);
+});
+await run('Runtime aliases select their catalog entry instead of duplicating it', () => {
+  const models = normalizeProviderModels('claude', [
+    { value: 'default', resolvedModel: 'claude-opus-9[1m]', displayName: 'Opus (1M context)', contextWindow: 1000000 },
+    { value: 'opus[1m]', resolvedModel: 'claude-opus-9[1m]', displayName: 'Opus (1M context)' },
+    { value: 'sonnet', resolvedModel: 'claude-sonnet-9', displayName: 'Sonnet' },
+  ]);
+  assert.equal(findProviderModel(models, 'opus[1m]')?.id, 'claude-opus-9[1m]');
+  assert.equal(findProviderModel(models, 'opus[1m]')?.contextWindow, 1000000);
+  assert.deepEqual(modelOptionsWithCurrent(models, ['opus[1m]', 'opus[1m]']).map((option) => option.value), ['opus[1m]', 'claude-sonnet-9']);
+  const ids = models.flatMap((model) => [model.id, ...(model.aliases ?? [])]);
+  assert.equal(syncModelSelectionForSession('opus[1m]', 'explicit', 'sonnet', 'claude', ids).model, 'opus[1m]');
+});
+await run('Unavailable explicit models fall back to the runtime recommendation', () => {
+  assert.deepEqual(syncModelSelectionForSession('gpt-retired', 'explicit', '', 'codex', ['gpt-next'], 'gpt-next'), { model: 'gpt-next', source: 'implicit' });
 });
 
 await mkdir('.tmp-tests', { recursive: true });

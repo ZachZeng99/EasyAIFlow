@@ -85,6 +85,7 @@ export const syncModelSelectionForSession = (
   sessionModel: string | undefined,
   provider: SessionProvider | string | undefined,
   availableModelIds?: readonly string[],
+  recommendedModel?: string,
 ) => {
   if (currentSource !== 'explicit') {
     return syncImplicitModelSelection(currentModel, currentSource, sessionModel);
@@ -106,6 +107,7 @@ export const syncModelSelectionForSession = (
 
   const fallback =
     normalizeProviderModelSelectionValue(sessionModel, provider) ??
+    normalizeProviderModelSelectionValue(recommendedModel, provider) ??
     getDefaultModelForProvider(provider);
   return {
     model: fallback,

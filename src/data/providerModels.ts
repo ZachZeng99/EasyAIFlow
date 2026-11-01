@@ -73,13 +73,20 @@ export const normalizeProviderModels = (provider: SessionProvider, values: unkno
   return [...models.values()];
 };
 
+export const findProviderModel = (models: readonly ProviderModel[], value: string | undefined) => {
+  const selected = value?.trim();
+  return selected ? models.find((model) => model.id === selected || model.aliases?.includes(selected)) : undefined;
+};
+
 export const modelOptionsWithCurrent = (models: ProviderModel[], current: string[]) => {
-  const result = models.map((model) => ({ value: model.id, label: `${model.label}${model.isDefault ? ' · 推荐' : ''}` }));
-  const known = new Set(result.map((item) => item.value));
+  // Sessions may store a runtime alias (e.g. opus[1m]); show it as the matching catalog entry.
+  const result = models.map((model) => ({
+    value: current.map((value) => value.trim()).find((value) => value && value !== model.id && model.aliases?.includes(value)) ?? model.id,
+    label: `${model.label}${model.isDefault ? ' · 推荐' : ''}`,
+  }));
   for (const value of current) {
-    if (value.trim() && !known.has(value.trim())) {
+    if (value.trim() && !findProviderModel(models, value) && !result.some((item) => item.value === value.trim())) {
       result.unshift({ value: value.trim(), label: `${value.trim()} · 当前选择` });
-      known.add(value.trim());
     }
   }
   return result;

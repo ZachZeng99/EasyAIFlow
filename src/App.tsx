@@ -15,7 +15,7 @@ import {
 import { applyClaudeEventToProjects, coalesceClaudeDeltaEvents } from './data/liveSessionEvents';
 import { usesCommittedMessages } from './data/committedSessionMessages';
 import { InteractionReconciler } from './data/interactionSync';
-import { modelEffortOptions, type ProviderModelCatalog } from './data/providerModels';
+import { findProviderModel, modelEffortOptions, type ProviderModelCatalog } from './data/providerModels';
 import {
   hydrateSessionRecordInProjects,
   mergeProjectSnapshots,
@@ -504,7 +504,7 @@ export default function App({ viewState }: { viewState?: WorkspaceViewState }) {
   }, [selectedSession?.id]);
   useEffect(() => {
     if (!modelCatalog || modelCatalog.provider !== selectedSession?.provider) return;
-    const capabilities = modelCatalog.models.find((entry) => entry.id === model || entry.aliases?.includes(model));
+    const capabilities = findProviderModel(modelCatalog.models, model);
     if (!capabilities) return;
     const options = modelEffortOptions(capabilities);
     if (!options.includes(effort)) setEffort('default');
@@ -1406,15 +1406,17 @@ export default function App({ viewState }: { viewState?: WorkspaceViewState }) {
 
     const selectionSource = modelSelectionSessionRef.current === selectedSession.id ? modelSelectionSource : 'implicit';
     modelSelectionSessionRef.current = selectedSession.id;
+    const catalogModels = modelCatalog && modelCatalog.provider === selectedSession.provider ? modelCatalog.models : [];
     setModel((current) => {
       const next = syncModelSelectionForSession(
         current,
         selectionSource,
         selectedSession.model,
         selectedSession.provider,
-        modelCatalog && modelCatalog.provider === selectedSession.provider && modelCatalog.models.length > 0
-          ? modelCatalog.models.map((entry) => entry.id)
+        catalogModels.length > 0
+          ? catalogModels.flatMap((entry) => [entry.id, ...(entry.aliases ?? [])])
           : undefined,
+        catalogModels.find((entry) => entry.isDefault)?.id,
       );
       if (next.source !== modelSelectionSource) {
         setModelSelectionSource(next.source);
