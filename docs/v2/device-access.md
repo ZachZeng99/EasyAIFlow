@@ -46,4 +46,4 @@ npm run start:web
 - 已通过同机两个独立服务/网关、真实 Claude/Codex 远程执行、断线重连、重复请求、HTTPS 信任/主机名校验、授权撤销及 390×844 浏览器验证。**两台物理电脑和真实手机的网络联合验收仍待完成。**
 - 自动化回归：`npx tsx tests/remoteDevices.test.ts`、`npx tsx tests/deviceBridge.test.ts`、`npx tsx tests/deviceAccess.test.ts`；HTTPS 回归 `npx tsx tests/deviceTls.test.ts` 需要 OpenSSL（可设 `OPENSSL_PATH`）。真实 CLI 验证：`npm run smoke:devices`，使用隔离 EAF 数据目录。
 
-同设备群聊可单独开启 agent 委派/等待回复；跨设备成员协作编排仍待完成。设备配对本身不会开启自主协作。
+群聊成员可放到已配对的其他电脑上执行，本机成员可向其委派并等待回复，见 [群内 agent 通信](team-communication.md#跨设备成员)。设备配对本身不会开启自主协作；包含远程成员的群聊不能通过“设备控制授权”间接操作。

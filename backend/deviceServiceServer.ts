@@ -10,6 +10,7 @@ import type { ClaudeStreamEvent } from '../src/data/types.js';
 import { DEVICE_SERVICE_PROTOCOL, MAX_SERVICE_MESSAGE_BYTES, ensureServiceKey, serviceAddress } from './deviceServiceProtocol.js';
 import { DeviceAccessStore } from './deviceAccessStore.js';
 import { RemoteDeviceRouter } from './remoteDevice.js';
+import { createRemoteEventHub, type RemoteExecutionPort } from './remoteExecution.js';
 import { DEVICE_WORK_EXCLUDED_METHODS, type DeviceAccessPurpose, type RemoteDeviceInput } from '../src/data/devices.js';
 
 export const startDeviceService = async (options: { dataDirectory: string; homeDirectory: string }) => {
@@ -39,8 +40,18 @@ export const startDeviceService = async (options: { dataDirectory: string; homeD
   const broadcast = (event: ClaudeStreamEvent) => {
     for (const client of clients) send(client, { type: 'event', event });
   };
-  const runtime = createDeviceRuntime(broadcast, instanceId);
-  const peers = new RemoteDeviceRouter(access, broadcast);
+  const remoteEvents = createRemoteEventHub();
+  let router: RemoteDeviceRouter | undefined;
+  const remotePort: RemoteExecutionPort = {
+    request: (deviceId, method, payload, operationId) => router
+      ? router.request(deviceId, method, payload, operationId)
+      : Promise.reject(new OperationError('EAF_DEVICE_UNAVAILABLE', '设备连接尚未初始化。')),
+    subscribe: remoteEvents.subscribe,
+    describe: (deviceId) => router?.list().find((device) => device.id === deviceId),
+  };
+  const runtime = createDeviceRuntime(broadcast, instanceId, remotePort);
+  const peers = new RemoteDeviceRouter(access, (event) => { broadcast(event); remoteEvents.publish(event); });
+  router = peers;
   let stopping = false;
   let activeRequests = 0;
   let stopPromise: Promise<void> | null = null;
@@ -81,6 +92,11 @@ export const startDeviceService = async (options: { dataDirectory: string; homeD
             (DEVICE_WORK_EXCLUDED_METHODS.has(method) || targetDevice !== 'local' && targetDevice !== access.identity.id)) {
             throw new OperationError('EAF_ACCESS_DENIED', '此设备授权不允许转发到其他机器或修改接入配置。');
           }
+          // A device grant controls this machine only; it must not drive this
+          // machine's own peers indirectly through cross-device group members.
+          if (grant.purpose === 'device' && await runtime.involvesRemoteMembers(method, frame.payload)) {
+            throw new OperationError('EAF_ACCESS_DENIED', '该群聊包含其他设备上的成员；设备授权不能间接操作其他设备，请在协调设备本机或其浏览器登录中操作。');
+          }
         }
         let result: unknown;
         if (targetDevice !== 'local' && targetDevice !== access.identity.id) {
@@ -89,6 +105,17 @@ export const startDeviceService = async (options: { dataDirectory: string; homeD
           result = { instanceId, deviceId: access.identity.id, name: access.identity.name, platform: access.identity.platform, pid: process.pid, active: runtime.hasActiveWork(), protocol: DEVICE_SERVICE_PROTOCOL };
         } else if (method === 'getLocalDeviceIdentity') {
           result = access.identity;
+        } else if (method === 'getGroupPlacementOptions') {
+          result = { devices: await Promise.all(peers.list().map(async (device) => {
+            if (device.connection !== 'online') return { id: device.id, name: device.name, connection: device.connection, projects: [] };
+            try {
+              const { projects } = await peers.request<{ projects: Array<{ id: string; name: string; rootPath: string; dreams: unknown[] }> }>(device.id, 'getProjects');
+              return { id: device.id, name: device.name, connection: device.connection,
+                projects: projects.filter((project) => project.dreams.length > 0).map(({ id, name, rootPath }) => ({ id, name, rootPath })) };
+            } catch (error) {
+              return { id: device.id, name: device.name, connection: 'offline' as const, projects: [], error: error instanceof Error ? error.message : '设备读取失败。' };
+            }
+          })) };
         } else if (method === 'getDevices') {
           result = { devices: [{ ...access.identity, kind: 'local', connection: 'online', active: runtime.hasActiveWork() }, ...peers.list()] };
         } else if (method === 'createDevicePairing') {

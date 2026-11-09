@@ -13,7 +13,7 @@ export const MUTATING_RPC_METHODS = new Set([
 
 const READ_RPC_METHODS = new Set([
   'getInteractionSnapshot',
-  'getDevices', 'getDeviceAccessGrants',
+  'getDevices', 'getDeviceAccessGrants', 'getGroupPlacementOptions',
   'getSessionNativeAgents',
   'getAppMeta', 'getProjects', 'getSessionRecord', 'getSessionHistoryRevision',
   'getSessionMessagePage', 'getGitSnapshot', 'getSlashCommands', 'getFileDiff',

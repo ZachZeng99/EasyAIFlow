@@ -1,6 +1,15 @@
 # Current Task: EAF 2.0 P0 — Committed message synchronization
 
-## Current continuation: Paired device management (LAN / existing VPN)
+## Current continuation: Cross-device group members (2026-11-02)
+
+- [x] Placement on paired device/project; executor-owned member session created idempotently.
+- [x] Remote turn runner: stable op ID, event mirroring, persisted-record completion, stop, uncertainty reporting.
+- [x] Local → remote team delegation; non-transitive guard for device grants.
+- [x] Deterministic + live two-service tests, dialog UI check.
+- [ ] Remote members calling team tools (reverse channel over the coordinator's existing event stream).
+- [ ] Physical two-machine acceptance.
+
+## Earlier continuation: Paired device management (LAN / existing VPN)
 
 Device checkpoint committed as `c104d46`; updated default service is running at 127.0.0.1:8887. Continuing with opt-in group agent send/wait tools via provider-supported MCP stdio, scoped active-member capabilities, durable idempotent receipts, bounded delegation and cycle/stop handling. The first slice is same-room cross-provider round trips; cross-device collaboration still needs explicit member placement/routing beyond device control.
 

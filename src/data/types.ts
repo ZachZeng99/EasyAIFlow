@@ -29,11 +29,23 @@ export type GroupParticipantConfig = {
   model?: string;
   effort?: SessionEffort;
   instructions?: string;
+  /** Requested execution placement on a paired device; omitted means the room's own device. */
+  placement?: GroupParticipantPlacement;
+};
+
+export type GroupParticipantPlacement = { deviceId: string; projectId: string };
+
+/** A member whose CLI runs on another paired device, owned by that device's service. */
+export type GroupRemoteMember = GroupParticipantPlacement & {
+  deviceName?: string;
+  sessionId: string;
+  workspace: string;
 };
 
 export type GroupParticipant = GroupParticipantConfig & {
   backingSessionId: string;
   lastAppliedRoomSeq: number;
+  remote?: GroupRemoteMember;
 };
 
 export type GroupSessionMetadata =

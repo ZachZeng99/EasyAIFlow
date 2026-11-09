@@ -71,3 +71,19 @@ assert.equal(ensured.group.configurationRevision, 2);
 assert.equal((await store.findSession(reviewer.backingSessionId)).group.speakerLabel, '审查');
 console.log('PASS custom membership, models, effort, roles and message IDs survive refresh and store restart');
 await store.flushPendingSave();
+
+const placed = { id: 'remote', label: 'Remote', provider: 'claude', enabled: true, placement: { deviceId: 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE', projectId: 'project-1' } };
+assert.deepEqual(validateGroupParticipantConfigs([placed])[0].placement, { deviceId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', projectId: 'project-1' });
+for (const placement of [{ deviceId: 'local', projectId: 'p' }, { deviceId: placed.placement.deviceId, projectId: '' }, 'device']) {
+  assert.throws(() => validateGroupParticipantConfigs([{ ...placed, placement }]), /执行设备或项目无效/);
+}
+const unresolved = [...reopened.group.participants.map(({ id, label, provider, enabled }: GroupParticipant) => ({ id, label, provider, enabled })), placed];
+await assert.rejects(store.configureGroupParticipants(created.session.id, 2, unresolved), /尚未在执行设备上创建/);
+await assert.rejects(store.configureGroupParticipants(created.session.id, 2, unresolved.map((entry: { id: string }) => entry.id === 'reviewer' ? { ...entry, placement: placed.placement } : entry)), /执行设备不能更换/);
+const remote = { ...placed.placement, deviceId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', sessionId: 'executor-session', workspace: 'D:/remote', deviceName: 'Laptop' };
+const withRemote = await store.configureGroupParticipants(created.session.id, 2, validateGroupParticipantConfigs(unresolved), undefined, new Map([['remote', remote]]));
+const stored = withRemote.session.group.participants.find((entry: GroupParticipant) => entry.id === 'remote');
+assert.deepEqual(stored.remote, remote);
+assert.equal('placement' in stored, false);
+console.log('PASS remote placements are validated, require an executor session and cannot move existing members');
+await store.flushPendingSave();

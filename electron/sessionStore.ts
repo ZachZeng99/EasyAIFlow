@@ -6204,6 +6204,7 @@ export const configureGroupParticipants = async (
   expectedRevision: number,
   configs: GroupParticipantConfig[],
   collaborationEnabled?: boolean,
+  remotes: ReadonlyMap<string, import('../src/data/types.js').GroupRemoteMember> = new Map(),
 ): Promise<{ projects: ProjectRecord[]; session: SessionRecord }> => {
   const participants = validateGroupParticipantConfigs(configs);
   const state = await loadState();
@@ -6217,6 +6218,9 @@ export const configureGroupParticipants = async (
     const next = participants.find((candidate) => candidate.id === entry.id);
     if (!next) throw new RpcRejectedError('已有成员请使用停用，保留其会话和历史。');
     if (next.provider !== entry.provider) throw new RpcRejectedError('已有成员的 provider 不能更换；请添加一位新成员。');
+    if ((next.placement?.deviceId ?? '') !== (entry.remote?.deviceId ?? '') || (next.placement?.projectId ?? '') !== (entry.remote?.projectId ?? '')) {
+      throw new RpcRejectedError('已有成员的执行设备不能更换；请添加一位新成员。');
+    }
   }
   const nextMembers = participants.map((config) => {
     const existing = previous.get(config.id);
@@ -6227,7 +6231,12 @@ export const configureGroupParticipants = async (
     }
     backing.model = config.model || existing?.model || backing.model;
     backing.group = { kind: 'member', roomSessionId: room.id, participantId: config.id, speakerLabel: config.label };
-    return { ...config, model: backing.model, backingSessionId: backing.id, lastAppliedRoomSeq: existing?.lastAppliedRoomSeq ?? 0 };
+    const { placement, ...memberConfig } = config;
+    const remote = existing?.remote ?? (placement ? remotes.get(config.id) : undefined);
+    if (placement && (!remote || remote.deviceId !== placement.deviceId || remote.projectId !== placement.projectId)) {
+      throw new RpcRejectedError('远程成员会话尚未在执行设备上创建。');
+    }
+    return { ...memberConfig, model: remote ? memberConfig.model : backing.model, backingSessionId: backing.id, lastAppliedRoomSeq: existing?.lastAppliedRoomSeq ?? 0, ...(remote ? { remote } : {}) };
   });
   room.group = { ...room.group, configurationRevision: expectedRevision + 1, participants: nextMembers,
     collaborationEnabled: collaborationEnabled ?? room.group.collaborationEnabled };

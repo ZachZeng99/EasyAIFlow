@@ -7,6 +7,7 @@ export type DeviceDescriptor = DeviceIdentity & {
   active?: boolean;
   error?: string;
 };
+export type GroupPlacementOptions = { devices: Array<{ id: string; name: string; connection: DeviceDescriptor['connection']; error?: string; projects: Array<{ id: string; name: string; rootPath: string }> }> };
 export type DeviceAccessPurpose = 'device' | 'browser';
 export type DeviceAccessGrant = { id: string; name: string; purpose: DeviceAccessPurpose; createdAt: number; expiresAt?: number };
 export type DevicePairingCode = { code: string; expiresAt: number; purpose: DeviceAccessPurpose; device: DeviceIdentity };
@@ -20,7 +21,7 @@ export type RemoteDeviceInput = {
 };
 export type RemoteDeviceRecord = DeviceIdentity & { origin: string; encryptedToken: string; trustedVpn?: boolean; certificate?: string; pairedAt: number };
 
-export const DEVICE_MANAGEMENT_METHODS = new Set(['getDevices', 'createDevicePairing', 'addRemoteDevice', 'removeRemoteDevice', 'getDeviceAccessGrants', 'revokeDeviceAccess']);
+export const DEVICE_MANAGEMENT_METHODS = new Set(['getDevices', 'getGroupPlacementOptions', 'createDevicePairing', 'addRemoteDevice', 'removeRemoteDevice', 'getDeviceAccessGrants', 'revokeDeviceAccess']);
 export const DEVICE_WORK_EXCLUDED_METHODS = new Set([...DEVICE_MANAGEMENT_METHODS, 'clipboard:write-text']);
 
 export const normalizeDeviceOrigin = (value: string, trustedVpn = false) => {

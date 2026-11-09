@@ -10,7 +10,7 @@ import type { ClaudeInteractionState } from './claudeInteractionState.js';
 export type TeamTaskContext = { rootTaskId: string; ancestors: string[]; senderId?: string; senderLabel?: string; deliveryId?: string };
 export type TeamDeliveryReceipt = { sessionId: string; userMessageId: string; assistantMessageId: string; recipient: string };
 export type TeamReply = { status: 'queued' | 'running' | 'replied' | 'failed' | 'unknown'; content?: string; truncated?: boolean };
-type TeamMember = { id: string; label: string; provider: string; enabled: boolean };
+type TeamMember = { id: string; label: string; provider: string; enabled: boolean; device?: string };
 export type TeamLease = {
   sessionId: string; roomId: string; memberId: string; memberLabel: string; context: TeamTaskContext; signal: AbortSignal;
   members: TeamMember[];
@@ -76,7 +76,7 @@ export class AgentMessaging {
     if (!capability || !lease) throw new Error('No active authorized team member.');
     this.check(capability, lease);
     const input = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
-    if (name === 'team_members') return { member: lease.memberId, members: lease.members.filter((member) => member.enabled).map(({ id, label, provider }) => ({ id, label, provider })), remainingDepth: MAX_DEPTH - lease.context.ancestors.length };
+    if (name === 'team_members') return { member: lease.memberId, members: lease.members.filter((member) => member.enabled).map(({ id, label, provider, device }) => ({ id, label, provider, ...(device ? { device } : {}) })), remainingDepth: MAX_DEPTH - lease.context.ancestors.length };
     const { ledger, directory } = this.ledger(lease.context.rootTaskId);
     if (name === 'team_send') {
       if (typeof input.recipient !== 'string' || !lease.members.some((member) => member.id === input.recipient && member.enabled)) throw new Error('Choose an enabled member from team_members.');

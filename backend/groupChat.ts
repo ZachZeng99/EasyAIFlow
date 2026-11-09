@@ -33,6 +33,7 @@ import type {
   GroupParticipant,
   GroupParticipantConfig,
   GroupParticipantId,
+  GroupRemoteMember,
   PendingAttachment,
   SessionRecord,
   SessionRuntimePhase,
@@ -43,6 +44,7 @@ import { GroupTurnCoordinator } from './groupTurnCoordinator.js';
 import type { SessionInteractionState } from '../src/data/sessionInteraction.js';
 import { RpcRejectedError } from '../src/data/rpcOperations.js';
 import { agentMessagingFor, type TeamTaskContext, type TeamToolConfig } from './agentMessaging.js';
+import { runRemoteMemberTurn } from './remoteGroupMember.js';
 
 const coordinators = new WeakMap<ClaudeInteractionState, GroupTurnCoordinator>();
 const coordinatorFor = (state: ClaudeInteractionState) => {
@@ -54,13 +56,13 @@ export const hasActiveGroupTurns = (state: ClaudeInteractionState, roomId?: stri
 export const updateGroupParticipants = (
   ctx: ClaudeInteractionContext,
   state: ClaudeInteractionState,
-  payload: { sessionId: string; expectedRevision: number; participants: GroupParticipantConfig[]; collaborationEnabled?: boolean },
+  payload: { sessionId: string; expectedRevision: number; participants: GroupParticipantConfig[]; collaborationEnabled?: boolean; remotes?: ReadonlyMap<string, GroupRemoteMember> },
 ) => coordinatorFor(state).dispatch(payload.sessionId, async () => {
   const session = await findSession(payload.sessionId);
   if (hasActiveGroupTurns(state, payload.sessionId) || session?.messages.some((message) => ['queued', 'streaming', 'running', 'background'].includes(message.status ?? ''))) {
     throw new RpcRejectedError('请等待群聊任务结束，或先停止任务，再修改成员。');
   }
-  const result = await configureGroupParticipants(payload.sessionId, payload.expectedRevision, payload.participants, payload.collaborationEnabled);
+  const result = await configureGroupParticipants(payload.sessionId, payload.expectedRevision, payload.participants, payload.collaborationEnabled, payload.remotes);
   ctx.broadcastEvent({ type: 'session-sync', sessionId: result.session.id, session: result.session });
   return result;
 });
@@ -708,16 +710,20 @@ const runGroupParticipantTurn = async (
   teamContext: TeamTaskContext,
 ) => {
   signal.throwIfAborted();
+  const syncMessages = roomSession.messages;
+  const basePrompt = participant.provider === 'codex'
+    ? buildCodexRoomChatPrompt(participant, syncMessages)
+    : buildRoomSyncPrompt(roomSession, participant, syncMessages, snapshotSeq);
+  if (participant.remote) {
+    await runRemoteGroupParticipantTurn(ctx, roomSession, participant, participant.remote, roomAssistantMessage, snapshotSeq, pendingAttachments, payload, signal, basePrompt);
+    return;
+  }
   const backingSession = await findSession(participant.backingSessionId);
   if (!backingSession) {
     throw new Error(`${participant.label} backing session not found.`);
   }
 
   signal.throwIfAborted();
-  const syncMessages = roomSession.messages;
-  const basePrompt = participant.provider === 'codex'
-    ? buildCodexRoomChatPrompt(participant, syncMessages)
-    : buildRoomSyncPrompt(roomSession, participant, syncMessages, snapshotSeq);
   const collaboration = roomSession.group?.kind === 'room' && roomSession.group.collaborationEnabled === true;
   const syncPrompt = basePrompt + (collaboration ? '\n\nEAF_TEAM_TOOLS: The user enabled team collaboration for this room. Use the eaf_team MCP tools team_members, team_send and team_wait when delegation helps the task. Send only to listed enabled members. Native subagent tools do not address EAF members. A queued receipt is not a reply; use team_wait for the actual result before claiming completion. Return results to your requester by finishing your current reply; do not send back to an ancestor. Delegate only work within the user task. Use stable request_id values for retries. Maximum 16 delegated messages per user task and depth 4.' : '');
   const mirrorSpec: GroupMirrorSpec = {
@@ -785,7 +791,8 @@ const runGroupParticipantTurn = async (
     if (collaboration && roomSession.group?.kind === 'room') {
       teamTools = await agentMessagingFor(state).bind({
         sessionId: backingSession.id, roomId: roomSession.id, memberId: participant.id, memberLabel: participant.label,
-        context: teamContext, signal, members: roomSession.group.participants,
+        context: teamContext, signal, members: roomSession.group.participants.map(({ id, label, provider, enabled, remote }) => ({
+          id, label, provider, enabled, ...(remote ? { device: remote.deviceName || remote.deviceId } : {}) })),
         send: async (recipient, message, context) => {
           signal.throwIfAborted();
           const result = await sendGroupMessage(ctx, state, { sessionId: roomSession.id, prompt: message, targetParticipantIds: [recipient] }, context, signal);
@@ -873,6 +880,51 @@ const runGroupParticipantTurn = async (
       interceptorSettled?.();
     }
     await flushMirroredEvents();
+  }
+};
+
+const runRemoteGroupParticipantTurn = async (
+  ctx: ClaudeInteractionContext,
+  roomSession: SessionRecord,
+  participant: GroupParticipant,
+  remote: GroupRemoteMember,
+  roomAssistantMessage: ConversationMessage,
+  snapshotSeq: number,
+  pendingAttachments: PendingAttachment[],
+  payload: GroupSendPayload,
+  signal: AbortSignal,
+  prompt: string,
+) => {
+  const port = ctx.remote;
+  if (!port) throw new Error(`${participant.label} 在其他设备上执行，当前运行环境无法连接该设备。`);
+  if (pendingAttachments.length > 0) throw new Error(`附件暂不能发送给其他设备上的成员 ${participant.label}。`);
+  const mirrorSpec: GroupMirrorSpec = {
+    roomSessionId: roomSession.id,
+    // The member session belongs to the executing device; its ID only scopes mirrored events.
+    backingSessionId: remote.sessionId,
+    participant,
+    roomAssistantMessageId: roomAssistantMessage.id,
+  };
+  const { ctx: mirroredCtx, flush } = createMirroredContext(ctx, mirrorSpec);
+  try {
+    const outcome = await runRemoteMemberTurn({
+      port, deviceId: remote.deviceId, sessionId: remote.sessionId, prompt,
+      model: participant.model, effort: participant.effort ?? payload.effort,
+      operationId: `group-remote:${roomAssistantMessage.id}`, signal,
+      onSubmitted: (messageId) => { mirrorSpec.backingAssistantMessageId = messageId; },
+      onEvent: (event) => mirroredCtx.broadcastEvent(event),
+    });
+    if (outcome.status === 'stopped') return;
+    mirroredCtx.broadcastEvent(outcome.status === 'complete'
+      ? { type: 'complete', sessionId: remote.sessionId, messageId: outcome.assistantMessageId, content: outcome.content }
+      : { type: 'error', sessionId: remote.sessionId, messageId: outcome.assistantMessageId, error: outcome.content || `${participant.label} failed on its device.` });
+    await updateSessionRecord(roomSession.id, (session) => {
+      if (session.group?.kind !== 'room') return;
+      session.group.participants = session.group.participants.map((candidate) =>
+        candidate.id === participant.id ? { ...candidate, lastAppliedRoomSeq: snapshotSeq } : candidate);
+    });
+  } finally {
+    await flush();
   }
 };
 
@@ -1047,6 +1099,8 @@ const stopGroupParticipantRun = async (
   participant: GroupParticipant,
   mode: 'stop' | 'disconnect',
 ) => {
+  // Remote turns stop their executor session from their own abort path.
+  if (participant.remote) return;
   if (participant.provider === 'codex') {
     return mode === 'disconnect'
       ? disconnectCodexAppServerTurn(ctx, participant.backingSessionId)

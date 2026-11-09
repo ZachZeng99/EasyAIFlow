@@ -560,3 +560,11 @@ Completed scoped recovery through supported API; no code changes or global serve
 - First real attempt found Windows ESM --import requires a file URL for the absolute tsx loader; corrected it and added Claude MCP startup verification. Tightened smoke output assertions so mentioning markers in an error cannot count as success. One incorrectly named lifecycle test was corrected to `groupTurnLifecycle.test.ts`.
 - Capability/scope/idempotence/quota/restart/unknown-dispatch/cycle/stop regressions, group persistence/lifecycle, Claude args and Codex turn regressions passed. Cross-device member placement, isolated worktrees and result merging remain outstanding.
 - Compiled-service smoke also passed both directions at `.tmp-tests/live-team-xHlVtP`, including delivery metadata. UI review confirmed the saved collaboration switch and real cross-provider records. Added regressions to keep delegated/native child replies from changing the default human recipient and to keep explicit tool recipients authoritative over @mentions in task content.
+
+# 2026-11-02 cross-device group members
+
+- Group members can be placed on a paired online device and project. The executor creates and owns the member session (idempotent op ID per room/member/device/project); the room device still orders and records the room.
+- Remote turns submit with a stable operation ID (transport retries only), mirror the executor's live events into the room, and decide completion from the executor's persisted record so lost events/reconnects converge. Unconfirmed submission after 60s is reported, not resent. Group stop stops the remote turn.
+- Local members can team_send/team_wait to remote members. Remote members themselves have no team tools yet; attachments are not forwarded.
+- Device-purpose grants cannot send to or configure rooms with remote members, and cannot list placement options (no transitive peer access).
+- Tests: tests/remoteGroupMember.test.ts (runner), tests/remoteGroupMembers.test.ts (two isolated services/gateways; --live passed real remote Claude reply and local Codex -> remote Claude -> local Codex), groupParticipants placement cases. Dialog UI checked via headless Chrome (.tmp-run/eaf-remote-members.jpg). Physical two-machine acceptance still pending.

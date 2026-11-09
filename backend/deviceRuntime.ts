@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { isInteractionEvent } from '../src/data/interactionSync.js';
 import type { InteractionSnapshot } from '../src/data/types.js';
 import { stopAllCodexRuns } from './codexInteraction.js';
@@ -59,6 +59,8 @@ import { getFileDiff } from '../electron/fileDiff.js';
 import type {
   ClaudeStreamEvent,
   ContextReference,
+  GroupParticipantConfig,
+  GroupRemoteMember,
   PendingAttachment,
   ProjectRecord,
   SessionRecord,
@@ -67,8 +69,10 @@ import type {
 import type { PlanModeResponsePayload } from '../src/data/planMode.js';
 import { onSessionMessagesCommitted } from './sessionMessageEvents.js';
 import { agentMessagingFor } from './agentMessaging.js';
+import type { RemoteExecutionPort } from './remoteExecution.js';
+import { RpcRejectedError } from '../src/data/rpcOperations.js';
 
-export const createDeviceRuntime = (broadcast: (event: ClaudeStreamEvent) => void, epoch = randomUUID()) => {
+export const createDeviceRuntime = (broadcast: (event: ClaudeStreamEvent) => void, epoch = randomUUID(), remote?: RemoteExecutionPort) => {
   let interactionSequence = 0;
   const nextInteractionVersion = () => ({ epoch, sequence: ++interactionSequence });
   const publish = (event: ClaudeStreamEvent) => broadcast(isInteractionEvent(event)
@@ -100,6 +104,7 @@ export const createDeviceRuntime = (broadcast: (event: ClaudeStreamEvent) => voi
     attachmentRoot: () => path.join(getRuntimePaths().userDataPath, 'attachments'),
     claudeSettingsPath: () => path.join(getRuntimePaths().homePath, '.claude', 'settings.json'),
     homePath: () => getRuntimePaths().homePath,
+    remote,
   };
   const state = createClaudeInteractionState();
   const unsubscribe = onSessionMessagesCommitted(broadcast);
@@ -207,6 +212,33 @@ export const createDeviceRuntime = (broadcast: (event: ClaudeStreamEvent) => voi
     projects: summarizeProjectsForWebBootstrap(result.projects),
   });
 
+  /** Create (or idempotently recover) member sessions on their executing devices. */
+  const createRemoteGroupMembers = async (room: SessionRecord, participants: GroupParticipantConfig[]) => {
+    const remotes = new Map<string, GroupRemoteMember>();
+    const existing = new Map(room.group?.kind === 'room' ? room.group.participants.map((participant) => [participant.id, participant]) : []);
+    for (const participant of participants) {
+      const placement = participant.placement;
+      if (!placement || existing.has(participant.id)) continue;
+      if (!remote) throw new RpcRejectedError('当前运行环境不能把成员放到其他设备上。');
+      const device = remote.describe(placement.deviceId);
+      if (!device) throw new RpcRejectedError('成员的执行设备未配对或已移除。');
+      const { projects } = await remote.request<{ projects: ProjectRecord[] }>(placement.deviceId, 'getProjects');
+      const project = projects.find((entry) => entry.id === placement.projectId);
+      const streamwork = project?.dreams[0];
+      if (!project || !streamwork) throw new RpcRejectedError(`执行设备 ${device.name} 上找不到所选项目。`);
+      const operationId = `group-member:${createHash('sha256').update(`${room.id}
+${participant.id}
+${placement.deviceId}
+${placement.projectId}`).digest('hex')}`;
+      const created = await remote.request<{ session: SessionRecord }>(placement.deviceId, 'createSessionInStreamwork', {
+        streamworkId: streamwork.id, name: `群成员 ${participant.label} · ${room.title}`.slice(0, 120), provider: participant.provider,
+      }, operationId);
+      if (created.session.provider && created.session.provider !== participant.provider) throw new Error('执行设备创建的成员会话 provider 不一致。');
+      remotes.set(participant.id, { ...placement, deviceName: device.name, sessionId: created.session.id, workspace: created.session.workspace || project.rootPath });
+    }
+    return remotes;
+  };
+
   const rpcHandlers = {
     getSessionNativeAgents: (payload: { sessionId: string; before?: string }) => getSessionNativeAgents(payload.sessionId, payload.before),
     getProviderModels: (payload: { provider: 'claude' | 'codex'; cwd: string; force?: boolean }) => {
@@ -241,13 +273,16 @@ export const createDeviceRuntime = (broadcast: (event: ClaudeStreamEvent) => voi
       const participants = validateGroupParticipantConfigs(payload.participants);
       const room = await getSessionRecordForBootstrap(payload.sessionId);
       if (!room || room.group?.kind !== 'room') throw new Error('Group session not found.');
-      const catalogs = new Map(await Promise.all([...new Set(participants.filter((p) => !p.model).map((p) => p.provider))]
+      const remotes = await createRemoteGroupMembers(room, participants);
+      // Remote members default to their executor's own recommended model.
+      const catalogs = new Map(await Promise.all([...new Set(participants.filter((p) => !p.model && !p.placement).map((p) => p.provider))]
         .map(async (provider) => [provider, await models.get(provider, room.workspace)] as const)));
       return summarizeProjectsInResult(await updateGroupParticipants(ctx, state, {
         ...payload,
         participants: participants.map((participant) => ({ ...participant,
-          model: participant.model || catalogs.get(participant.provider)?.models.find((model) => model.isDefault)?.id,
+          model: participant.model || (participant.placement ? undefined : catalogs.get(participant.provider)?.models.find((model) => model.isDefault)?.id),
         })),
+        remotes,
       }));
     },
     getSessionRecord: async (payload: { sessionId: string }) => {
@@ -407,8 +442,20 @@ export const createDeviceRuntime = (broadcast: (event: ClaudeStreamEvent) => voi
   } as const;
 
 
+  /** Whether this request would make this device act on one of its own peers. */
+  const involvesRemoteMembers = async (method: string, payload: unknown) => {
+    if (method !== 'sendMessage' && method !== 'updateGroupParticipants') return false;
+    const input = payload && typeof payload === 'object' ? payload as { sessionId?: unknown; participants?: unknown } : {};
+    if (method === 'updateGroupParticipants' && Array.isArray(input.participants) &&
+      input.participants.some((participant) => participant && typeof participant === 'object' && 'placement' in participant && participant.placement)) return true;
+    if (typeof input.sessionId !== 'string') return false;
+    const session = await getSessionRecordForBootstrap(input.sessionId).catch(() => null);
+    return session?.group?.kind === 'room' && session.group.participants.some((participant) => participant.remote);
+  };
+
   return {
     handlers: rpcHandlers,
+    involvesRemoteMembers,
     interactionEvents,
     interactionSnapshot,
     hasActiveWork: () => hasActiveGroupTurns(state) || state.sessionRunQueue.size > 0 || interactionEvents().some((event) => event.type === 'runtime-state' && ['running', 'background', 'awaiting_reply'].includes(event.runtime.phase)),

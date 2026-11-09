@@ -12,7 +12,7 @@ export const validateGroupParticipantConfigs = (value: unknown): GroupParticipan
   const labels = new Set<string>();
   const participants = value.map((raw) => {
     if (!raw || typeof raw !== 'object') throw new RpcRejectedError('群成员配置无效。');
-    const { id, label, provider, enabled, model, effort, instructions } = raw;
+    const { id, label, provider, enabled, model, effort, instructions, placement } = raw;
     if (typeof id !== 'string' || !/^[a-z][a-z0-9_-]{0,47}$/.test(id) || reservedIds.has(id) || ids.has(id)) {
       throw new RpcRejectedError('成员标识必须唯一，以小写字母开头，仅使用字母、数字、连字符或下划线；不能使用 all 或 user。');
     }
@@ -23,9 +23,14 @@ export const validateGroupParticipantConfigs = (value: unknown): GroupParticipan
     for (const [field, limit] of [[model, 200], [effort, 40], [instructions, 8000]] as const) {
       if (field !== undefined && (typeof field !== 'string' || field.length > limit)) throw new RpcRejectedError('成员模型、推理档位或角色说明过长。');
     }
+    if (placement !== undefined && placement !== null && (typeof placement !== 'object' || typeof placement.deviceId !== 'string' ||
+      !/^[a-f0-9-]{36}$/i.test(placement.deviceId) || typeof placement.projectId !== 'string' || !placement.projectId || placement.projectId.length > 200)) {
+      throw new RpcRejectedError('成员执行设备或项目无效。');
+    }
     ids.add(id);
     labels.add(name.toLowerCase());
-    return { id, label: name, provider, enabled, model: model?.trim() || undefined, effort: effort?.trim() || 'default', instructions: instructions?.trim() || undefined } as GroupParticipantConfig;
+    return { id, label: name, provider, enabled, model: model?.trim() || undefined, effort: effort?.trim() || 'default', instructions: instructions?.trim() || undefined,
+      ...(placement ? { placement: { deviceId: placement.deviceId.toLowerCase(), projectId: placement.projectId } } : {}) } as GroupParticipantConfig;
   });
   if (!participants.some((participant) => participant.enabled)) throw new RpcRejectedError('至少启用一位群成员。');
   return participants;

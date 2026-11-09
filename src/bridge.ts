@@ -24,7 +24,7 @@ import type { PlanModeResponsePayload } from './data/planMode.js';
 import type { SessionInteractionState } from './data/sessionInteraction.js';
 import { withOperationIdentity } from './data/operationIdentity.js';
 import type { ProviderModelCatalog } from './data/providerModels.js';
-import type { DeviceAccessGrant, DeviceAccessPurpose, DeviceDescriptor, DevicePairingCode, RemoteDeviceInput } from './data/devices.js';
+import type { DeviceAccessGrant, DeviceAccessPurpose, DeviceDescriptor, DevicePairingCode, GroupPlacementOptions, RemoteDeviceInput } from './data/devices.js';
 
 type RpcErrorShape = {
   error?: string;
@@ -35,6 +35,7 @@ export type EasyAIFlowBridge = {
   runtime: 'desktop' | 'web';
   rpc?: <T>(method: string, payload?: unknown, deviceId?: string) => Promise<T>;
   getDevices: () => Promise<{ devices: DeviceDescriptor[] }>;
+  getGroupPlacementOptions: () => Promise<GroupPlacementOptions>;
   createDevicePairing: (payload: { purpose: DeviceAccessPurpose }) => Promise<DevicePairingCode>;
   addRemoteDevice: (payload: RemoteDeviceInput) => Promise<DeviceDescriptor>;
   removeRemoteDevice: (payload: { deviceId: string }) => Promise<unknown>;
@@ -258,6 +259,7 @@ const createRpcBridge = (callWebRpc: Rpc, subscribe: EasyAIFlowBridge['onClaudeE
   runtime: 'web',
   writeClipboardText,
   getDevices: () => callWebRpc('getDevices'),
+  getGroupPlacementOptions: () => callWebRpc('getGroupPlacementOptions'),
   createDevicePairing: (payload) => callWebRpc('createDevicePairing', payload),
   addRemoteDevice: (payload) => callWebRpc('addRemoteDevice', payload),
   removeRemoteDevice: (payload) => callWebRpc('removeRemoteDevice', payload),

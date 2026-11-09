@@ -27,6 +27,7 @@
     "smoke:native-agents": "tsx scripts/smoke-native-agents.ts",
     "smoke:devices": "tsx tests/remoteDevices.test.ts --live",
     "smoke:team": "tsx scripts/smoke-team-messages.ts",
+    "smoke:remote-group": "tsx tests/remoteGroupMembers.test.ts --live",
     "preview": "vite preview",
     "start:web": "node dist-server/server/server.js",
     "package:win": "npm run build && electron-builder --win nsis"
