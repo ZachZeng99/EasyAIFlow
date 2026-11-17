@@ -182,10 +182,14 @@ export const setSessionRuntimeState = (
     runtime.phase === 'background'
       ? state.backgroundTasks
       : pruneActiveBackgroundTasks(state.backgroundTasks),
-  runtime: {
-    ...(state.runtime ?? {}),
-    ...runtime,
-  },
+  runtime: (() => {
+    const next: SessionRuntimeState = { ...(state.runtime ?? {}), ...runtime };
+    // The agent name belongs to one CLI process; drop it once that process is gone.
+    if (!runtime.processActive) {
+      delete next.agentName;
+    }
+    return next;
+  })(),
 });
 
 const runtimePhasePriority: Record<SessionRuntimePhase, number> = {

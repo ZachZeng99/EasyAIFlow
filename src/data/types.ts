@@ -125,6 +125,8 @@ export type SessionRuntimeState = {
   updatedAt?: number;
   /** Group dispatches still queued or executing in this device service. */
   pendingTurns?: number;
+  /** Name the Claude CLI registered for this live process (e.g. `easyaiflow-58`). */
+  agentName?: string;
 };
 
 export type ChangedFile = {

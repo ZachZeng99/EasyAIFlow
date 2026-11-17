@@ -1432,6 +1432,12 @@ p {
   animation: none;
 }
 
+.cli-agent-name {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  opacity: 0.85;
+  white-space: pre;
+}
+
 .process-tag {
   border-color: rgba(255, 255, 255, 0.12);
   color: rgba(245, 239, 230, 0.64);

@@ -899,6 +899,7 @@ export default function App({ viewState }: { viewState?: WorkspaceViewState }) {
               label: participant.label,
               provider: participant.provider,
               online: Boolean(sessionInteractions.get(participant.backingSessionId)?.runtime?.processActive),
+              agentName: sessionInteractions.get(participant.backingSessionId)?.runtime?.agentName,
             }))
         : [],
     [selectedSession, sessionInteractions],

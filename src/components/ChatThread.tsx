@@ -77,6 +77,7 @@ type ChatThreadProps = {
     label: string;
     provider: SessionProvider;
     online: boolean;
+    agentName?: string;
   }>;
   onDisconnect?: () => void;
   onManageParticipants?: () => void;
@@ -227,6 +228,7 @@ function ChatThreadComponent({
   const displayItems = useMemo(() => buildDisplayItems(messages), [messages]);
   const agents = useMemo(() => collectNativeAgents(messages), [messages]);
   const [showNativeAgents, setShowNativeAgents] = useState(false);
+  const cliAgentName = interaction?.runtime?.processActive ? interaction.runtime.agentName : undefined;
   const activePermissionRequest = getActiveSessionPermissionRequest(interaction);
   const activeBackgroundTasks = useMemo(
     () =>
@@ -408,18 +410,25 @@ function ChatThreadComponent({
                   key={status.participantId}
                   className={`session-tag cli-status ${status.online ? 'online' : 'offline'} provider-${normalizeSessionProvider(status.provider)}`}
                   aria-label={`${status.label} ${status.online ? 'online' : 'offline'}`}
+                  title={status.agentName ? `Claude agent: ${status.agentName}` : undefined}
                 >
                   <span
                     className={`cli-status-dot ${status.online ? 'online' : 'offline'}`}
                     aria-hidden="true"
                   />
                   {status.label}
+                  {status.agentName ? <span className="cli-agent-name"> · {status.agentName}</span> : null}
                 </span>
               ))
             ) : isCliOnline ? (
-              <span className="session-tag cli-status" aria-label="CLI online">
+              <span
+                className="session-tag cli-status"
+                aria-label={cliAgentName ? `CLI online as ${cliAgentName}` : 'CLI online'}
+                title={cliAgentName ? `Claude agent: ${cliAgentName}` : undefined}
+              >
                 <span className="cli-status-dot" aria-hidden="true" />
                 CLI
+                {cliAgentName ? <span className="cli-agent-name"> · {cliAgentName}</span> : null}
               </span>
             ) : null}
             {session.groups.map((group) => (

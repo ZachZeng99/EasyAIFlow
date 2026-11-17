@@ -124,6 +124,8 @@ export type ResidentClaudeSession = ActiveClaudeRun & {
   configuredModel?: string;
   configuredEffort?: ClaudePrintOptions['effort'];
   configuredPermissionMode?: string;
+  /** Peer name from ~/.claude/sessions/<pid>.json, once the CLI has registered it. */
+  agentName?: string;
   stdoutProcessor: ClaudeLineProcessor;
   stderrBuffer: string;
   currentTurn?: ActiveClaudeTurn;

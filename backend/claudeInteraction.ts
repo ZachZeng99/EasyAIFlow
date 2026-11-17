@@ -117,6 +117,7 @@ import {
   listActiveClaudeRunsForSession,
   removeActiveClaudeRun,
 } from '../electron/claudeRunRegistry.js';
+import { pollClaudeAgentName } from './claudeAgentName.js';
 import {
   extractAskUserQuestionResponsePayload,
   hasAskUserQuestionResponse,
@@ -1293,6 +1294,7 @@ export const getSessionInteractionSnapshots = (
       processActive,
       phase: processActive ? deriveResidentRuntimePhase(state, sessionId, resident) : 'inactive',
       appliedEffort: resident.configuredEffort,
+      ...(processActive && resident.agentName ? { agentName: resident.agentName } : {}),
       updatedAt: Date.now(),
     };
   });
@@ -3015,6 +3017,27 @@ const ensureResidentClaudeSession = async (
 
   state.residentSessions.set(session.id, resident);
   emitRuntimeState(ctx, session.id, 'idle', true, resident.configuredEffort);
+  const isCurrentResident = () =>
+    isLiveChildProcess(child) && getResidentSession(state, session.id)?.runId === resident.runId;
+  if (typeof child.pid === 'number') {
+    void pollClaudeAgentName(child.pid, { isAlive: isCurrentResident }).then((agentName) => {
+      if (!agentName || !isCurrentResident()) {
+        return;
+      }
+      resident.agentName = agentName;
+      ctx.broadcastEvent({
+        type: 'runtime-state',
+        sessionId: session.id,
+        runtime: {
+          processActive: true,
+          phase: deriveResidentRuntimePhase(state, session.id, resident),
+          appliedEffort: resident.configuredEffort,
+          agentName,
+          updatedAt: Date.now(),
+        },
+      });
+    });
+  }
 
   child.stdout.on('data', (chunk: Buffer | string) => {
     resident.stdoutProcessor.pushChunk(chunk.toString());
